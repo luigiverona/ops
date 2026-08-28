@@ -128,9 +128,14 @@ are reviewed individually. Deletion shows exact files and requires a second
 confirmation defaulting to no.
 
 Agent identities are separate from local files; unloading never deletes files.
-An isolated `~/.ssh/ops_config` and first-match Include make `github.com` use
-`~/.ssh/ops` with `IdentitiesOnly yes` after reboot while preserving unrelated
-SSH config. Effective configuration is verified with `ssh -G`.
+An isolated, marked `~/.ssh/ops_config` and first-match Include make
+`github.com` use `~/.ssh/ops` with `IdentitiesOnly yes` after reboot. Ops obtains
+GitHub's current public SSH host keys from GitHub's official HTTPS metadata,
+validates them, and atomically maintains marked `~/.ssh/ops_known_hosts` with
+`StrictHostKeyChecking yes`. The user's ordinary `known_hosts` is preserved and
+is not required. Existing unmarked ops-specific files and unsafe symlinks are
+refused rather than overwritten. Effective configuration is verified with
+`ssh -G`.
 
 Authentication is delegated to `gh auth login --git-protocol ssh
 --skip-ssh-key`; ops never stores tokens. Existing GitHub keys are reviewed one
@@ -172,6 +177,7 @@ Normal preparation never auto-updates.
 ## Development
 
 ```sh
+go version # release validation uses exactly go1.26.7
 gofmt -w ./cmd ./internal
 go vet ./...
 go test ./...
