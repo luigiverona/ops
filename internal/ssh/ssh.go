@@ -233,6 +233,17 @@ func (m Manager) ConfigureGitHub(ctx context.Context) error {
 	return nil
 }
 
+// GitHubConfigured verifies effective configuration without changing files.
+func (m Manager) GitHubConfigured(ctx context.Context) bool {
+	configPath := filepath.Join(m.dir(), "config")
+	result, err := m.Runner.Run(ctx, run.Spec{Name: "ssh", Args: []string{"-G", "github.com", "-F", configPath}})
+	if err != nil {
+		return false
+	}
+	effective := strings.ToLower(result.Stdout)
+	return strings.Contains(effective, "identitiesonly yes") && containsIdentityFile(effective, filepath.Join(m.Home, ".ssh", "ops"))
+}
+
 // PublicFingerprint validates a single public-key line and returns its OpenSSH SHA256 fingerprint.
 func PublicFingerprint(line string) (string, error) {
 	fields := strings.Fields(line)

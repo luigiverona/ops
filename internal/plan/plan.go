@@ -64,16 +64,16 @@ type Dependency struct {
 
 // Plan is a complete, immutable plan presented before authorization.
 type Plan struct {
-	Core             map[string]string
-	Applications     []Application
-	OfficialPackages []string
-	EnableMultilib   bool
-	FullUpgrade      bool
-	BootstrapParu    bool
-	AddFlathub       bool
-	GitStatus        string
-	SSHStatus        string
-	GitHubStatus     string
+	Core           map[string]string
+	Applications   []Application
+	CorePackages   []string
+	EnableMultilib bool
+	FullUpgrade    bool
+	BootstrapParu  bool
+	AddFlathub     bool
+	GitStatus      string
+	SSHStatus      string
+	GitHubStatus   string
 }
 
 // Build resolves only missing declarations and produces a deterministic plan.
@@ -84,11 +84,11 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 	}
 	for component, pkg := range CorePackages {
 		if p.Core[component] != "ready" {
-			p.OfficialPackages = append(p.OfficialPackages, pkg)
+			p.CorePackages = append(p.CorePackages, pkg)
 		}
 	}
 	if !state.Installed["base-devel"] {
-		p.OfficialPackages = append(p.OfficialPackages, "base-devel")
+		p.CorePackages = append(p.CorePackages, "base-devel")
 	}
 	p.BootstrapParu = !state.Paru
 	p.AddFlathub = !state.Flathub
@@ -115,7 +115,10 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 			found, err = resolver.Flatpak(ctx, declaration.Identifier)
 		}
 		if err != nil {
-			return Plan{}, fmt.Errorf("resolve %s:%s: %w", declaration.Source, declaration.Identifier, err)
+			app.State = "failed"
+			app.Cause = "source resolution failed: " + err.Error()
+			p.Applications = append(p.Applications, app)
+			continue
 		}
 		if !found {
 			app.State = "unresolved"
@@ -132,9 +135,6 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 			app.Dependencies = optional
 			p.EnableMultilib = p.EnableMultilib || multilib || metadata.Repository == "multilib"
 		}
-		if declaration.Source == "pacman" {
-			p.OfficialPackages = append(p.OfficialPackages, declaration.Identifier)
-		}
 		if declaration.Identifier == "mullvad-vpn" {
 			app.Services = append(app.Services, "mullvad-daemon.service")
 		}
@@ -142,8 +142,8 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 	}
 
 	p.EnableMultilib = p.EnableMultilib && !state.Multilib
-	p.OfficialPackages = uniqueSorted(p.OfficialPackages)
-	p.FullUpgrade = len(p.OfficialPackages) > 0 || p.BootstrapParu || hasAURInstall(p.Applications)
+	p.CorePackages = uniqueSorted(p.CorePackages)
+	p.FullUpgrade = len(p.CorePackages) > 0 || hasPackageInstall(p.Applications)
 	return p, nil
 }
 
@@ -252,9 +252,9 @@ func pairStatus(ready bool) string {
 	return "configuration required"
 }
 
-func hasAURInstall(apps []Application) bool {
+func hasPackageInstall(apps []Application) bool {
 	for _, app := range apps {
-		if app.State == "install" && app.Declaration.Source == "aur" {
+		if app.State == "install" && app.Declaration.Source != "flatpak" {
 			return true
 		}
 	}

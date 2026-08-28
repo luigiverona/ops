@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
+	"github.com/luigiverona/ops/internal/app"
 	"github.com/luigiverona/ops/internal/version"
 )
 
@@ -26,6 +31,23 @@ func main() {
 		fmt.Printf("ops %s\n", version.Value)
 		return
 	}
-	fmt.Fprintln(os.Stderr, "ops: implementation is incomplete")
-	os.Exit(2)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	runtime := app.DefaultRuntime()
+	code := app.Fatal
+	switch {
+	case len(args) == 0:
+		code = runtime.Prepare(ctx)
+	case len(args) == 1 && args[0] == "doctor":
+		code = runtime.Doctor(ctx)
+	case len(args) == 1 && args[0] == "update":
+		code = runtime.Update(ctx)
+	default:
+		fmt.Fprintln(os.Stderr, "ops: invalid command; run 'ops --help'")
+	}
+	if errors.Is(ctx.Err(), context.Canceled) {
+		fmt.Fprintln(os.Stderr, "\nInterrupted. Completed operations were preserved; rerun ops to rediscover workstation state.")
+		code = app.Fatal
+	}
+	os.Exit(code)
 }

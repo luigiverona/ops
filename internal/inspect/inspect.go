@@ -9,6 +9,7 @@ import (
 	"github.com/luigiverona/ops/internal/arch"
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/run"
+	sshops "github.com/luigiverona/ops/internal/ssh"
 )
 
 // Workstation performs read-only command and file inspection.
@@ -55,12 +56,18 @@ func (w Workstation) State(ctx context.Context) (plan.State, error) {
 	if result, err := w.Runner.Run(ctx, run.Spec{Name: "git", Args: []string{"config", "--global", "--get", "user.email"}}); err == nil {
 		state.GitEmail = strings.TrimSpace(result.Stdout)
 	}
-	if _, err := os.Stat(w.Home + "/.ssh/ops"); err == nil {
-		state.SSHReady = true
+	sshManager := sshops.Manager{Home: w.Home, Runner: w.Runner}
+	if identities, err := sshManager.Discover(ctx); err == nil {
+		for _, identity := range identities {
+			if identity.PrivatePath == w.Home+"/.ssh/ops" && identity.PublicPath == w.Home+"/.ssh/ops.pub" {
+				state.SSHReady = sshManager.GitHubConfigured(ctx)
+			}
+		}
 	}
 	if _, err := w.Runner.Run(ctx, run.Spec{Name: "gh", Args: []string{"auth", "status", "--hostname", "github.com", "--active"}}); err == nil {
 		state.GitHubAuth = true
 	}
+	state.GitHubSSHAccess = state.SSHReady
 	return state, nil
 }
 

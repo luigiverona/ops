@@ -43,7 +43,7 @@ func TestFreshAndReadyPlanning(t *testing.T) {
 		t.Fatalf("fresh = %#v, %v", fresh, err)
 	}
 	ready, err := Build(context.Background(), config.Config{Version: 1}, readyState(), fakeResolver{})
-	if err != nil || ready.FullUpgrade || ready.BootstrapParu || ready.AddFlathub || len(ready.OfficialPackages) != 0 {
+	if err != nil || ready.FullUpgrade || ready.BootstrapParu || ready.AddFlathub || len(ready.CorePackages) != 0 {
 		t.Fatalf("ready = %#v, %v", ready, err)
 	}
 }
@@ -76,7 +76,7 @@ func TestIdempotencyAndNoRemovalPlanning(t *testing.T) {
 	s.Installed["firefox"], s.Installed["old-app"] = true, true
 	cfg := config.Config{Version: 1, Applications: []config.Application{{Category: "browser", Source: "pacman", Identifier: "firefox"}}}
 	p, err := Build(context.Background(), cfg, s, fakeResolver{})
-	if err != nil || p.Applications[0].State != "ready" || len(p.OfficialPackages) != 0 {
+	if err != nil || p.Applications[0].State != "ready" || len(p.CorePackages) != 0 {
 		t.Fatalf("second run not idempotent: %#v, %v", p, err)
 	}
 	// old-app is absent from intent and no removal operation exists in Plan.
