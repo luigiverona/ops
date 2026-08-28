@@ -73,5 +73,7 @@ func fakePlatformCommands(t *testing.T) string {
 	}
 	write("id", "printf '1000\\n'")
 	write("uname", "case \"$1\" in -s) printf 'Linux\\n';; -m) printf 'x86_64\\n';; esac")
+	// The trust test must pass prerequisite discovery without ever invoking sudo.
+	write("sudo", "exit 1")
 	return dir
 }
