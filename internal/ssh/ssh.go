@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,10 +28,13 @@ type AgentIdentity struct {
 	Fingerprint string
 }
 
-// Manager owns only ~/.ssh/ops, ~/.ssh/ops.pub, and ~/.ssh/ops_config.
+// Manager owns only ~/.ssh/ops, ~/.ssh/ops.pub, ~/.ssh/ops_config, and
+// ~/.ssh/ops_known_hosts.
 type Manager struct {
-	Home   string
-	Runner run.Runner
+	Home        string
+	Runner      run.Runner
+	HTTP        *http.Client
+	MetadataURL string
 }
 
 func (m Manager) dir() string { return filepath.Join(m.Home, ".ssh") }
@@ -205,10 +209,9 @@ func (m Manager) ConfigureGitHub(ctx context.Context) error {
 	}
 	configPath := filepath.Join(m.dir(), "config")
 	includePath := filepath.Join(m.dir(), "ops_config")
-	managed := []byte("Host github.com\n    HostName github.com\n    User git\n    IdentityFile ~/.ssh/ops\n    IdentitiesOnly yes\n")
-	if err := atomicOwnedWrite(includePath, managed, 0o600); err != nil {
-		return err
-	}
+	knownHostsPath := filepath.Join(m.dir(), "ops_known_hosts")
+	legacy := []byte("Host github.com\n    HostName github.com\n    User git\n    IdentityFile ~/.ssh/ops\n    IdentitiesOnly yes\n")
+	managed := []byte(managedMarker + "\nHost github.com\n    HostName github.com\n    User git\n    IdentityFile ~/.ssh/ops\n    IdentitiesOnly yes\n    UserKnownHostsFile ~/.ssh/ops_known_hosts\n    StrictHostKeyChecking yes\n")
 	var existing []byte
 	if info, err := os.Lstat(configPath); err == nil {
 		if !info.Mode().IsRegular() {
@@ -221,10 +224,27 @@ func (m Manager) ConfigureGitHub(ctx context.Context) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	hostKeys, err := m.fetchGitHubHostKeys(ctx)
+	if err != nil {
+		return fmt.Errorf("retrieve official GitHub SSH host keys: %w", err)
+	}
+	knownHosts := renderKnownHosts(hostKeys)
+	if err := checkManagedTarget(includePath, legacy); err != nil {
+		return err
+	}
+	if err := checkManagedTarget(knownHostsPath); err != nil {
+		return err
+	}
+	if err := atomicManagedWrite(knownHostsPath, knownHosts, 0o600); err != nil {
+		return err
+	}
+	if err := atomicManagedWrite(includePath, managed, 0o600, legacy); err != nil {
+		return err
+	}
 	include := "Include ~/.ssh/ops_config"
 	if !hasActiveLine(existing, include) {
-		updated := append([]byte(include+"\n"), existing...)
-		if err := atomicOwnedWrite(configPath, updated, 0o600); err != nil {
+		updated := append([]byte(managedIncludeStart+"\n"+include+"\n"+managedIncludeEnd+"\n"), existing...)
+		if err := atomicRegularWrite(configPath, updated, 0o600); err != nil {
 			return err
 		}
 	}
@@ -233,21 +253,24 @@ func (m Manager) ConfigureGitHub(ctx context.Context) error {
 		return fmt.Errorf("verify effective SSH configuration: %w", err)
 	}
 	effective := strings.ToLower(result.Stdout)
-	if !strings.Contains(effective, "identitiesonly yes") || !containsIdentityFile(effective, filepath.Join(m.Home, ".ssh", "ops")) {
-		return errors.New("effective SSH configuration does not select ~/.ssh/ops with IdentitiesOnly")
+	if !effectiveGitHubConfig(effective, m.Home) {
+		return errors.New("effective SSH configuration does not enforce the managed identity and host-key trust")
 	}
 	return nil
 }
 
 // GitHubConfigured verifies effective configuration without changing files.
 func (m Manager) GitHubConfigured(ctx context.Context) bool {
+	if !recognizedManagedFile(filepath.Join(m.dir(), "ops_config")) || !validManagedKnownHosts(filepath.Join(m.dir(), "ops_known_hosts")) {
+		return false
+	}
 	configPath := filepath.Join(m.dir(), "config")
 	result, err := m.Runner.Run(ctx, run.Spec{Name: "ssh", Args: []string{"-G", "github.com", "-F", configPath}})
 	if err != nil {
 		return false
 	}
 	effective := strings.ToLower(result.Stdout)
-	return strings.Contains(effective, "identitiesonly yes") && containsIdentityFile(effective, filepath.Join(m.Home, ".ssh", "ops"))
+	return effectiveGitHubConfig(effective, m.Home)
 }
 
 // PublicFingerprint validates a single public-key line and returns its OpenSSH SHA256 fingerprint.
@@ -298,7 +321,7 @@ func privateHeader(data []byte) bool {
 
 func protectedName(name string) bool {
 	switch name {
-	case "config", "known_hosts", "known_hosts.old", "authorized_keys", "authorized_keys2":
+	case "config", "known_hosts", "known_hosts.old", "authorized_keys", "authorized_keys2", "ops_config", "ops_known_hosts":
 		return true
 	}
 	return strings.HasSuffix(name, "-cert.pub") || strings.HasSuffix(name, "-cert")
@@ -325,7 +348,7 @@ func secureDir(path string) error {
 	return os.Mkdir(path, 0o700)
 }
 
-func atomicOwnedWrite(path string, data []byte, mode os.FileMode) error {
+func atomicRegularWrite(path string, data []byte, mode os.FileMode) error {
 	if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() {
 		return fmt.Errorf("refusing non-regular file %s", path)
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -355,6 +378,53 @@ func atomicOwnedWrite(path string, data []byte, mode os.FileMode) error {
 	return os.Rename(tmp, path)
 }
 
+func atomicManagedWrite(path string, data []byte, mode os.FileMode, legacy ...[]byte) error {
+	if err := checkManagedTarget(path, legacy...); err != nil {
+		return err
+	}
+	return atomicRegularWrite(path, data, mode)
+}
+
+func checkManagedTarget(path string, legacy ...[]byte) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing non-regular managed path %s", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if hasManagedMarker(data) {
+		return nil
+	}
+	for _, recognized := range legacy {
+		if string(data) == string(recognized) {
+			return nil
+		}
+	}
+	return fmt.Errorf("refusing to overwrite unrecognized existing file %s", path)
+}
+
+func recognizedManagedFile(path string) bool {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	return err == nil && hasManagedMarker(data)
+}
+
+func hasManagedMarker(data []byte) bool {
+	line, _, _ := strings.Cut(string(data), "\n")
+	return line == managedMarker
+}
+
 func hasActiveLine(data []byte, want string) bool {
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
@@ -374,4 +444,27 @@ func containsIdentityFile(output, path string) bool {
 		}
 	}
 	return false
+}
+
+func containsKnownHostsFile(output, path string) bool {
+	path = strings.ToLower(path)
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "userknownhostsfile" {
+			continue
+		}
+		for _, value := range fields[1:] {
+			if value == path || value == "~/.ssh/ops_known_hosts" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func effectiveGitHubConfig(output, home string) bool {
+	return strings.Contains(output, "identitiesonly yes") &&
+		strings.Contains(output, "stricthostkeychecking yes") &&
+		containsIdentityFile(output, filepath.Join(home, ".ssh", "ops")) &&
+		containsKnownHostsFile(output, filepath.Join(home, ".ssh", "ops_known_hosts"))
 }

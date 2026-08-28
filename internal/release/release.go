@@ -112,26 +112,30 @@ func (c Client) DownloadVerified(ctx context.Context, version string) (*Verified
 		}
 	}
 	keyPath := filepath.Join(dir, "signing-key.asc")
-	keyring := filepath.Join(dir, "trustedkeys.gpg")
 	if err := os.WriteFile(keyPath, []byte(trust.PublicKey), 0o600); err != nil {
 		return nil, err
 	}
-	show, err := c.Runner.Run(ctx, run.Spec{Name: "gpg", Args: []string{"--batch", "--with-colons", "--show-keys", keyPath}})
+	gpgHome := filepath.Join(dir, "gnupg")
+	if err := os.Mkdir(gpgHome, 0o700); err != nil {
+		return nil, err
+	}
+	baseArgs := []string{"--homedir", gpgHome, "--no-options", "--batch", "--no-tty"}
+	showArgs := append(append([]string{}, baseArgs...), "--with-colons", "--show-keys", keyPath)
+	show, err := c.Runner.Run(ctx, run.Spec{Name: "gpg", Args: showArgs})
 	if err != nil {
 		return nil, fmt.Errorf("inspect release signing key: %w", err)
 	}
-	if !fingerprintPresent(show.Stdout, trust.Fingerprint) {
-		return nil, errors.New("release signing key fingerprint does not match pinned fingerprint")
+	if !activeSigningSubkeyPresent(show.Stdout, trust.Fingerprint) {
+		return nil, errors.New("pinned release-signing subkey is absent, expired, revoked, or not signing-capable")
 	}
-	if _, err := c.Runner.Run(ctx, run.Spec{Name: "gpg", Args: []string{"--batch", "--no-default-keyring", "--keyring", keyring, "--import", keyPath}, Env: []string{"GNUPGHOME=" + dir}}); err != nil {
+	importArgs := append(append([]string{}, baseArgs...), "--status-fd", "1", "--import-options", "import-minimal", "--import", keyPath)
+	if _, err := c.Runner.Run(ctx, run.Spec{Name: "gpg", Args: importArgs}); err != nil {
 		return nil, fmt.Errorf("import isolated release key: %w", err)
 	}
-	verifiedSignature, err := c.Runner.Run(ctx, run.Spec{Name: "gpgv", Args: []string{"--status-fd", "1", "--keyring", keyring, filepath.Join(dir, SignatureName), filepath.Join(dir, ChecksumsName)}, Env: []string{"GNUPGHOME=" + dir}})
-	if err != nil {
+	verifyArgs := append(append([]string{}, baseArgs...), "--status-fd", "1", "--trust-model", "always", "--no-auto-key-retrieve", "--verify", filepath.Join(dir, SignatureName), filepath.Join(dir, ChecksumsName))
+	verifiedSignature, verifyErr := c.Runner.Run(ctx, run.Spec{Name: "gpg", Args: verifyArgs})
+	if err := validateSignatureStatus(verifiedSignature.Stdout, trust.Fingerprint, verifyErr); err != nil {
 		return nil, fmt.Errorf("release signature verification failed: %w", err)
-	}
-	if !validSignaturePresent(verifiedSignature.Stdout, trust.Fingerprint) {
-		return nil, errors.New("release was not signed by the pinned release-signing key")
 	}
 	expected, err := ManifestChecksum(filepath.Join(dir, ChecksumsName), BinaryName)
 	if err != nil {
@@ -269,24 +273,59 @@ func versionParts(value string) [3]int {
 	}
 	return result
 }
-func fingerprintPresent(output, want string) bool {
+func activeSigningSubkeyPresent(output, want string) bool {
 	want = strings.ToUpper(want)
+	pending := false
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Split(line, ":")
-		if len(fields) > 9 && fields[0] == "fpr" && strings.ToUpper(fields[9]) == want {
+		if len(fields) > 11 && fields[0] == "sub" {
+			validity := fields[1]
+			pending = validity != "r" && validity != "e" && strings.Contains(strings.ToLower(fields[11]), "s")
+			continue
+		}
+		if pending && len(fields) > 9 && fields[0] == "fpr" && strings.ToUpper(fields[9]) == want {
 			return true
+		}
+		if len(fields) > 0 && fields[0] != "fpr" {
+			pending = false
 		}
 	}
 	return false
 }
 
-func validSignaturePresent(output, want string) bool {
+func validateSignatureStatus(output, want string, processErr error) error {
 	want = strings.ToUpper(want)
+	valid := 0
+	invalidState := ""
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) >= 3 && fields[0] == "[GNUPG:]" && fields[1] == "VALIDSIG" && strings.ToUpper(fields[2]) == want {
-			return true
+		if len(fields) < 2 || fields[0] != "[GNUPG:]" {
+			continue
+		}
+		switch fields[1] {
+		case "VALIDSIG":
+			if len(fields) < 3 || strings.ToUpper(fields[2]) != want {
+				invalidState = "signature was made by a key other than the pinned release-signing subkey"
+				continue
+			}
+			valid++
+		case "REVKEYSIG", "EXPKEYSIG", "EXPSIG", "BADSIG", "ERRSIG", "NO_PUBKEY", "NODATA", "BADARMOR", "KEYEXPIRED", "SIGEXPIRED", "KEYREVOKED", "FAILURE", "ERROR", "UNEXPECTED":
+			invalidState = "GnuPG reported " + fields[1]
+		case "NEWSIG", "KEY_CONSIDERED", "SIG_ID", "GOODSIG":
+		default:
+			if !strings.HasPrefix(fields[1], "TRUST_") {
+				invalidState = "GnuPG reported unexpected status " + fields[1]
+			}
 		}
 	}
-	return false
+	if invalidState != "" {
+		return errors.New(invalidState)
+	}
+	if processErr != nil {
+		return processErr
+	}
+	if valid != 1 {
+		return fmt.Errorf("expected exactly one VALIDSIG from the pinned release-signing subkey; got %d", valid)
+	}
+	return nil
 }
