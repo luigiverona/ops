@@ -1,0 +1,60 @@
+name: Release candidate
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable version without v prefix
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache: true
+      - name: Determine version
+        id: version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version=${INPUT_VERSION:-${GITHUB_REF_NAME#v}}
+          [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          printf 'value=%s\n' "$version" >> "$GITHUB_OUTPUT"
+      - name: Validate source
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
+      - name: Build candidate
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          install -d dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+            -ldflags "-s -w -X github.com/luigiverona/ops/internal/version.Value=$VERSION" \
+            -o dist/ops-linux-x86_64 ./cmd/ops
+          test "$(dist/ops-linux-x86_64 --version)" = "ops $VERSION"
+          cd dist
+          sha256sum ops-linux-x86_64 > checksums.txt
+      - name: Upload unsigned candidate for offline signing
+        uses: actions/upload-artifact@v4
+        with:
+          name: ops-${{ steps.version.outputs.value }}-unsigned
+          path: |
+            dist/ops-linux-x86_64
+            dist/checksums.txt
+            script/install.sh
+          if-no-files-found: error
+
