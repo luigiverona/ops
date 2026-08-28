@@ -21,10 +21,11 @@ jobs:
       - name: Prepare disposable Arch container
         run: pacman -Syu --noconfirm git go openssh gnupg
       - uses: actions/checkout@v4
+      - name: Trust checked-out workspace in the disposable container
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Test on official Arch
         run: go test ./...
       - name: Build Linux x86_64 binary
         run: go build ./cmd/ops
       - name: Validate installer syntax
         run: sh -n script/install.sh
-
