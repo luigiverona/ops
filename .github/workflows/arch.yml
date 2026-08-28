@@ -17,10 +17,19 @@ jobs:
   test:
     runs-on: ubuntu-latest
     container: archlinux:latest
+    env:
+      GOENV: off
+      GOTOOLCHAIN: local
     steps:
       - name: Prepare disposable Arch container
-        run: pacman -Syu --noconfirm git go openssh gnupg
-      - uses: actions/checkout@v4
+        run: pacman -Syu --noconfirm git openssh gnupg
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.7'
+          cache: true
+      - name: Verify toolchain
+        run: test "$(go env GOVERSION)" = go1.26.7
       - name: Trust checked-out workspace in the disposable container
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Test on official Arch
@@ -28,4 +37,4 @@ jobs:
       - name: Build Linux x86_64 binary
         run: go build ./cmd/ops
       - name: Validate installer syntax
-        run: sh -n script/install.sh
+        run: sh -n script/install.sh script/prepare-release.sh
