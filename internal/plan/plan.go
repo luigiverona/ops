@@ -3,7 +3,6 @@ package plan
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"strings"
 
@@ -36,6 +35,7 @@ type Package struct {
 	Name        string
 	Repository  string
 	Optional    []string
+	Required    []string
 	Conflicts   []string
 	PackageBase string
 }
@@ -130,10 +130,19 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 		if declaration.Source != "flatpak" {
 			optional, multilib, err := optionalDependencies(ctx, metadata, state, resolver)
 			if err != nil {
-				return Plan{}, fmt.Errorf("resolve optional dependencies for %s: %w", declaration.Identifier, err)
+				app.State = "failed"
+				app.Cause = "optional dependency resolution failed: " + err.Error()
+				p.Applications = append(p.Applications, app)
+				continue
 			}
 			app.Dependencies = optional
 			p.EnableMultilib = p.EnableMultilib || multilib || metadata.Repository == "multilib"
+			for _, raw := range metadata.Required {
+				name := dependencyName(raw)
+				if dependency, found, resolveErr := resolver.Pacman(ctx, name); resolveErr == nil && found && dependency.Repository == "multilib" {
+					p.EnableMultilib = true
+				}
+			}
 		}
 		if declaration.Identifier == "mullvad-vpn" {
 			app.Services = append(app.Services, "mullvad-daemon.service")
@@ -143,7 +152,7 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 
 	p.EnableMultilib = p.EnableMultilib && !state.Multilib
 	p.CorePackages = uniqueSorted(p.CorePackages)
-	p.FullUpgrade = len(p.CorePackages) > 0 || hasPackageInstall(p.Applications)
+	p.FullUpgrade = len(p.CorePackages) > 0 || p.BootstrapParu || hasPackageInstall(p.Applications)
 	return p, nil
 }
 
@@ -198,7 +207,15 @@ func optionalDependencies(ctx context.Context, pkg Package, state State, resolve
 			return nil, false, err
 		}
 		if !found {
-			continue // Do not silently cross ecosystems for optional dependencies.
+			metadata, found, err = resolver.AUR(ctx, name)
+			if err != nil {
+				return nil, false, err
+			}
+			if !found {
+				continue
+			}
+			candidates = append(candidates, candidate{Dependency{"aur", name}, metadata})
+			continue
 		}
 		candidates = append(candidates, candidate{Dependency{"pacman", name}, metadata})
 		multilib = multilib || metadata.Repository == "multilib"

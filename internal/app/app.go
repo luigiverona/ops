@@ -37,11 +37,12 @@ const (
 
 // Runtime holds process-scoped dependencies.
 type Runtime struct {
-	Runner run.Runner
-	Out    io.Writer
-	Err    io.Writer
-	Home   string
-	EUID   func() int
+	Runner    run.Runner
+	Out       io.Writer
+	Err       io.Writer
+	Home      string
+	EUID      func() int
+	OSRelease string
 }
 
 type issue struct {
@@ -72,6 +73,9 @@ func (a Runtime) Prepare(ctx context.Context) int {
 		return a.fatal(err)
 	}
 	defer tty.Close()
+	if _, ok := a.Runner.(run.Exec); ok {
+		a.Runner = run.Exec{In: tty, Out: a.Out, Err: a.Err}
+	}
 	terminal := ui.UI{In: tty, Out: tty}
 	a.showPlan(p)
 	confirmed, err := terminal.Confirm("Prepare this workstation?", true)
@@ -151,7 +155,7 @@ func (a Runtime) Prepare(ctx context.Context) int {
 			continue
 		}
 		if application.State == "unresolved" || application.State == "failed" {
-			problems = append(problems, issue{State: strings.Title(application.State), Name: application.Declaration.Identifier, Source: application.Declaration.Source, Cause: application.Cause, Impact: "application was not installed", Action: "check the declared identifier and source, then run ops again"})
+			problems = append(problems, issue{State: titleState(application.State), Name: application.Declaration.Identifier, Source: application.Declaration.Source, Cause: application.Cause, Impact: "application was not installed", Action: "check the declared identifier and source, then run ops again"})
 			continue
 		}
 		if err := a.installApplication(ctx, archManager, aurManager, flatpakManager, application); err != nil {
@@ -181,7 +185,7 @@ func (a Runtime) Prepare(ctx context.Context) int {
 }
 
 func (a Runtime) detect(ctx context.Context) error {
-	return (system.Detector{EUID: a.EUID, Runner: a.Runner}).Detect(ctx)
+	return (system.Detector{EUID: a.EUID, OSRelease: a.OSRelease, Runner: a.Runner}).Detect(ctx)
 }
 
 // Doctor performs the same detection and planning inspections without mutation or sudo.
@@ -255,6 +259,9 @@ func (a Runtime) Update(ctx context.Context) int {
 		return a.fatal(err)
 	}
 	defer tty.Close()
+	if _, ok := a.Runner.(run.Exec); ok {
+		a.Runner = run.Exec{In: tty, Out: a.Out, Err: a.Err}
+	}
 	terminal := ui.UI{In: tty, Out: tty}
 	fmt.Fprintf(a.Out, "Update\n  current         %s\n  latest          %s\n  target          /usr/local/bin/ops\n", version.Value, latest)
 	ok, err := terminal.Confirm("Download and verify this update?", true)
@@ -305,6 +312,13 @@ func (a Runtime) installApplication(ctx context.Context, am arch.Manager, au aur
 	if err := am.Install(ctx, deps, true); err != nil {
 		return fmt.Errorf("recommended dependency installation failed: %w", err)
 	}
+	for _, dependency := range application.Dependencies {
+		if dependency.Source == "aur" {
+			if err := au.InstallDependency(ctx, dependency.Identifier); err != nil {
+				return fmt.Errorf("recommended AUR dependency installation failed: %w", err)
+			}
+		}
+	}
 	name := application.Declaration.Identifier
 	switch application.Declaration.Source {
 	case "pacman":
@@ -321,7 +335,7 @@ func (a Runtime) installApplication(ctx context.Context, am arch.Manager, au aur
 		}
 	}
 	for _, service := range application.Services {
-		if _, err := a.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"systemctl", "enable", "--now", service}}); err != nil {
+		if _, err := a.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "systemctl", "enable", "--now", service}}); err != nil {
 			return err
 		}
 	}
@@ -359,7 +373,7 @@ func (a Runtime) verifyCore(ctx context.Context) error {
 func (a Runtime) configureGit(ctx context.Context, terminal ui.UI) (string, *issue) {
 	m := gitops.Manager{Runner: a.Runner}
 	current := m.Inspect(ctx)
-	if current.Name != "" && current.Email != "" {
+	if gitops.ValidName(current.Name) && gitops.ValidEmail(current.Email) {
 		return "ready", nil
 	}
 	ok, err := terminal.Confirm("Configure missing Git identity values?", true)
@@ -367,13 +381,13 @@ func (a Runtime) configureGit(ctx context.Context, terminal ui.UI) (string, *iss
 		return "skipped", nil
 	}
 	name, email := current.Name, current.Email
-	if name == "" {
+	if !gitops.ValidName(name) {
 		name, err = terminal.Ask("Git user.name:")
 		if err != nil {
 			return "failed", setupIssue("Git", err)
 		}
 	}
-	if email == "" {
+	if !gitops.ValidEmail(email) {
 		email, err = terminal.Ask("Git user.email:")
 		if err != nil {
 			return "failed", setupIssue("Git", err)
@@ -485,7 +499,11 @@ func (a Runtime) configureGitHub(ctx context.Context, terminal ui.UI, managed *s
 	if err != nil {
 		return "failed", []issue{*setupIssue("GitHub SSH keys", err)}
 	}
+	registered := false
 	for i, key := range keys {
+		if key.Fingerprint == managed.Fingerprint {
+			registered = true
+		}
 		fmt.Fprintf(a.Out, "\nGitHub key %d/%d\n  title           %s\n  fingerprint     %s\n", i+1, len(keys), key.Title, key.Fingerprint)
 		keep, err := terminal.Confirm("Keep this key?", true)
 		if err != nil {
@@ -502,13 +520,19 @@ func (a Runtime) configureGitHub(ctx context.Context, terminal ui.UI, managed *s
 			if err := m.Delete(ctx, key); err != nil {
 				return "failed", []issue{*setupIssue("GitHub SSH key deletion", err)}
 			}
+			if key.Fingerprint == managed.Fingerprint {
+				registered = false
+			}
 		}
 	}
-	add, err := terminal.Confirm("Register ~/.ssh/ops.pub with GitHub if needed?", true)
-	if err != nil {
-		return "failed", []issue{*setupIssue("GitHub SSH key", err)}
-	}
-	if add {
+	if !registered {
+		add, err := terminal.Confirm("Register ~/.ssh/ops.pub with GitHub?", true)
+		if err != nil {
+			return "failed", []issue{*setupIssue("GitHub SSH key", err)}
+		}
+		if !add {
+			return "skipped", nil
+		}
 		if _, err := m.AddManaged(ctx, managed.PublicPath); err != nil {
 			return "failed", []issue{*setupIssue("GitHub SSH key", err)}
 		}
@@ -584,6 +608,13 @@ func linePresent(output, want string) bool {
 		}
 	}
 	return false
+}
+
+func titleState(value string) string {
+	if value == "" {
+		return value
+	}
+	return strings.ToUpper(value[:1]) + value[1:]
 }
 
 // DefaultRuntime creates production process dependencies.

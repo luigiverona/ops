@@ -2,7 +2,6 @@
 package ui
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -31,22 +30,26 @@ func (u UI) Confirm(question string, defaultYes bool) (bool, error) {
 	if defaultYes {
 		suffix = " [Y/n] "
 	}
-	if _, err := fmt.Fprint(u.Out, question+suffix); err != nil {
-		return false, err
-	}
-	line, err := bufio.NewReader(u.In).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return false, err
-	}
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "":
-		return defaultYes, nil
-	case "y", "yes":
-		return true, nil
-	case "n", "no":
-		return false, nil
-	default:
-		return false, fmt.Errorf("invalid response %q; enter yes or no", strings.TrimSpace(line))
+	for {
+		if _, err := fmt.Fprint(u.Out, question+suffix); err != nil {
+			return false, err
+		}
+		line, err := readLine(u.In)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return false, err
+		}
+		switch strings.ToLower(strings.TrimSpace(line)) {
+		case "":
+			return defaultYes, nil
+		case "y", "yes":
+			return true, nil
+		case "n", "no":
+			return false, nil
+		default:
+			if _, writeErr := fmt.Fprintln(u.Out, "Enter yes or no."); writeErr != nil {
+				return false, writeErr
+			}
+		}
 	}
 }
 
@@ -55,7 +58,7 @@ func (u UI) Ask(question string) (string, error) {
 	if _, err := fmt.Fprint(u.Out, question+" "); err != nil {
 		return "", err
 	}
-	line, err := bufio.NewReader(u.In).ReadString('\n')
+	line, err := readLine(u.In)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
 	}
@@ -64,4 +67,21 @@ func (u UI) Ask(question string) (string, error) {
 		return "", errors.New("a value is required")
 	}
 	return value, nil
+}
+
+func readLine(reader io.Reader) (string, error) {
+	var b strings.Builder
+	buffer := []byte{0}
+	for {
+		n, err := reader.Read(buffer)
+		if n == 1 {
+			if buffer[0] == '\n' {
+				return b.String(), nil
+			}
+			b.WriteByte(buffer[0])
+		}
+		if err != nil {
+			return b.String(), err
+		}
+	}
 }

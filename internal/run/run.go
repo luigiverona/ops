@@ -2,7 +2,6 @@
 package run
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -47,7 +46,7 @@ func (e Exec) Run(ctx context.Context, spec Spec) (Result, error) {
 	if cmd.Stdin == nil {
 		cmd.Stdin = e.In
 	}
-	var stdout, stderr bytes.Buffer
+	var stdout, stderr tailBuffer
 	if spec.Interactive {
 		cmd.Stdout = io.MultiWriter(&stdout, e.Out)
 		cmd.Stderr = io.MultiWriter(&stderr, e.Err)
@@ -62,6 +61,27 @@ func (e Exec) Run(ctx context.Context, spec Spec) (Result, error) {
 	}
 	return result, nil
 }
+
+const captureLimit = 64 * 1024
+
+type tailBuffer struct{ data []byte }
+
+func (b *tailBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	if n >= captureLimit {
+		b.data = append(b.data[:0], p[n-captureLimit:]...)
+		return n, nil
+	}
+	if len(b.data)+n > captureLimit {
+		drop := len(b.data) + n - captureLimit
+		copy(b.data, b.data[drop:])
+		b.data = b.data[:len(b.data)-drop]
+	}
+	b.data = append(b.data, p...)
+	return n, nil
+}
+
+func (b *tailBuffer) String() string { return string(b.data) }
 
 // Error preserves actionable stderr while avoiding shell-formatted commands.
 type Error struct {

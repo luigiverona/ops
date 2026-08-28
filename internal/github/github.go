@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -47,8 +48,16 @@ func (m Manager) Keys(ctx context.Context) ([]Key, error) {
 		return nil, err
 	}
 	var keys []Key
-	if err := json.Unmarshal([]byte(result.Stdout), &keys); err != nil {
-		return nil, fmt.Errorf("parse GitHub SSH keys: %w", err)
+	decoder := json.NewDecoder(strings.NewReader(result.Stdout))
+	for {
+		var page []Key
+		if err := decoder.Decode(&page); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, fmt.Errorf("parse GitHub SSH keys: %w", err)
+		}
+		keys = append(keys, page...)
 	}
 	for i := range keys {
 		fingerprint, err := sshops.PublicFingerprint(keys[i].Key)

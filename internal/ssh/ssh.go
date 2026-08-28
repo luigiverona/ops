@@ -48,6 +48,9 @@ func (m Manager) Discover(ctx context.Context) ([]Identity, error) {
 	type private struct{ path, fingerprint string }
 	var privateKeys []private
 	for _, entry := range entries {
+		if protectedName(entry.Name()) {
+			continue
+		}
 		path := filepath.Join(m.dir(), entry.Name())
 		info, err := os.Lstat(path)
 		if err != nil || !info.Mode().IsRegular() {
@@ -162,8 +165,11 @@ func (m Manager) AgentIdentities(ctx context.Context) ([]AgentIdentity, bool, er
 	result, err := m.Runner.Run(ctx, run.Spec{Name: "ssh-add", Args: []string{"-L"}})
 	if err != nil {
 		message := strings.ToLower(result.Stderr)
-		if strings.Contains(message, "could not open") || strings.Contains(message, "no identities") {
+		if strings.Contains(message, "could not open") {
 			return nil, false, nil
+		}
+		if strings.Contains(message, "no identities") {
+			return nil, true, nil
 		}
 		return nil, false, err
 	}
@@ -254,6 +260,13 @@ func PublicFingerprint(line string) (string, error) {
 	if err != nil || len(blob) == 0 {
 		return "", errors.New("invalid SSH public key encoding")
 	}
+	if len(blob) < 4 {
+		return "", errors.New("invalid SSH public key material")
+	}
+	length := int(blob[0])<<24 | int(blob[1])<<16 | int(blob[2])<<8 | int(blob[3])
+	if length <= 0 || 4+length >= len(blob) || string(blob[4:4+length]) != fields[0] {
+		return "", errors.New("SSH public key type does not match key material")
+	}
 	sum := sha256.Sum256(blob)
 	return "SHA256:" + base64.RawStdEncoding.EncodeToString(sum[:]), nil
 }
@@ -281,6 +294,14 @@ func publicType(value string) bool {
 func privateHeader(data []byte) bool {
 	text := string(data)
 	return strings.Contains(text, "-----BEGIN OPENSSH PRIVATE KEY-----") || strings.Contains(text, "-----BEGIN RSA PRIVATE KEY-----") || strings.Contains(text, "-----BEGIN EC PRIVATE KEY-----") || strings.Contains(text, "-----BEGIN PRIVATE KEY-----")
+}
+
+func protectedName(name string) bool {
+	switch name {
+	case "config", "known_hosts", "known_hosts.old", "authorized_keys", "authorized_keys2":
+		return true
+	}
+	return strings.HasSuffix(name, "-cert.pub") || strings.HasSuffix(name, "-cert")
 }
 
 func fingerprintField(output string) string {

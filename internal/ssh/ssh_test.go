@@ -50,6 +50,18 @@ func TestDiscoverNoKeysAndUnrelatedFiles(t *testing.T) {
 	}
 }
 
+func TestAuthorizedKeysIsNeverAnIdentityFile(t *testing.T) {
+	m := managerFor(t)
+	generate(t, m, "source")
+	public, _ := os.ReadFile(filepath.Join(m.dir(), "source.pub"))
+	_ = os.Remove(filepath.Join(m.dir(), "source.pub"))
+	_ = os.WriteFile(filepath.Join(m.dir(), "authorized_keys"), public, 0o600)
+	ids, err := m.Discover(context.Background())
+	if err != nil || len(ids) != 1 || ids[0].PublicPath != "" {
+		t.Fatalf("authorized_keys was classified as identity pair: %#v, %v", ids, err)
+	}
+}
+
 func TestDiscoverPairsMultipleAndOrphanPublic(t *testing.T) {
 	m := managerFor(t)
 	generate(t, m, "first")

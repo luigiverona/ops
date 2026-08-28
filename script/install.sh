@@ -16,6 +16,12 @@ cleanup() {
             "${TMPDIR:-/tmp}"/ops-install.*) rm -rf -- "$tmp" ;;
         esac
     fi
+    if [ -n "${staged:-}" ]; then
+        sudo -n rm -f -- "$staged" >/dev/null 2>&1 || true
+    fi
+    if [ -n "${backup:-}" ] && [ "${keep_backup:-no}" != yes ]; then
+        sudo -n rm -f -- "$backup" >/dev/null 2>&1 || true
+    fi
 }
 
 trap cleanup EXIT HUP INT TERM
@@ -59,7 +65,8 @@ OPS_SIGNING_KEY
 shown=$(gpg --batch --with-colons --show-keys "$tmp/signing-key.asc" 2>/dev/null) || fail 'embedded release signing key is invalid'
 printf '%s\n' "$shown" | awk -F: -v fingerprint="$fingerprint" '$1 == "fpr" && toupper($10) == fingerprint { found=1 } END { exit !found }' || fail 'release signing key fingerprint mismatch'
 GNUPGHOME=$tmp gpg --batch --no-default-keyring --keyring "$tmp/trustedkeys.gpg" --import "$tmp/signing-key.asc" >/dev/null 2>&1 || fail 'could not create isolated release keyring'
-GNUPGHOME=$tmp gpgv --keyring "$tmp/trustedkeys.gpg" "$tmp/checksums.txt.sig" "$tmp/checksums.txt" >/dev/null 2>&1 || fail 'release signature verification failed'
+signature_status=$(GNUPGHOME=$tmp gpgv --status-fd 1 --keyring "$tmp/trustedkeys.gpg" "$tmp/checksums.txt.sig" "$tmp/checksums.txt" 2>/dev/null) || fail 'release signature verification failed'
+printf '%s\n' "$signature_status" | awk -v fingerprint="$fingerprint" '$1 == "[GNUPG:]" && $2 == "VALIDSIG" && toupper($3) == fingerprint { found=1 } END { exit !found }' || fail 'release was not signed by the pinned release-signing key'
 
 expected=$(awk '$2 == "ops-linux-x86_64" || $2 == "*ops-linux-x86_64" { count++; hash=tolower($1) } END { if (count == 1 && hash ~ /^[0-9a-f]{64}$/) print hash; else exit 1 }' "$tmp/checksums.txt") || fail 'signed checksum manifest is invalid'
 actual=$(sha256sum "$tmp/ops-linux-x86_64" | awk '{ print tolower($1) }')
@@ -80,26 +87,36 @@ sudo -v || fail 'sudo authorization failed'
 suffix=$$
 staged=$target.ops-new-$suffix
 backup=$target.ops-backup-$suffix
-sudo rm -f -- "$staged" "$backup"
-sudo install -m 0755 -o root -g root -- "$tmp/ops-linux-x86_64" "$staged" || fail 'could not stage binary'
+keep_backup=no
+sudo -n rm -f -- "$staged" "$backup"
+sudo -n install -m 0755 -o root -g root -- "$tmp/ops-linux-x86_64" "$staged" || fail 'could not stage binary'
 [ "$("$staged" --version 2>/dev/null)" = "ops $version" ] || fail 'staged binary verification failed'
 had_target=no
+if [ -L "$target" ]; then
+    fail 'existing install target is a symlink; refusing unsafe replacement'
+fi
+if [ -e "$target" ] && [ ! -f "$target" ]; then
+    fail 'existing install target is not a regular file'
+fi
 if [ -e "$target" ] || [ -L "$target" ]; then
     had_target=yes
-    sudo cp --preserve=mode,ownership,timestamps -- "$target" "$backup" || fail 'could not preserve existing binary'
+    sudo -n cp --preserve=mode,ownership,timestamps -- "$target" "$backup" || fail 'could not preserve existing binary'
 fi
-sudo mv -- "$staged" "$target" || fail 'could not atomically install binary'
+sudo -n mv -- "$staged" "$target" || fail 'could not atomically install binary'
 if [ "$("$target" --version 2>/dev/null || true)" != "ops $version" ]; then
     if [ "$had_target" = yes ]; then
-        sudo mv -- "$backup" "$target" || fail 'installation failed and the previous binary could not be restored'
+        if ! sudo -n mv -- "$backup" "$target"; then
+            keep_backup=yes
+            fail "installation failed and the previous binary could not be restored; backup retained at $backup"
+        fi
     else
-        sudo rm -f -- "$target"
+        sudo -n rm -f -- "$target"
     fi
     fail 'installed binary verification failed; previous binary was restored when available'
 fi
-sudo rm -f -- "$backup"
+sudo -n rm -f -- "$backup"
 
-config_dir=${XDG_CONFIG_HOME:-$HOME/.config}/ops
+config_dir=$HOME/.config/ops
 config=$config_dir/apps.toml
 mkdir -p "$config_dir"
 created=no

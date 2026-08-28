@@ -126,8 +126,12 @@ func (c Client) DownloadVerified(ctx context.Context, version string) (*Verified
 	if _, err := c.Runner.Run(ctx, run.Spec{Name: "gpg", Args: []string{"--batch", "--no-default-keyring", "--keyring", keyring, "--import", keyPath}, Env: []string{"GNUPGHOME=" + dir}}); err != nil {
 		return nil, fmt.Errorf("import isolated release key: %w", err)
 	}
-	if _, err := c.Runner.Run(ctx, run.Spec{Name: "gpgv", Args: []string{"--keyring", keyring, filepath.Join(dir, SignatureName), filepath.Join(dir, ChecksumsName)}, Env: []string{"GNUPGHOME=" + dir}}); err != nil {
+	verifiedSignature, err := c.Runner.Run(ctx, run.Spec{Name: "gpgv", Args: []string{"--status-fd", "1", "--keyring", keyring, filepath.Join(dir, SignatureName), filepath.Join(dir, ChecksumsName)}, Env: []string{"GNUPGHOME=" + dir}})
+	if err != nil {
 		return nil, fmt.Errorf("release signature verification failed: %w", err)
+	}
+	if !validSignaturePresent(verifiedSignature.Stdout, trust.Fingerprint) {
+		return nil, errors.New("release was not signed by the pinned release-signing key")
 	}
 	expected, err := ManifestChecksum(filepath.Join(dir, ChecksumsName), BinaryName)
 	if err != nil {
@@ -270,6 +274,17 @@ func fingerprintPresent(output, want string) bool {
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Split(line, ":")
 		if len(fields) > 9 && fields[0] == "fpr" && strings.ToUpper(fields[9]) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func validSignaturePresent(output, want string) bool {
+	want = strings.ToUpper(want)
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 3 && fields[0] == "[GNUPG:]" && fields[1] == "VALIDSIG" && strings.ToUpper(fields[2]) == want {
 			return true
 		}
 	}

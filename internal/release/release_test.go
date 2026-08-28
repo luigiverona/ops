@@ -171,6 +171,9 @@ func (f *replaceRunner) Run(_ context.Context, spec run.Spec) (run.Result, error
 			return run.Result{}, fmt.Errorf("sudo failed")
 		}
 		args := spec.Args
+		if len(args) > 0 && args[0] == "-n" {
+			args = args[1:]
+		}
 		switch args[0] {
 		case "install":
 			return run.Result{}, copyFile(args[len(args)-2], args[len(args)-1])

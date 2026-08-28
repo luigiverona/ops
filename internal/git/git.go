@@ -25,17 +25,28 @@ func (m Manager) Inspect(ctx context.Context) Identity {
 	return identity
 }
 
+func ValidName(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && !strings.ContainsAny(value, "\r\n\x00")
+}
+
+func ValidEmail(value string) bool {
+	value = strings.TrimSpace(value)
+	at := strings.IndexByte(value, '@')
+	return at > 0 && at < len(value)-1 && !strings.ContainsAny(value, " \t\r\n\x00")
+}
+
 func (m Manager) SetMissing(ctx context.Context, current Identity, name, email string) error {
-	if current.Name == "" {
-		if strings.TrimSpace(name) == "" {
+	if !ValidName(current.Name) {
+		if !ValidName(name) {
 			return errors.New("Git user.name is required")
 		}
 		if _, err := m.Runner.Run(ctx, run.Spec{Name: "git", Args: []string{"config", "--global", "user.name", strings.TrimSpace(name)}}); err != nil {
 			return err
 		}
 	}
-	if current.Email == "" {
-		if strings.TrimSpace(email) == "" || !strings.Contains(email, "@") {
+	if !ValidEmail(current.Email) {
+		if !ValidEmail(email) {
 			return errors.New("valid Git user.email is required")
 		}
 		if _, err := m.Runner.Run(ctx, run.Spec{Name: "git", Args: []string{"config", "--global", "user.email", strings.TrimSpace(email)}}); err != nil {
@@ -43,7 +54,7 @@ func (m Manager) SetMissing(ctx context.Context, current Identity, name, email s
 		}
 	}
 	verified := m.Inspect(ctx)
-	if verified.Name == "" || verified.Email == "" {
+	if !ValidName(verified.Name) || !ValidEmail(verified.Email) {
 		return errors.New("Git identity verification failed")
 	}
 	return nil

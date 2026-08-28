@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -22,8 +23,21 @@ func (f *fakeRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
 	return f.fn(spec)
 }
 
-const testKey = "ssh-ed25519 AQID test"
-const otherKey = "ssh-ed25519 BAUG other"
+var testKey = publicKey(1)
+var otherKey = publicKey(2)
+
+func publicKey(fill byte) string {
+	typeName := []byte("ssh-ed25519")
+	blob := make([]byte, 4+len(typeName)+4+32)
+	blob[3] = byte(len(typeName))
+	copy(blob[4:], typeName)
+	offset := 4 + len(typeName)
+	blob[offset+3] = 32
+	for i := offset + 4; i < len(blob); i++ {
+		blob[i] = fill
+	}
+	return "ssh-ed25519 " + base64.StdEncoding.EncodeToString(blob) + " test"
+}
 
 func TestAuthenticationStatesAndLoginFlags(t *testing.T) {
 	auth := false

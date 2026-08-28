@@ -72,13 +72,13 @@ func (m Manager) EnableMultilib(ctx context.Context) error {
 	defer func() {
 		_, _ = m.Runner.Run(context.Background(), run.Spec{Name: "sudo", Args: []string{"-n", "rm", "-f", "--", remoteTemp}})
 	}()
-	if _, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"install", "-m", "0644", "-o", "root", "-g", "root", "--", localPath, remoteTemp}}); err != nil {
+	if _, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "install", "-m", "0644", "-o", "root", "-g", "root", "--", localPath, remoteTemp}}); err != nil {
 		return fmt.Errorf("stage pacman.conf: %w", err)
 	}
-	if _, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"pacman-conf", "--config", remoteTemp}}); err != nil {
+	if _, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "pacman-conf", "--config", remoteTemp}}); err != nil {
 		return fmt.Errorf("validate pacman.conf with pacman-conf: %w", err)
 	}
-	if _, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"mv", "--", remoteTemp, path}}); err != nil {
+	if _, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "mv", "--", remoteTemp, path}}); err != nil {
 		return fmt.Errorf("replace pacman.conf: %w", err)
 	}
 	verified, err := os.ReadFile(path)
@@ -93,7 +93,7 @@ func (m Manager) EnableMultilib(ctx context.Context) error {
 }
 
 func (m Manager) FullUpgrade(ctx context.Context) error {
-	_, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"pacman", "-Syu"}, Interactive: true})
+	_, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "pacman", "-Syu"}, Interactive: true})
 	return err
 }
 
@@ -101,7 +101,7 @@ func (m Manager) Install(ctx context.Context, packages []string, asDeps bool) er
 	if len(packages) == 0 {
 		return nil
 	}
-	args := []string{"pacman", "-S", "--needed", "--noconfirm"}
+	args := []string{"-n", "pacman", "-S", "--needed", "--noconfirm"}
 	if asDeps {
 		args = append(args, "--asdeps")
 	}

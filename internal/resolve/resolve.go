@@ -23,13 +23,51 @@ type Resolver struct {
 func (r Resolver) Pacman(ctx context.Context, name string) (plan.Package, bool, error) {
 	result, err := r.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Si", "--", name}})
 	if err != nil {
-		return plan.Package{}, false, nil
+		message := strings.ToLower(result.Stderr)
+		if strings.Contains(message, "target not found") || strings.Contains(message, "was not found") {
+			return r.archPackage(ctx, name)
+		}
+		return plan.Package{}, false, err
 	}
 	fields := parsePacmanInfo(result.Stdout)
 	if fields["Name"] != name {
+		return r.archPackage(ctx, name)
+	}
+	return plan.Package{Name: name, Repository: fields["Repository"], Optional: splitPacmanList(fields["Optional Deps"]), Required: splitPacmanList(fields["Depends On"]), Conflicts: splitPacmanList(fields["Conflicts With"])}, true, nil
+}
+
+func (r Resolver) archPackage(ctx context.Context, name string) (plan.Package, bool, error) {
+	var response struct {
+		Valid   bool `json:"valid"`
+		Results []struct {
+			Name         string   `json:"pkgname"`
+			Repository   string   `json:"repo"`
+			Architecture string   `json:"arch"`
+			Depends      []string `json:"depends"`
+			Optional     []string `json:"optdepends"`
+			Conflicts    []string `json:"conflicts"`
+		} `json:"results"`
+	}
+	endpoint := "https://archlinux.org/packages/search/json/?name=" + url.QueryEscape(name) + "&arch=x86_64"
+	status, err := r.getJSON(ctx, endpoint, &response)
+	if err != nil {
+		return plan.Package{}, false, err
+	}
+	if status != http.StatusOK || !response.Valid {
 		return plan.Package{}, false, nil
 	}
-	return plan.Package{Name: name, Repository: fields["Repository"], Optional: splitPacmanList(fields["Optional Deps"]), Conflicts: splitPacmanList(fields["Conflicts With"])}, true, nil
+	for _, result := range response.Results {
+		if result.Name != name || (result.Architecture != "x86_64" && result.Architecture != "any") {
+			continue
+		}
+		switch result.Repository {
+		case "core", "extra", "multilib":
+		default:
+			continue
+		}
+		return plan.Package{Name: name, Repository: result.Repository, Required: result.Depends, Optional: result.Optional, Conflicts: result.Conflicts}, true, nil
+	}
+	return plan.Package{}, false, nil
 }
 
 func (r Resolver) AUR(ctx context.Context, name string) (plan.Package, bool, error) {
@@ -37,6 +75,7 @@ func (r Resolver) AUR(ctx context.Context, name string) (plan.Package, bool, err
 		ResultCount int `json:"resultcount"`
 		Results     []struct {
 			Name, PackageBase string
+			Depends           []string
 			OptDepends        []string
 			Conflicts         []string
 		} `json:"results"`
@@ -50,7 +89,7 @@ func (r Resolver) AUR(ctx context.Context, name string) (plan.Package, bool, err
 		return plan.Package{}, false, nil
 	}
 	p := response.Results[0]
-	return plan.Package{Name: p.Name, PackageBase: p.PackageBase, Optional: p.OptDepends, Conflicts: p.Conflicts}, true, nil
+	return plan.Package{Name: p.Name, PackageBase: p.PackageBase, Required: p.Depends, Optional: p.OptDepends, Conflicts: p.Conflicts}, true, nil
 }
 
 func (r Resolver) Flatpak(ctx context.Context, id string) (bool, error) {

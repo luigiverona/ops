@@ -17,11 +17,11 @@ func (m Manager) AddFlathub(ctx context.Context) error {
 }
 
 func (m Manager) Install(ctx context.Context, id string) error {
-	_, err := m.Runner.Run(ctx, run.Spec{Name: "flatpak", Args: []string{"install", "--user", "--noninteractive", "flathub", id}})
+	_, err := m.Runner.Run(ctx, run.Spec{Name: "flatpak", Args: []string{"install", "--user", "--noninteractive", "--", "flathub", id}})
 	return err
 }
 
 func (m Manager) Ready(ctx context.Context, id string) bool {
-	_, err := m.Runner.Run(ctx, run.Spec{Name: "flatpak", Args: []string{"info", "--user", id}})
+	_, err := m.Runner.Run(ctx, run.Spec{Name: "flatpak", Args: []string{"info", "--user", "--", id}})
 	return err == nil
 }

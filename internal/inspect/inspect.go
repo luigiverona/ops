@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/luigiverona/ops/internal/arch"
+	gitops "github.com/luigiverona/ops/internal/git"
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/run"
 	sshops "github.com/luigiverona/ops/internal/ssh"
@@ -55,6 +56,12 @@ func (w Workstation) State(ctx context.Context) (plan.State, error) {
 	}
 	if result, err := w.Runner.Run(ctx, run.Spec{Name: "git", Args: []string{"config", "--global", "--get", "user.email"}}); err == nil {
 		state.GitEmail = strings.TrimSpace(result.Stdout)
+	}
+	if !gitops.ValidName(state.GitName) {
+		state.GitName = ""
+	}
+	if !gitops.ValidEmail(state.GitEmail) {
+		state.GitEmail = ""
 	}
 	sshManager := sshops.Manager{Home: w.Home, Runner: w.Runner}
 	if identities, err := sshManager.Discover(ctx); err == nil {
