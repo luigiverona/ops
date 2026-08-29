@@ -28,7 +28,12 @@ case "$fingerprint" in
 esac
 [ "${#fingerprint}" -eq 40 ] || fail 'invalid signing fingerprint'
 
-shown=$(gpg --no-options --batch --no-tty --with-colons --show-keys "$key_file" 2>/dev/null) || fail 'invalid signing public key'
+shown=$(
+gpg_home=$(mktemp -d "${TMPDIR:-/tmp}/ops-render-gpg.XXXXXXXX") || exit 1
+trap 'rm -rf -- "$gpg_home"' 0 HUP INT TERM
+chmod 0700 "$gpg_home" || exit 1
+gpg --homedir "$gpg_home" --no-options --batch --no-tty --with-colons --show-keys "$key_file" 2>/dev/null
+) || fail 'invalid signing public key'
 printf '%s\n' "$shown" | awk -F: -v fingerprint="$fingerprint" '
     $1 == "sub" { active=($2 != "r" && $2 != "e" && tolower($12) ~ /s/); next }
     active && $1 == "fpr" && toupper($10) == fingerprint { found=1 }
