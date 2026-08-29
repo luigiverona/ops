@@ -2,13 +2,15 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  ci:
     runs-on: ubuntu-latest
     env:
       GOENV: off
@@ -30,4 +32,4 @@ jobs:
       - name: Build
         run: go build ./...
       - name: Validate installer syntax
-        run: sh -n script/install.sh script/prepare-release.sh
+        run: sh -n script/install.sh script/prepare-release.sh script/render-install.sh
