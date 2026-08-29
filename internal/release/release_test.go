@@ -2,6 +2,7 @@ package release
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -58,7 +59,10 @@ func TestUnconfiguredTrustFailsClosed(t *testing.T) {
 }
 
 func TestSignatureAndChecksumVerification(t *testing.T) {
-	trust, artifacts := signedArtifacts(t, "1.2.3")
+	untrustedHome := t.TempDir()
+	_ = os.WriteFile(filepath.Join(untrustedHome, "gpg.conf"), []byte("option-that-must-never-be-consumed\n"), 0o600)
+	t.Setenv("GNUPGHOME", untrustedHome)
+	trust, artifacts, signer := signedArtifacts(t, "1.2.3")
 	tests := []struct {
 		name    string
 		mutate  func(map[string][]byte)
@@ -68,7 +72,7 @@ func TestSignatureAndChecksumVerification(t *testing.T) {
 		{"invalid signature", func(a map[string][]byte) { a[SignatureName][0] ^= 0xff }, "signature verification failed"},
 		{"wrong checksum", func(a map[string][]byte) {
 			a[ChecksumsName] = []byte(strings.Repeat("0", 64) + "  " + BinaryName + "\n")
-			signArtifact(t, artifacts["homedir"], a)
+			signArtifact(t, signer, a, "")
 		}, "checksum verification failed"},
 	}
 	for _, test := range tests {
@@ -94,58 +98,208 @@ func TestSignatureAndChecksumVerification(t *testing.T) {
 	}
 }
 
-func signedArtifacts(t *testing.T, version string) (Trust, map[string][]byte) {
-	t.Helper()
-	for _, command := range []string{"gpg", "gpgv"} {
-		if _, err := exec.LookPath(command); err != nil {
-			t.Skip(command + " unavailable")
-		}
+func TestSignatureStatusRejectsUnsafeStates(t *testing.T) {
+	fingerprint := strings.Repeat("A", 40)
+	other := strings.Repeat("B", 40)
+	for name, test := range map[string]struct {
+		status string
+		err    error
+	}{
+		"valid current subkey": {"[GNUPG:] VALIDSIG " + fingerprint + " 0 0 0 0 0 0 0 0 0\n", nil},
+		"wrong signer":         {"[GNUPG:] VALIDSIG " + other + " 0 0 0 0 0 0 0 0 0\n", nil},
+		"revoked key":          {"[GNUPG:] REVKEYSIG key\n[GNUPG:] VALIDSIG " + fingerprint + " 0 0 0 0 0 0 0 0 0\n", nil},
+		"expired key":          {"[GNUPG:] EXPKEYSIG key\n[GNUPG:] VALIDSIG " + fingerprint + " 0 0 0 0 0 0 0 0 0\n", nil},
+		"expired signature":    {"[GNUPG:] EXPSIG key\n[GNUPG:] VALIDSIG " + fingerprint + " 0 0 0 0 0 0 0 0 0\n", nil},
+		"bad signature":        {"[GNUPG:] BADSIG key\n", errors.New("gpg failed")},
+		"process error":        {"[GNUPG:] VALIDSIG " + fingerprint + " 0 0 0 0 0 0 0 0 0\n", errors.New("gpg failed")},
+		"multiple signatures":  {"[GNUPG:] VALIDSIG " + fingerprint + "\n[GNUPG:] VALIDSIG " + fingerprint + "\n", nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := validateSignatureStatus(test.status, fingerprint, test.err)
+			if name == "valid current subkey" && err != nil {
+				t.Fatal(err)
+			}
+			if name != "valid current subkey" && err == nil {
+				t.Fatal("unsafe status was accepted")
+			}
+		})
 	}
+}
+
+func TestRealGPGRejectsWrongExpiredAndRevokedSigners(t *testing.T) {
+	requireGPG(t)
+	t.Run("wrong signer", func(t *testing.T) {
+		pinned := newSigner(t, "", "0")
+		wrong := newSigner(t, "", "0")
+		_, artifacts := artifactsForSigner(t, "1.2.3", wrong, "")
+		trust := Trust{Fingerprint: pinned.signing, PublicKey: pinned.public + "\n" + wrong.public}
+		assertVerificationFails(t, trust, artifacts, "key other than the pinned")
+	})
+	t.Run("expired signing subkey", func(t *testing.T) {
+		signer := newSigner(t, "20250101T000000", "1d")
+		trust, artifacts := artifactsForSigner(t, "1.2.3", signer, "20250101T010000")
+		assertVerificationFails(t, trust, artifacts, "expired")
+	})
+	t.Run("revoked signing key", func(t *testing.T) {
+		signer := newSigner(t, "", "0")
+		_, artifacts := artifactsForSigner(t, "1.2.3", signer, "")
+		revokeSigner(t, &signer)
+		trust := Trust{Fingerprint: signer.signing, PublicKey: signer.public}
+		assertVerificationFails(t, trust, artifacts, "revoked")
+	})
+}
+
+func assertVerificationFails(t *testing.T, trust Trust, artifacts map[string][]byte, want string) {
+	t.Helper()
+	server := artifactServer(artifacts)
+	defer server.Close()
+	client := Client{BaseURL: server.URL, Trust: trust, Runner: run.Exec{In: strings.NewReader(""), Out: io.Discard, Err: io.Discard}}
+	if verified, err := client.DownloadVerified(context.Background(), "1.2.3"); err == nil {
+		_ = verified.Close()
+		t.Fatal("unsafe signer was accepted")
+	} else if !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(want)) {
+		t.Fatalf("verification failed for the wrong reason: %v", err)
+	}
+}
+
+type testSigner struct {
+	home, primary, signing, public string
+}
+
+func requireGPG(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("gpg"); err != nil {
+		t.Skip("gpg unavailable")
+	}
+}
+
+func signedArtifacts(t *testing.T, version string) (Trust, map[string][]byte, testSigner) {
+	t.Helper()
+	requireGPG(t)
+	signer := newSigner(t, "", "0")
+	trust, artifacts := artifactsForSigner(t, version, signer, "")
+	return trust, artifacts, signer
+}
+
+func newSigner(t *testing.T, fakeTime, expiration string) testSigner {
+	t.Helper()
 	home := t.TempDir()
 	_ = os.Chmod(home, 0o700)
-	cmd := exec.Command("gpg", "--batch", "--homedir", home, "--passphrase", "", "--quick-generate-key", "ops release test <ops@example.invalid>", "ed25519", "sign", "0")
+	base := []string{"--homedir", home, "--no-options", "--batch", "--no-tty", "--pinentry-mode", "loopback", "--passphrase", ""}
+	if fakeTime != "" {
+		base = append(base, "--faked-system-time", fakeTime)
+	}
+	cmd := exec.Command("gpg", append(base, "--quick-generate-key", "ops release test <ops@example.invalid>", "ed25519", "cert", "0")...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("generate key: %v: %s", err, output)
 	}
-	list := exec.Command("gpg", "--batch", "--homedir", home, "--with-colons", "--list-keys")
+	list := exec.Command("gpg", "--homedir", home, "--no-options", "--batch", "--with-colons", "--list-keys")
 	output, err := list.Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var fingerprint string
-	for _, line := range strings.Split(string(output), "\n") {
-		fields := strings.Split(line, ":")
-		if len(fields) > 9 && fields[0] == "fpr" {
-			fingerprint = fields[9]
-			break
-		}
+	primary := firstFingerprint(string(output))
+	add := exec.Command("gpg", append(base, "--quick-add-key", primary, "ed25519", "sign", expiration)...)
+	if output, err := add.CombinedOutput(); err != nil {
+		t.Fatalf("add signing subkey: %v: %s", err, output)
 	}
-	export := exec.Command("gpg", "--batch", "--homedir", home, "--armor", "--export", fingerprint)
+	list = exec.Command("gpg", "--homedir", home, "--no-options", "--batch", "--with-colons", "--list-keys", primary)
+	output, err = list.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprints := allFingerprints(string(output))
+	if len(fingerprints) < 2 {
+		t.Fatal("generated key has no signing subkey")
+	}
+	export := exec.Command("gpg", "--homedir", home, "--no-options", "--batch", "--armor", "--export", primary)
 	public, err := export.Output()
 	if err != nil {
 		t.Fatal(err)
 	}
+	return testSigner{home: home, primary: primary, signing: fingerprints[1], public: string(public)}
+}
+
+func artifactsForSigner(t *testing.T, version string, signer testSigner, fakeTime string) (Trust, map[string][]byte) {
+	t.Helper()
 	binary := []byte("#!/bin/sh\nprintf 'ops " + version + "\\n'\n")
 	dir := t.TempDir()
 	binaryPath := filepath.Join(dir, BinaryName)
 	_ = os.WriteFile(binaryPath, binary, 0o755)
 	hash, _ := FileChecksum(binaryPath)
-	artifacts := map[string][]byte{BinaryName: binary, ChecksumsName: []byte(hash + "  " + BinaryName + "\n"), "homedir": []byte(home)}
-	signArtifact(t, []byte(home), artifacts)
-	return Trust{Fingerprint: fingerprint, PublicKey: string(public)}, artifacts
+	artifacts := map[string][]byte{BinaryName: binary, ChecksumsName: []byte(hash + "  " + BinaryName + "\n")}
+	signArtifact(t, signer, artifacts, fakeTime)
+	return Trust{Fingerprint: signer.signing, PublicKey: signer.public}, artifacts
 }
 
-func signArtifact(t *testing.T, home []byte, artifacts map[string][]byte) {
+func signArtifact(t *testing.T, signer testSigner, artifacts map[string][]byte, fakeTime string) {
 	t.Helper()
 	dir := t.TempDir()
 	manifest := filepath.Join(dir, ChecksumsName)
 	signature := filepath.Join(dir, SignatureName)
 	_ = os.WriteFile(manifest, artifacts[ChecksumsName], 0o600)
-	cmd := exec.Command("gpg", "--batch", "--homedir", string(home), "--detach-sign", "--output", signature, manifest)
+	args := []string{"--homedir", signer.home, "--no-options", "--batch", "--no-tty", "--pinentry-mode", "loopback", "--passphrase", ""}
+	if fakeTime != "" {
+		args = append(args, "--faked-system-time", fakeTime)
+	}
+	args = append(args, "--local-user", signer.signing+"!", "--detach-sign", "--output", signature, manifest)
+	cmd := exec.Command("gpg", args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("sign: %v: %s", err, output)
 	}
 	artifacts[SignatureName], _ = os.ReadFile(signature)
+}
+
+func firstFingerprint(output string) string {
+	values := allFingerprints(output)
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func allFingerprints(output string) []string {
+	var values []string
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) > 9 && fields[0] == "fpr" {
+			values = append(values, fields[9])
+		}
+	}
+	return values
+}
+
+func revokeSigner(t *testing.T, signer *testSigner) {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(signer.home, "openpgp-revocs.d", "*.rev"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("find revocation certificate: %v, %v", files, err)
+	}
+	data, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	start := strings.Index(text, ":-----BEGIN PGP PUBLIC KEY BLOCK-----")
+	if start < 0 {
+		t.Fatal("revocation certificate armor not found")
+	}
+	armor := strings.ReplaceAll(text[start:], "\n:", "\n")
+	armor = strings.TrimPrefix(armor, ":")
+	path := filepath.Join(t.TempDir(), "revoke.asc")
+	if err := os.WriteFile(path, []byte(armor), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("gpg", "--homedir", signer.home, "--no-options", "--batch", "--import", path)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("import revocation certificate: %v: %s", err, output)
+	}
+	export := exec.Command("gpg", "--homedir", signer.home, "--no-options", "--batch", "--armor", "--export", signer.primary)
+	public, err := export.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer.public = string(public)
 }
 
 func artifactServer(artifacts map[string][]byte) *httptest.Server {

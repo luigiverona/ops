@@ -17,11 +17,16 @@ permissions:
 jobs:
   candidate:
     runs-on: ubuntu-latest
+    env:
+      GOENV: off
+      GOTOOLCHAIN: local
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
         with:
-          go-version: '1.24.x'
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.7'
           cache: true
       - name: Determine version
         id: version
@@ -31,9 +36,14 @@ jobs:
         run: |
           version=${INPUT_VERSION:-${GITHUB_REF_NAME#v}}
           [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/v$version^{commit}")"
+          test "$(git describe --tags --exact-match HEAD)" = "v$version"
           printf 'value=%s\n' "$version" >> "$GITHUB_OUTPUT"
       - name: Validate source
         run: |
+          test "$(go env GOVERSION)" = go1.26.7
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          go mod verify
           test -z "$(gofmt -l .)"
           go vet ./...
           go test ./...
@@ -42,14 +52,14 @@ jobs:
           VERSION: ${{ steps.version.outputs.value }}
         run: |
           install -d dist
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=readonly -trimpath -buildvcs=true \
             -ldflags "-s -w -X github.com/luigiverona/ops/internal/version.Value=$VERSION" \
             -o dist/ops-linux-x86_64 ./cmd/ops
           test "$(dist/ops-linux-x86_64 --version)" = "ops $VERSION"
           cd dist
           sha256sum ops-linux-x86_64 > checksums.txt
       - name: Upload unsigned candidate for offline signing
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ops-${{ steps.version.outputs.value }}-unsigned
           path: |
@@ -57,4 +67,3 @@ jobs:
             dist/checksums.txt
             script/install.sh
           if-no-files-found: error
-

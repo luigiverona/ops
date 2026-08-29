@@ -83,6 +83,47 @@ func TestEnsureDefaultPreservesExisting(t *testing.T) {
 	}
 }
 
+func TestConfigurationPathsRejectSymlinksAndNonRegularFiles(t *testing.T) {
+	t.Run("ops directory symlink", func(t *testing.T) {
+		home := t.TempDir()
+		outside := t.TempDir()
+		_ = os.Mkdir(filepath.Join(home, ".config"), 0o700)
+		_ = os.Symlink(outside, filepath.Join(home, ".config", "ops"))
+		path := Path(home)
+		if _, err := EnsureDefault(path); err == nil {
+			t.Fatal("expected directory symlink rejection")
+		}
+		if _, err := os.Lstat(filepath.Join(outside, "apps.toml")); !os.IsNotExist(err) {
+			t.Fatal("configuration was created outside the expected directory")
+		}
+	})
+	t.Run("apps file symlink", func(t *testing.T) {
+		home := t.TempDir()
+		dir := filepath.Join(home, ".config", "ops")
+		_ = os.MkdirAll(dir, 0o700)
+		outside := filepath.Join(home, "outside")
+		_ = os.WriteFile(outside, []byte("keep"), 0o600)
+		_ = os.Symlink(outside, Path(home))
+		if _, err := EnsureDefault(Path(home)); err == nil {
+			t.Fatal("expected file symlink rejection")
+		}
+		if _, err := Load(Path(home)); err == nil {
+			t.Fatal("expected symlinked configuration load rejection")
+		}
+		data, _ := os.ReadFile(outside)
+		if string(data) != "keep" {
+			t.Fatal("symlink target was modified")
+		}
+	})
+	t.Run("apps path directory", func(t *testing.T) {
+		home := t.TempDir()
+		_ = os.MkdirAll(Path(home), 0o700)
+		if _, err := EnsureDefault(Path(home)); err == nil {
+			t.Fatal("expected non-regular file rejection")
+		}
+	})
+}
+
 func configWith(category, declaration string) string {
 	var b strings.Builder
 	b.WriteString("version=1\n[apps]\n")

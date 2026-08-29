@@ -36,7 +36,7 @@ printf '%s\n' 'The installer verifies a signed checksum manifest and binary befo
 os_id=$(awk -F= '$1 == "ID" { value=$2; gsub(/^"|"$/, "", value); print value; exit }' /etc/os-release)
 [ "$os_id" = arch ] || fail 'only official Arch Linux is supported; derivatives are not supported'
 
-for command in curl sha256sum gpg gpgv awk mktemp sudo install mv cp rm chmod; do
+for command in curl sha256sum gpg awk mktemp sudo install mv cp rm chmod mkdir; do
     command -v "$command" >/dev/null 2>&1 || fail "$command is required for verified installation"
 done
 [ -r /dev/tty ] && [ -w /dev/tty ] || fail 'interactive installation requires a usable terminal'
@@ -53,6 +53,9 @@ printf '%s\n' "$version" | awk -F. 'NF == 3 && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/ops-install.XXXXXXXX") || fail 'could not create a temporary directory'
 chmod 700 "$tmp"
+gpg_home=$tmp/gnupg
+mkdir "$gpg_home" || fail 'could not create an isolated GPG home'
+chmod 700 "$gpg_home"
 base=$release_base/$version
 curl -fsSL "$base/checksums.txt" -o "$tmp/checksums.txt" || fail 'could not download checksum manifest'
 curl -fsSL "$base/checksums.txt.sig" -o "$tmp/checksums.txt.sig" || fail 'could not download manifest signature'
@@ -62,11 +65,37 @@ cat > "$tmp/signing-key.asc" <<'OPS_SIGNING_KEY'
 @OPS_SIGNING_PUBLIC_KEY@
 OPS_SIGNING_KEY
 
-shown=$(gpg --batch --with-colons --show-keys "$tmp/signing-key.asc" 2>/dev/null) || fail 'embedded release signing key is invalid'
-printf '%s\n' "$shown" | awk -F: -v fingerprint="$fingerprint" '$1 == "fpr" && toupper($10) == fingerprint { found=1 } END { exit !found }' || fail 'release signing key fingerprint mismatch'
-GNUPGHOME=$tmp gpg --batch --no-default-keyring --keyring "$tmp/trustedkeys.gpg" --import "$tmp/signing-key.asc" >/dev/null 2>&1 || fail 'could not create isolated release keyring'
-signature_status=$(GNUPGHOME=$tmp gpgv --status-fd 1 --keyring "$tmp/trustedkeys.gpg" "$tmp/checksums.txt.sig" "$tmp/checksums.txt" 2>/dev/null) || fail 'release signature verification failed'
-printf '%s\n' "$signature_status" | awk -v fingerprint="$fingerprint" '$1 == "[GNUPG:]" && $2 == "VALIDSIG" && toupper($3) == fingerprint { found=1 } END { exit !found }' || fail 'release was not signed by the pinned release-signing key'
+shown=$(gpg --homedir "$gpg_home" --no-options --batch --no-tty --with-colons --show-keys "$tmp/signing-key.asc" 2>/dev/null) || fail 'embedded release signing key is invalid'
+printf '%s\n' "$shown" | awk -F: -v fingerprint="$fingerprint" '
+    $1 == "sub" { active=($2 != "r" && $2 != "e" && tolower($12) ~ /s/); next }
+    active && $1 == "fpr" && toupper($10) == fingerprint { found=1 }
+    $1 != "fpr" { active=0 }
+    END { exit !found }
+' || fail 'pinned release-signing subkey is absent, expired, revoked, or not signing-capable'
+gpg --homedir "$gpg_home" --no-options --batch --no-tty --status-fd 1 --import-options import-minimal --import "$tmp/signing-key.asc" >/dev/null 2>&1 || fail 'could not create isolated release keyring'
+signature_status=''
+if signature_status=$(gpg --homedir "$gpg_home" --no-options --batch --no-tty --status-fd 1 --trust-model always --no-auto-key-retrieve --verify "$tmp/checksums.txt.sig" "$tmp/checksums.txt" 2>/dev/null); then
+    signature_exit=0
+else
+    signature_exit=$?
+fi
+[ "$signature_exit" -eq 0 ] || fail 'release signature verification failed'
+printf '%s\n' "$signature_status" | awk -v fingerprint="$fingerprint" '
+    $1 != "[GNUPG:]" { next }
+    $2 == "VALIDSIG" {
+        total++
+        if (toupper($3) == fingerprint) valid++
+        else invalid=1
+    }
+    $2 == "REVKEYSIG" || $2 == "EXPKEYSIG" || $2 == "EXPSIG" ||
+    $2 == "BADSIG" || $2 == "ERRSIG" || $2 == "NO_PUBKEY" ||
+    $2 == "NODATA" || $2 == "BADARMOR" || $2 == "KEYEXPIRED" ||
+    $2 == "SIGEXPIRED" || $2 == "KEYREVOKED" || $2 == "FAILURE" ||
+    $2 == "ERROR" || $2 == "UNEXPECTED" { invalid=1 }
+    $2 != "VALIDSIG" && $2 != "NEWSIG" && $2 != "KEY_CONSIDERED" &&
+    $2 != "SIG_ID" && $2 != "GOODSIG" && $2 !~ /^TRUST_/ { invalid=1 }
+    END { exit !(valid == 1 && total == 1 && !invalid) }
+' || fail 'release signature status is invalid or does not match the pinned release-signing subkey'
 
 expected=$(awk '$2 == "ops-linux-x86_64" || $2 == "*ops-linux-x86_64" { count++; hash=tolower($1) } END { if (count == 1 && hash ~ /^[0-9a-f]{64}$/) print hash; else exit 1 }' "$tmp/checksums.txt") || fail 'signed checksum manifest is invalid'
 actual=$(sha256sum "$tmp/ops-linux-x86_64" | awk '{ print tolower($1) }')
@@ -118,7 +147,23 @@ sudo -n rm -f -- "$backup"
 
 config_dir=$HOME/.config/ops
 config=$config_dir/apps.toml
-mkdir -p "$config_dir"
+config_parent=$HOME/.config
+mkdir -p "$config_parent"
+if [ -L "$config_dir" ]; then
+    fail 'configuration directory ~/.config/ops is a symlink; refusing unsafe configuration creation'
+fi
+if [ -e "$config_dir" ] && [ ! -d "$config_dir" ]; then
+    fail 'configuration path ~/.config/ops is not a directory'
+fi
+if [ ! -d "$config_dir" ]; then
+    (umask 077; mkdir "$config_dir") || fail 'could not safely create configuration directory'
+fi
+if [ -L "$config" ]; then
+    fail 'configuration file ~/.config/ops/apps.toml is a symlink; refusing unsafe configuration creation'
+fi
+if [ -e "$config" ] && [ ! -f "$config" ]; then
+    fail 'configuration path ~/.config/ops/apps.toml is not a regular file'
+fi
 created=no
 if [ ! -e "$config" ] && [ ! -L "$config" ]; then
     if (umask 077; set -C; cat > "$config" <<'OPS_CONFIG'
