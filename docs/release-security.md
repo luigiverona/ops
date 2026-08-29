@@ -29,14 +29,28 @@ signed merely because a workflow uploaded them.
 ## Current bootstrap status
 
 ```text
-release signing fingerprint   not yet assigned
-embedded public key           not yet provisioned
+primary key fingerprint       62AC2C70AC1897C4E7E1A4E52F6B33C21650375C
+release signing fingerprint   EB564BFFD8F63A984BF72A0237A80EDB682BBBFD
+signing subkey expires        2027-08-29
+embedded public key           provisioned
+offline primary isolation     pending
 release hosting               not yet provisioned
 ```
 
-This is deliberately fail-closed. Go trust variables are empty and the
-installer contains explicit rendering markers. Neither accepts unsigned
-content. Releases must not be advertised until provisioning is complete.
+The reviewed public trust anchor lives in
+`internal/release/signing-fingerprint` and `internal/release/signing-key.asc`.
+Go embeds those files directly. `script/render-install.sh` renders the
+standalone installer from the same reviewed values and fails if template
+markers are missing, duplicated, or left unresolved.
+
+The primary-key home and release-signing home are separate. The release-signing
+home contains the usable signing-subkey secret but not the primary secret.
+Before the first production release, the primary secret and revocation material
+must be backed up to independent encrypted storage and the primary key isolated
+from the networked release workstation.
+
+Release hosting and the final end-to-end production path are not yet
+provisioned, so releases must not be advertised yet.
 
 ## Provisioning
 
@@ -85,7 +99,7 @@ private material or a passphrase:
 
 ```sh
 export OPS_SIGNING_FINGERPRINT=40_HEX_SIGNING_SUBKEY_FINGERPRINT
-export OPS_SIGNING_GNUPGHOME=/path/to/dedicated/offline/gnupg-home
+export OPS_SIGNING_GNUPGHOME=/path/to/dedicated/release-signing/gnupg-home
 script/prepare-release.sh 1.0.0 /path/to/extracted/ci/ops-linux-x86_64
 ```
 

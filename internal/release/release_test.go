@@ -51,9 +51,27 @@ func TestCompareVersions(t *testing.T) {
 	}
 }
 
-func TestUnconfiguredTrustFailsClosed(t *testing.T) {
-	client := Client{}
-	if _, err := client.DownloadVerified(context.Background(), "1.0.0"); err == nil || !strings.Contains(err.Error(), "trust is not configured") {
+func TestDefaultTrustProvisioned(t *testing.T) {
+	trust := DefaultTrust()
+
+	if trust.Fingerprint != "EB564BFFD8F63A984BF72A0237A80EDB682BBBFD" {
+		t.Fatalf("fingerprint = %q", trust.Fingerprint)
+	}
+	if !strings.Contains(trust.PublicKey, "-----BEGIN PGP PUBLIC KEY BLOCK-----") {
+		t.Fatal("embedded public key is missing")
+	}
+}
+
+func TestInvalidTrustFailsClosed(t *testing.T) {
+	client := Client{
+		Trust: Trust{
+			Fingerprint: "INVALID",
+			PublicKey:   "not a public key",
+		},
+	}
+
+	if _, err := client.DownloadVerified(context.Background(), "1.0.0"); err == nil ||
+		!strings.Contains(err.Error(), "release trust is not configured") {
 		t.Fatalf("error = %v", err)
 	}
 }
