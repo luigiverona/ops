@@ -3,18 +3,12 @@ name: Arch integration
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - '**.go'
-      - go.mod
-      - go.sum
-      - script/install.sh
-      - .github/workflows/arch.yml
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  arch-integration:
     runs-on: ubuntu-latest
     container: archlinux:latest
     env:
@@ -37,4 +31,4 @@ jobs:
       - name: Build Linux x86_64 binary
         run: go build ./cmd/ops
       - name: Validate installer syntax
-        run: sh -n script/install.sh script/prepare-release.sh
+        run: sh -n script/install.sh script/prepare-release.sh script/render-install.sh
