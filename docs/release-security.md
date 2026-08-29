@@ -34,7 +34,8 @@ release signing fingerprint   EB564BFFD8F63A984BF72A0237A80EDB682BBBFD
 signing subkey expires        2027-08-29
 embedded public key           provisioned
 offline primary isolation     pending
-release hosting               not yet provisioned
+release hosting               provisioned on Cloudflare R2
+production release            not yet published
 ```
 
 The reviewed public trust anchor lives in
@@ -47,10 +48,16 @@ The primary-key home and release-signing home are separate. The release-signing
 home contains the usable signing-subkey secret but not the primary secret.
 Before the first production release, the primary secret and revocation material
 must be backed up to independent encrypted storage and the primary key isolated
-from the networked release workstation.
+from the networked release workstation. Provisioned hosting does not relax this
+requirement, and no production release may be advertised until that isolation
+is complete.
 
-Release hosting and the final end-to-end production path are not yet
-provisioned, so releases must not be advertised yet.
+Release hosting uses the `ops-releases` Cloudflare R2 bucket and its public
+custom domain. Bucket-scoped Object Read & Write credentials and the S3 API
+endpoint exist only on the trusted release workstation. They must never be
+stored in this repository or provided to GitHub Actions. CI remains limited to
+building an unsigned candidate; production publication is always a local,
+trusted-workstation operation using the AWS CLI.
 
 ## Provisioning
 
@@ -93,6 +100,37 @@ fails before signing unless every precondition succeeds:
 10. In the dedicated signing GPG home, require the exact active signing subkey,
     sign only that final manifest, and verify the resulting status against the
     same exact fingerprint.
+11. From the same clean, exactly tagged checkout, run
+    `script/publish-release.sh VERSION`. Supply the R2 S3 endpoint through
+    `OPS_R2_ENDPOINT`; the AWS profile defaults to `ops-r2` and can be changed
+    with `OPS_R2_PROFILE`. Keep the bucket-scoped profile and endpoint in local
+    workstation configuration, never in the repository.
+12. The publication helper independently repeats embedded-key, exact signing
+    subkey, signature, signed checksum, and binary-version verification before
+    any upload. It copies the verified release into a private temporary
+    snapshot, verifies that snapshot again, and publishes only the snapshot. It
+    renders `/install` from the tagged source rather than accepting an
+    externally supplied installer.
+13. Versioned release objects are created with conditional `PutObject` and are
+    immutable. A retry accepts an existing object only when its bytes,
+    `Content-Type`, and immutable `Cache-Control` exactly match the locally
+    prepared artifact. Published immutable objects are not transactionally
+    deleted if a later step fails; rerunning the helper safely resumes them.
+14. Before any mutation, the helper reads authenticated R2 `releases/latest` as
+    the rollback authority, validates its bytes and mutable metadata, and
+    retains its ETag. The public HTTPS latest value must exactly agree with R2;
+    only matching absence is accepted as the first-release state. Malformed
+    state, access or network failures, disagreement, and semantic-version
+    downgrades fail closed. Publishing the same version is a safe retry.
+15. After immutable artifacts pass R2 and public HTTPS read-back, the helper
+    publishes and verifies `/install`. It updates `/releases/latest` last with
+    `If-None-Match` for an initially absent object or `If-Match` against the
+    previously observed ETag. A concurrent change fails instead of being
+    overwritten, and an earlier failure cannot advertise an incomplete release.
+16. A nonblocking local `flock` in the repository's Git directory prevents two
+    trusted-workstation publishers from interleaving `/install` and latest
+    updates. The kernel releases the lock on normal exit, failure, signals, and
+    crashes; the inert lock file does not represent stale ownership.
 
 The signing environment supplies only these runtime values; neither contains
 private material or a passphrase:
@@ -101,6 +139,10 @@ private material or a passphrase:
 export OPS_SIGNING_FINGERPRINT=40_HEX_SIGNING_SUBKEY_FINGERPRINT
 export OPS_SIGNING_GNUPGHOME=/path/to/dedicated/release-signing/gnupg-home
 script/prepare-release.sh 1.0.0 /path/to/extracted/ci/ops-linux-x86_64
+
+# Set OPS_R2_ENDPOINT in the trusted workstation environment from local
+# configuration. OPS_R2_PROFILE defaults to ops-r2.
+script/publish-release.sh 1.0.0
 ```
 
 Only the helper's final `dist/release-v1.0.0/` output is eligible for hosting.
