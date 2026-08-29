@@ -24,7 +24,7 @@ active. User-level work never uses sudo.
 
 ## Installation
 
-The canonical command, once signing and hosting are provisioned, is:
+The canonical command, once release hosting is provisioned, is:
 
 ```sh
 curl -fsSL https://ops.luigiverona.dev/install | sh
@@ -36,9 +36,12 @@ the GPG signature and binary SHA-256, asks through `/dev/tty`, and atomically
 installs `/usr/local/bin/ops`. It creates `~/.config/ops/apps.toml` only when
 absent.
 
-Release trust is intentionally not configured in this new repository. Until a
-real offline primary key and release-signing subkey are provisioned, installer
-and updater fail closed. See [Release security](docs/release-security.md).
+Release trust is provisioned with a reviewed embedded public key and the exact
+release-signing subkey fingerprint
+`EB564BFFD8F63A984BF72A0237A80EDB682BBBFD`. Installer and updater require that
+exact active signing subkey and fail closed on invalid trust or signatures.
+Release hosting is not yet provisioned. See
+[Release security](docs/release-security.md).
 
 ## Commands
 
@@ -182,7 +185,7 @@ gofmt -w ./cmd ./internal
 go vet ./...
 go test ./...
 go build ./...
-sh -n script/install.sh
+sh -n script/install.sh script/prepare-release.sh script/render-install.sh
 ```
 
 Tests use temporary homes and pacman fixtures, fake external commands/GitHub,

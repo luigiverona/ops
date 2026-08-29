@@ -27,11 +27,6 @@ const (
 	DefaultBase   = "https://ops.luigiverona.dev/releases"
 )
 
-// These are intentionally unconfigured until the project creates its offline
-// primary key and release-signing subkey. Release builds must set both.
-var SigningFingerprint = ""
-var SigningPublicKey = ""
-
 type Trust struct {
 	Fingerprint string
 	PublicKey   string
@@ -49,8 +44,6 @@ type Verified struct {
 	Binary  string
 	Dir     string
 }
-
-func DefaultTrust() Trust { return Trust{Fingerprint: SigningFingerprint, PublicKey: SigningPublicKey} }
 
 func (c Client) Latest(ctx context.Context) (string, error) {
 	base := strings.TrimRight(c.BaseURL, "/")
