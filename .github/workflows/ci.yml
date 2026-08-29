@@ -31,5 +31,5 @@ jobs:
         run: go test ./...
       - name: Build
         run: go build ./...
-      - name: Validate installer syntax
-        run: sh -n script/install.sh script/prepare-release.sh script/render-install.sh
+      - name: Validate shell syntax
+        run: sh -n script/install.sh script/prepare-release.sh script/render-install.sh script/publish-release.sh
