@@ -15,19 +15,39 @@ var CorePackages = map[string]string{
 
 var CoreOrder = []string{"git", "ssh", "github", "aur", "paru", "flatpak", "flathub"}
 
+// SSHHostKeyFreshness is the result of comparing recognized local host keys
+// with successfully validated authoritative metadata.
+type SSHHostKeyFreshness string
+
+const (
+	SSHHostKeyFreshnessUnknown     SSHHostKeyFreshness = "unknown"
+	SSHHostKeyFreshnessCurrent     SSHHostKeyFreshness = "current"
+	SSHHostKeyFreshnessStale       SSHHostKeyFreshness = "stale"
+	SSHHostKeyFreshnessUnavailable SSHHostKeyFreshness = "unavailable"
+)
+
 // State is discovered from real package and user configuration state.
 type State struct {
-	Installed       map[string]bool
-	Foreign         map[string]bool
-	Flatpaks        map[string]bool
-	Paru            bool
-	Flathub         bool
-	Multilib        bool
-	GitName         string
-	GitEmail        string
-	SSHReady        bool
-	GitHubAuth      bool
-	GitHubSSHAccess bool
+	Installed                   map[string]bool
+	Foreign                     map[string]bool
+	Flatpaks                    map[string]bool
+	Paru                        bool
+	Flathub                     bool
+	Multilib                    bool
+	GitName                     string
+	GitEmail                    string
+	ManagedSSHIdentity          bool
+	SSHConfigurationReady       bool // recognized, locally safe managed configuration
+	SSHHostKeyFreshness         SSHHostKeyFreshness
+	UnrelatedSSHIdentities      int
+	SSHAgentAvailable           bool
+	ManagedSSHAgentIdentity     bool
+	UnrelatedSSHAgentIdentities int
+	GitHubAuth                  bool
+	GitHubKeysKnown             bool // remote list retrieval succeeded
+	ManagedGitHubKeyKnown       bool // comparison was possible with a local fingerprint
+	ManagedGitHubKey            bool // the exact managed fingerprint was found
+	OtherGitHubKeys             int
 }
 
 // Package is remote metadata required to plan optional functionality and repositories.
@@ -64,16 +84,28 @@ type Dependency struct {
 
 // Plan is a complete, immutable plan presented before authorization.
 type Plan struct {
-	Core           map[string]string
-	Applications   []Application
-	CorePackages   []string
-	EnableMultilib bool
-	FullUpgrade    bool
-	BootstrapParu  bool
-	AddFlathub     bool
-	GitStatus      string
-	SSHStatus      string
-	GitHubStatus   string
+	Core                   map[string]string
+	Applications           []Application
+	CorePackages           []string
+	EnableMultilib         bool
+	FullUpgrade            bool
+	BootstrapParu          bool
+	AddFlathub             bool
+	GitStatus              string
+	SSHStatus              string
+	GitHubStatus           string
+	ConfigureGit           bool
+	CreateSSHIdentity      bool
+	ReviewSSHIdentities    bool
+	ReviewSSHAgent         bool
+	LoadSSHAgent           bool
+	ConfigureSSH           bool
+	AuthenticateGitHub     bool
+	ReviewGitHubKeys       bool
+	ConfigureGitHubKey     bool
+	GitHubKeyStateUnknown  bool
+	GitHubKeyAfterIdentity bool
+	SSHHostKeyFreshness    SSHHostKeyFreshness
 }
 
 // Build resolves only missing declarations and produces a deterministic plan.
@@ -92,9 +124,31 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 	}
 	p.BootstrapParu = !state.Paru
 	p.AddFlathub = !state.Flathub
-	p.GitStatus = pairStatus(state.GitName != "" && state.GitEmail != "")
-	p.SSHStatus = pairStatus(state.SSHReady)
-	p.GitHubStatus = pairStatus(state.GitHubAuth && state.GitHubSSHAccess)
+	p.ConfigureGit = state.GitName == "" || state.GitEmail == ""
+	p.CreateSSHIdentity = !state.ManagedSSHIdentity
+	p.SSHHostKeyFreshness = state.SSHHostKeyFreshness
+	if p.SSHHostKeyFreshness == "" {
+		p.SSHHostKeyFreshness = SSHHostKeyFreshnessUnknown
+	}
+	if state.SSHConfigurationReady && p.SSHHostKeyFreshness == SSHHostKeyFreshnessUnknown {
+		p.SSHHostKeyFreshness = SSHHostKeyFreshnessUnavailable
+	}
+	p.ConfigureSSH = !state.SSHConfigurationReady || p.SSHHostKeyFreshness == SSHHostKeyFreshnessStale
+	sshSetupRequired := p.CreateSSHIdentity || !state.SSHConfigurationReady
+	p.ReviewSSHIdentities = sshSetupRequired && state.UnrelatedSSHIdentities > 0
+	p.ReviewSSHAgent = sshSetupRequired && state.SSHAgentAvailable && state.UnrelatedSSHAgentIdentities > 0
+	p.LoadSSHAgent = sshSetupRequired && state.SSHAgentAvailable && !state.ManagedSSHAgentIdentity
+	p.AuthenticateGitHub = !state.GitHubAuth
+	p.GitHubKeyStateUnknown = !state.GitHubAuth || !state.GitHubKeysKnown || !state.ManagedGitHubKeyKnown
+	p.GitHubKeyAfterIdentity = !state.ManagedSSHIdentity
+	p.ConfigureGitHubKey = p.GitHubKeyStateUnknown || !state.ManagedGitHubKey
+	p.ReviewGitHubKeys = p.GitHubKeyStateUnknown || (p.ConfigureGitHubKey && state.OtherGitHubKeys > 0)
+	p.GitStatus = pairStatus(!p.ConfigureGit)
+	p.SSHStatus = pairStatus(!p.CreateSSHIdentity && !p.ReviewSSHIdentities && !p.ReviewSSHAgent && !p.LoadSSHAgent && !p.ConfigureSSH)
+	if state.SSHConfigurationReady && p.SSHHostKeyFreshness == SSHHostKeyFreshnessUnavailable {
+		p.SSHStatus = "unavailable"
+	}
+	p.GitHubStatus = pairStatus(!p.AuthenticateGitHub && !p.ReviewGitHubKeys && !p.ConfigureGitHubKey)
 
 	for _, declaration := range cfg.Applications {
 		app := Application{Declaration: declaration}
@@ -152,8 +206,45 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 
 	p.EnableMultilib = p.EnableMultilib && !state.Multilib
 	p.CorePackages = uniqueSorted(p.CorePackages)
+	deduplicateApplicationActions(&p)
 	p.FullUpgrade = len(p.CorePackages) > 0 || p.BootstrapParu || hasPackageInstall(p.Applications)
 	return p, nil
+}
+
+func deduplicateApplicationActions(p *Plan) {
+	representedInstalls := make(map[string]bool)
+	for _, pkg := range p.CorePackages {
+		representedInstalls["pacman\x00"+pkg] = true
+	}
+	for _, application := range p.Applications {
+		if application.State == "install" {
+			representedInstalls[application.Declaration.Source+"\x00"+application.Declaration.Identifier] = true
+		}
+	}
+	seenDependencies := make(map[string]bool)
+	seenServices := make(map[string]bool)
+	for i := range p.Applications {
+		dependencies := p.Applications[i].Dependencies[:0]
+		for _, dependency := range p.Applications[i].Dependencies {
+			key := dependency.Source + "\x00" + dependency.Identifier
+			if representedInstalls[key] || seenDependencies[key] {
+				continue
+			}
+			seenDependencies[key] = true
+			dependencies = append(dependencies, dependency)
+		}
+		p.Applications[i].Dependencies = dependencies
+
+		services := p.Applications[i].Services[:0]
+		for _, service := range p.Applications[i].Services {
+			if seenServices[service] {
+				continue
+			}
+			seenServices[service] = true
+			services = append(services, service)
+		}
+		p.Applications[i].Services = services
+	}
 }
 
 func coreState(component string, state State) string {

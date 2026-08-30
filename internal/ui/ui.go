@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -13,6 +14,57 @@ import (
 type UI struct {
 	In  io.Reader
 	Out io.Writer
+}
+
+// TableRow is one plain-text presentation row with distinct value columns.
+type TableRow struct {
+	Item   string
+	Action string
+	Detail string
+}
+
+// RenderTable aligns rows from their actual content and never emits terminal controls.
+func RenderTable(rows []TableRow) string {
+	rows = append([]TableRow(nil), rows...)
+	for i := range rows {
+		rows[i].Item = printableASCII(rows[i].Item)
+		rows[i].Action = printableASCII(rows[i].Action)
+		rows[i].Detail = printableASCII(rows[i].Detail)
+	}
+	itemWidth, actionWidth := 0, 0
+	for _, row := range rows {
+		itemWidth = max(itemWidth, len(row.Item))
+		actionWidth = max(actionWidth, len(row.Action))
+	}
+	var b strings.Builder
+	for _, row := range rows {
+		b.WriteString("  ")
+		b.WriteString(row.Item)
+		if row.Action != "" || row.Detail != "" {
+			b.WriteString(strings.Repeat(" ", itemWidth-len(row.Item)+2))
+			if row.Action != "" {
+				b.WriteString(row.Action)
+			}
+		}
+		if row.Detail != "" {
+			b.WriteString(strings.Repeat(" ", actionWidth-len(row.Action)+2))
+			b.WriteString(row.Detail)
+		}
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func printableASCII(value string) string {
+	var b strings.Builder
+	for _, r := range value {
+		if r >= 0x20 && r <= 0x7e {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteString(strings.Trim(strconv.QuoteToASCII(string(r)), `"`))
+	}
+	return b.String()
 }
 
 // OpenTTY opens the controlling terminal for interactive preparation.

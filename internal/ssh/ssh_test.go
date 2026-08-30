@@ -119,6 +119,12 @@ type configRunner struct {
 	extraIdentity string
 }
 
+type metadataTransport func(*http.Request) (*http.Response, error)
+
+func (f metadataTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
 func (f configRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
 	if spec.Name == "ssh" && len(spec.Args) > 0 && spec.Args[0] == "-G" {
 		output := "host github.com\nuser git\nhostname github.com\nidentitiesonly yes\nstricthostkeychecking true\nidentityfile " + filepath.Join(f.home, ".ssh", "ops") + "\n"
@@ -166,6 +172,156 @@ func TestConfigureGitHubPreservesConfigAndIsIdempotent(t *testing.T) {
 	}
 	if !m.GitHubConfigured(context.Background()) {
 		t.Fatal("fresh GitHub SSH configuration was not recognized")
+	}
+	status, err := m.InspectGitHubConfiguration(context.Background())
+	if err != nil || !status.LocalReady || status.Freshness != HostKeyFreshnessCurrent {
+		t.Fatalf("fresh GitHub SSH configuration status=%#v, %v", status, err)
+	}
+}
+
+func TestInspectGitHubConfigurationReportsStaleOfficialHostKeys(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".ssh")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	m := managerWithMetadata(t, home)
+	if err := m.ConfigureGitHub(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stale := renderKnownHosts([]string{testHostKey("ssh-ed25519", 9)})
+	if err := os.WriteFile(filepath.Join(dir, "ops_known_hosts"), stale, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !m.GitHubConfigured(context.Background()) {
+		t.Fatal("structurally valid stale host keys were not suitable for the freshness test")
+	}
+	status, err := m.InspectGitHubConfiguration(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.LocalReady || status.Freshness != HostKeyFreshnessStale {
+		t.Fatalf("stale GitHub host keys status=%#v", status)
+	}
+}
+
+func TestInspectGitHubConfigurationSeparatesUnavailableMetadata(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".ssh")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	m := managerWithMetadata(t, home)
+	if err := m.ConfigureGitHub(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("transport", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		client, endpoint := server.Client(), server.URL
+		server.Close()
+		check := m
+		check.HTTP, check.MetadataURL = client, endpoint
+		status, err := check.InspectGitHubConfiguration(context.Background())
+		if err != nil || !status.LocalReady || status.Freshness != HostKeyFreshnessUnavailable {
+			t.Fatalf("transport status=%#v err=%v", status, err)
+		}
+	})
+
+	t.Run("service", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "temporary", http.StatusServiceUnavailable)
+		}))
+		defer server.Close()
+		check := m
+		check.HTTP, check.MetadataURL = server.Client(), server.URL
+		status, err := check.InspectGitHubConfiguration(context.Background())
+		if err != nil || !status.LocalReady || status.Freshness != HostKeyFreshnessUnavailable {
+			t.Fatalf("service status=%#v err=%v", status, err)
+		}
+	})
+
+	t.Run("timeout", func(t *testing.T) {
+		check := m
+		check.HTTP = &http.Client{Transport: metadataTransport(func(*http.Request) (*http.Response, error) {
+			return nil, context.DeadlineExceeded
+		})}
+		check.MetadataURL = "https://metadata.invalid/test"
+		status, err := check.InspectGitHubConfiguration(context.Background())
+		if err != nil || !status.LocalReady || status.Freshness != HostKeyFreshnessUnavailable {
+			t.Fatalf("timeout status=%#v err=%v", status, err)
+		}
+	})
+}
+
+func TestInspectGitHubConfigurationRejectsMalformedAuthoritativeMetadata(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".ssh")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	m := managerWithMetadata(t, home)
+	if err := m.ConfigureGitHub(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"ssh_keys":["ssh-ed25519 not-base64"]}`)
+	}))
+	defer server.Close()
+	m.HTTP, m.MetadataURL = server.Client(), server.URL
+	if _, err := m.InspectGitHubConfiguration(context.Background()); err == nil {
+		t.Fatal("malformed authoritative metadata was treated as unavailable")
+	}
+}
+
+func TestConfigureGitHubDoesNotRefreshWithoutCurrentMetadata(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".ssh")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	m := managerWithMetadata(t, home)
+	if err := m.ConfigureGitHub(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stale := renderKnownHosts([]string{testHostKey("ssh-ed25519", 9)})
+	knownHostsPath := filepath.Join(dir, "ops_known_hosts")
+	if err := os.WriteFile(knownHostsPath, stale, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "temporary", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	m.HTTP, m.MetadataURL = server.Client(), server.URL
+	if err := m.ConfigureGitHub(context.Background()); err == nil {
+		t.Fatal("host-key refresh succeeded without current metadata")
+	}
+	after, err := os.ReadFile(knownHostsPath)
+	if err != nil || string(after) != string(stale) {
+		t.Fatal("unavailable refresh altered existing managed host keys")
+	}
+}
+
+func TestInspectGitHubConfigurationDoesNotFetchForUnrecognizedLocalState(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".ssh")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ops_config"), []byte("unowned\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		http.Error(w, "unexpected", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	m := Manager{Home: home, Runner: configRunner{home: home}, HTTP: server.Client(), MetadataURL: server.URL}
+	status, err := m.InspectGitHubConfiguration(context.Background())
+	if err != nil || status.LocalReady || status.Freshness != HostKeyFreshnessUnknown || requests != 0 {
+		t.Fatalf("unsafe local status=%#v err=%v requests=%d", status, err, requests)
 	}
 }
 

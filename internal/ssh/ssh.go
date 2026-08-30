@@ -314,6 +314,44 @@ func (m Manager) GitHubConfigured(ctx context.Context) bool {
 	return effectiveGitHubConfig(result.Stdout, m.Home)
 }
 
+// HostKeyFreshness records whether recognized managed host keys match current
+// authoritative metadata without conflating an unavailable check with staleness.
+type HostKeyFreshness string
+
+const (
+	HostKeyFreshnessUnknown     HostKeyFreshness = "unknown"
+	HostKeyFreshnessCurrent     HostKeyFreshness = "current"
+	HostKeyFreshnessStale       HostKeyFreshness = "stale"
+	HostKeyFreshnessUnavailable HostKeyFreshness = "unavailable"
+)
+
+// GitHubConfigurationStatus separates local configuration safety from remote
+// host-key freshness. LocalReady is false when managed files are not recognized.
+type GitHubConfigurationStatus struct {
+	LocalReady bool
+	Freshness  HostKeyFreshness
+}
+
+// InspectGitHubConfiguration performs read-only local verification and, only
+// for recognized configuration, compares host keys with official metadata.
+func (m Manager) InspectGitHubConfiguration(ctx context.Context) (GitHubConfigurationStatus, error) {
+	if !m.GitHubConfigured(ctx) {
+		return GitHubConfigurationStatus{Freshness: HostKeyFreshnessUnknown}, nil
+	}
+	hostKeys, err := m.fetchGitHubHostKeys(ctx)
+	if err != nil {
+		if metadataUnavailable(err) {
+			return GitHubConfigurationStatus{LocalReady: true, Freshness: HostKeyFreshnessUnavailable}, nil
+		}
+		return GitHubConfigurationStatus{}, err
+	}
+	freshness := HostKeyFreshnessStale
+	if recognizedExactFile(filepath.Join(m.dir(), "ops_known_hosts"), renderKnownHosts(hostKeys)) {
+		freshness = HostKeyFreshnessCurrent
+	}
+	return GitHubConfigurationStatus{LocalReady: true, Freshness: freshness}, nil
+}
+
 // PublicFingerprint validates a single public-key line and returns its OpenSSH SHA256 fingerprint.
 func PublicFingerprint(line string) (string, error) {
 	fields := strings.Fields(line)
