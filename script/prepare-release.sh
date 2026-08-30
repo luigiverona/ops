@@ -31,6 +31,20 @@ tag_commit=$(git rev-parse --verify "refs/tags/$tag^{commit}" 2>/dev/null) || fa
 [ "$head" = "$tag_commit" ] || fail "$tag does not identify the current commit"
 [ "$(git describe --tags --exact-match HEAD 2>/dev/null)" = "$tag" ] || fail "HEAD is not exactly tagged $tag"
 
+fingerprint_file=internal/release/signing-fingerprint
+[ -f "$fingerprint_file" ] && [ ! -L "$fingerprint_file" ] || fail 'repository signing fingerprint is not a safe regular file'
+fingerprint=$(awk '
+    NR == 1 && length($0) == 40 && $0 !~ /[^0-9A-F]/ {
+        value=$0
+        next
+    }
+    { invalid=1 }
+    END {
+        if (NR == 1 && !invalid) print value
+        else exit 1
+    }
+' "$fingerprint_file") || fail 'repository signing fingerprint must contain exactly one uppercase 40-hex fingerprint'
+
 export GOENV=off
 export GOTOOLCHAIN=local
 unset GOFLAGS GOOS GOARCH CGO_ENABLED
@@ -83,12 +97,7 @@ fi
 (cd "$stage" && sha256sum ops-linux-x86_64 > checksums.txt) || fail 'could not create final checksum manifest'
 [ -z "$(git status --porcelain=v1 --untracked-files=all)" ] || fail 'repository changed during release preparation'
 
-fingerprint=${OPS_SIGNING_FINGERPRINT:-}
 signing_home=${OPS_SIGNING_GNUPGHOME:-}
-case "$fingerprint" in
-    ''|*[!0-9A-F]*) fail 'OPS_SIGNING_FINGERPRINT must be the 40-hex uppercase signing-subkey fingerprint' ;;
-esac
-[ "${#fingerprint}" -eq 40 ] || fail 'OPS_SIGNING_FINGERPRINT must be the 40-hex uppercase signing-subkey fingerprint'
 [ -n "$signing_home" ] && [ -d "$signing_home" ] && [ ! -L "$signing_home" ] || fail 'OPS_SIGNING_GNUPGHOME must be a safe dedicated signing home'
 
 secret=$(gpg --homedir "$signing_home" --no-options --batch --no-tty --with-colons --list-secret-keys "$fingerprint!" 2>/dev/null) || fail 'pinned release-signing subkey is unavailable'
