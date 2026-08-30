@@ -132,14 +132,19 @@ are reviewed individually. Deletion shows exact files and requires a second
 confirmation defaulting to no.
 
 Agent identities are separate from local files; unloading never deletes files.
-An isolated, marked `~/.ssh/ops_config` and first-match Include make
-`github.com` use `~/.ssh/ops` with `IdentitiesOnly yes` after reboot. Ops obtains
-GitHub's current public SSH host keys from GitHub's official HTTPS metadata,
-validates them, and atomically maintains marked `~/.ssh/ops_known_hosts` with
+An isolated, marked `~/.ssh/ops_config` makes `github.com` use only
+`~/.ssh/ops` with `IdentitiesOnly yes` after reboot. Because OpenSSH
+`IdentityFile` directives are additive, a marked dispatcher in `~/.ssh/config`
+excludes the byte-for-byte preserved `~/.ssh/ops_user_config` only for
+`github.com` and includes it for every other host. The preserved file remains
+the user's configuration; ops owns only its marked dispatcher and isolated
+managed files. Ops obtains GitHub's current public SSH host keys from GitHub's
+official HTTPS metadata, validates them, and atomically maintains marked
+`~/.ssh/ops_known_hosts` with
 `StrictHostKeyChecking yes`. The user's ordinary `known_hosts` is preserved and
 is not required. Existing unmarked ops-specific files and unsafe symlinks are
-refused rather than overwritten. Effective configuration is verified with
-`ssh -G`.
+refused rather than overwritten. Effective configuration is structurally
+verified with `ssh -G`.
 
 Authentication is delegated to `gh auth login --git-protocol ssh
 --skip-ssh-key`; ops never stores tokens. Existing GitHub keys are reviewed one
