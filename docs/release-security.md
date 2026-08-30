@@ -20,22 +20,22 @@ or error signature states, missing status, multiple signatures, and wrong
 signers are rejected. A checksum is considered only after this signature
 decision succeeds; there is no checksum-only fallback.
 
-The intended hierarchy is an offline primary key and dedicated release-signing
+The trust hierarchy uses an offline primary key and dedicated release-signing
 subkey. Private material must never be committed or placed in general CI.
 CI builds unsigned candidates for independent validation. CI is not a
 production-artifact trust root, and arbitrary CI-produced bytes must never be
 signed merely because a workflow uploaded them.
 
-## Current bootstrap status
+## Release security state
 
 ```text
 primary key fingerprint       62AC2C70AC1897C4E7E1A4E52F6B33C21650375C
 release signing fingerprint   EB564BFFD8F63A984BF72A0237A80EDB682BBBFD
 signing subkey expires        2027-08-29
 embedded public key           provisioned
-offline primary isolation     pending
+offline primary isolation     completed and verified
+networked secret material     release-signing subkey only
 release hosting               provisioned on Cloudflare R2
-production release            not yet published
 ```
 
 The reviewed public trust anchor lives in
@@ -44,13 +44,14 @@ Go embeds those files directly. `script/render-install.sh` renders the
 standalone installer from the same reviewed values and fails if template
 markers are missing, duplicated, or left unresolved.
 
-The primary-key home and release-signing home are separate. The release-signing
-home contains the usable signing-subkey secret but not the primary secret.
-Before the first production release, the primary secret and revocation material
-must be backed up to independent encrypted storage and the primary key isolated
-from the networked release workstation. Provisioned hosting does not relax this
-requirement, and no production release may be advertised until that isolation
-is complete.
+Before v1.0.0 release preparation, the primary secret and revocation material
+were backed up to independent encrypted offline storage. Backup readability and
+restoration were verified, including the exact primary fingerprint and primary
+secret recoverability, and the offline medium was disconnected. The networked
+workstation retains only the release-signing subkey secret in its dedicated
+signing home; the primary secret is not available there or in the default GPG
+home. This operational isolation does not claim secure erasure of historical
+blocks on previously used SSD storage.
 
 Release hosting uses the `ops-releases` Cloudflare R2 bucket and its public
 custom domain. Bucket-scoped Object Read & Write credentials and the S3 API
@@ -97,9 +98,10 @@ fails before signing unless every precondition succeeds:
    signing. The independent binary remains authoritative.
 8. Generate the final checksum manifest locally from the independent binary.
 9. Recheck that the repository did not change during preparation.
-10. In the dedicated signing GPG home, require the exact active signing subkey,
-    sign only that final manifest, and verify the resulting status against the
-    same exact fingerprint.
+10. Read the exact signing fingerprint from the reviewed repository trust file.
+    In the dedicated signing GPG home, require that exact active signing subkey,
+    sign only the final manifest, and verify the resulting status against the
+    same repository fingerprint.
 11. From the same clean, exactly tagged checkout, run
     `script/publish-release.sh VERSION`. Supply the R2 S3 endpoint through
     `OPS_R2_ENDPOINT`; the AWS profile defaults to `ops-r2` and can be changed
@@ -132,11 +134,11 @@ fails before signing unless every precondition succeeds:
     updates. The kernel releases the lock on normal exit, failure, signals, and
     crashes; the inert lock file does not represent stale ownership.
 
-The signing environment supplies only these runtime values; neither contains
-private material or a passphrase:
+The signing environment supplies the dedicated signing home as its only runtime
+configuration value. That value is a filesystem path, not private material or a
+passphrase:
 
 ```sh
-export OPS_SIGNING_FINGERPRINT=40_HEX_SIGNING_SUBKEY_FINGERPRINT
 export OPS_SIGNING_GNUPGHOME=/path/to/dedicated/release-signing/gnupg-home
 script/prepare-release.sh 1.0.0 /path/to/extracted/ci/ops-linux-x86_64
 

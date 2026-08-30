@@ -24,7 +24,7 @@ active. User-level work never uses sudo.
 
 ## Installation
 
-The canonical command, once release hosting is provisioned, is:
+The canonical install command is:
 
 ```sh
 curl -fsSL https://ops.luigiverona.dev/install | sh
@@ -40,8 +40,9 @@ Release trust is provisioned with a reviewed embedded public key and the exact
 release-signing subkey fingerprint
 `EB564BFFD8F63A984BF72A0237A80EDB682BBBFD`. Installer and updater require that
 exact active signing subkey and fail closed on invalid trust or signatures.
-Release hosting is not yet provisioned. See
-[Release security](docs/release-security.md).
+Release hosting is provisioned at `https://ops.luigiverona.dev`. See
+[Release security](docs/release-security.md) for the signing and publication
+model.
 
 ## Commands
 
@@ -185,7 +186,7 @@ gofmt -w ./cmd ./internal
 go vet ./...
 go test ./...
 go build ./...
-sh -n script/install.sh script/prepare-release.sh script/render-install.sh
+sh -n script/install.sh script/prepare-release.sh script/render-install.sh script/publish-release.sh
 ```
 
 Tests use temporary homes and pacman fixtures, fake external commands/GitHub,
