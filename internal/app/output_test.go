@@ -18,7 +18,7 @@ func TestShowPlanRealV100Workstation(t *testing.T) {
 	Runtime{Out: &output}.showPlan(p)
 	want := "Plan\n" +
 		"\nSystem\n" +
-		"  full system upgrade  upgrade  pacman\n" +
+		"  full system upgrade  upgrade  pacman; confirm transaction in pacman\n" +
 		"\nCore\n" +
 		"  paru  install  AUR bootstrap; review required\n" +
 		"\nApplications\n" +
@@ -126,7 +126,7 @@ func TestShowPlanRendersDependenciesAndServicesWithOwners(t *testing.T) {
 	var output bytes.Buffer
 	Runtime{Out: &output}.showPlan(p)
 	want := "Plan\n\nSystem\n" +
-		"  full system upgrade  upgrade  pacman\n" +
+		"  full system upgrade  upgrade  pacman; confirm transaction in pacman\n" +
 		"\nApplications\n" +
 		"  mullvad-vpn -> aaa-helper              install  pacman\n" +
 		"  mullvad-vpn -> libfoo                  install  pacman\n" +
@@ -181,6 +181,21 @@ func TestShowPlanIsDeterministic(t *testing.T) {
 	Runtime{Out: &secondOutput}.showPlan(second)
 	if firstOutput.String() != secondOutput.String() {
 		t.Fatalf("map or input order changed output\n--- first ---\n%s--- second ---\n%s", firstOutput.String(), secondOutput.String())
+	}
+}
+
+func TestShowPlanPacmanTransactionBoundaryOnlyForFullUpgrade(t *testing.T) {
+	withUpgrade := plan.Plan{FullUpgrade: true}
+	withoutUpgrade := plan.Plan{CorePackages: []string{"git"}}
+	var withOutput, withoutOutput bytes.Buffer
+	Runtime{Out: &withOutput}.showPlan(withUpgrade)
+	Runtime{Out: &withoutOutput}.showPlan(withoutUpgrade)
+
+	if !strings.Contains(withOutput.String(), "full system upgrade  upgrade  pacman; confirm transaction in pacman") {
+		t.Fatalf("missing pacman transaction boundary:\n%s", withOutput.String())
+	}
+	if strings.Contains(withoutOutput.String(), "confirm transaction in pacman") {
+		t.Fatalf("pacman transaction boundary leaked into a non-upgrade plan:\n%s", withoutOutput.String())
 	}
 }
 

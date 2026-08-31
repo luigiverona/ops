@@ -244,7 +244,7 @@ func TestPreparePlanDeterministicParuBootstrap(t *testing.T) {
 		}
 	}
 	wantProgress := []string{
-		"full system upgrade|upgrade|pacman",
+		"full system upgrade|upgrade|pacman; confirm transaction in pacman",
 		"paru -> base-devel|install|pacman; build dependency",
 		"paru -> llvm-libs|install|pacman; build dependency",
 		"paru -> rust|install|pacman; provides cargo; build dependency",

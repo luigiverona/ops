@@ -67,7 +67,7 @@ example:
 Plan
 
 System
-  full system upgrade  upgrade  pacman
+  full system upgrade  upgrade  pacman; confirm transaction in pacman
 
 Core
   paru  install  AUR bootstrap; review required
@@ -90,10 +90,18 @@ Unchanged
 Prepare this workstation? [Y/n]
 ```
 
+Preparation generally follows inspect -> plan -> confirm -> mutate -> verify.
 After confirmation, `Progress` records identify each operation owned by ops.
-That single plan confirmation authorizes deterministic listed actions; prompts
-that remain collect required values, drive external authentication/passphrase
-flows, or make explicit security review and deletion decisions.
+That single plan confirmation authorizes deterministic listed actions; AUR package
+review remains intentionally separate, as do prompts that collect required values,
+drive external authentication/passphrase flows, or make explicit security review
+and deletion decisions.
+
+For v1.0.1, a full `pacman -Syu` is also intentionally interactive. After the ops
+plan is approved, Pacman presents and owns the final system transaction review and
+confirmation. ops does not use `--noconfirm` or automate Pacman prompts, because
+Pacman can make package replacement, provider-selection, or key-import decisions
+that ops cannot yet represent safely before confirmation.
 Noninteractive subprocess output is captured and included in actionable errors.
 Programs that require package review, upstream decisions, passwords,
 passphrases, or account authentication retain their interactive terminal

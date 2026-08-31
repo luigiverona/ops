@@ -41,6 +41,8 @@ const (
 	actionEnable       = "enable"
 	actionAuthenticate = "authenticate"
 	actionReview       = "review"
+
+	fullUpgradeDetail = "pacman; confirm transaction in pacman"
 )
 
 // Runtime holds process-scoped dependencies.
@@ -119,7 +121,7 @@ func (a Runtime) preparePlan(ctx context.Context, p plan.Plan, terminal ui.UI) i
 		}
 	}
 	if p.FullUpgrade {
-		a.showProgress("full system upgrade", actionUpgrade, "pacman")
+		a.showProgress("full system upgrade", actionUpgrade, fullUpgradeDetail)
 		if err := archManager.FullUpgrade(ctx); err != nil {
 			return a.coreFatal("Arch system upgrade", err, "package installation cannot continue safely")
 		}
@@ -793,7 +795,7 @@ func planSections(p plan.Plan) []outputSection {
 		systemRows = append(systemRows, ui.TableRow{Item: "multilib", Action: actionEnable, Detail: "pacman repository"})
 	}
 	if p.FullUpgrade {
-		systemRows = append(systemRows, ui.TableRow{Item: "full system upgrade", Action: actionUpgrade, Detail: "pacman"})
+		systemRows = append(systemRows, ui.TableRow{Item: "full system upgrade", Action: actionUpgrade, Detail: fullUpgradeDetail})
 	}
 	if len(systemRows) > 0 {
 		sections = append(sections, outputSection{Name: "System", Rows: systemRows})

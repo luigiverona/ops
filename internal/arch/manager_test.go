@@ -51,7 +51,10 @@ func TestPacmanCommandsNeverCreatePartialUpgrade(t *testing.T) {
 	}
 	first := strings.Join(f.calls[0].Args, " ")
 	second := strings.Join(f.calls[1].Args, " ")
-	if !strings.Contains(first, "pacman -Syu") || strings.Contains(first, "pacman -Sy ") {
+	if f.calls[0].Name != "sudo" || !f.calls[0].Interactive || first != "-n pacman -Syu" {
+		t.Fatalf("full upgrade changed from its interactive command shape: %#v", f.calls[0])
+	}
+	if strings.Contains(first, "--noconfirm") || strings.Contains(first, "pacman -Sy ") {
 		t.Fatalf("unsafe upgrade: %s", first)
 	}
 	if !strings.Contains(second, "pacman -S --needed") || strings.Contains(second, " -Sy") {

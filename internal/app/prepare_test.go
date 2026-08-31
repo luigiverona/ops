@@ -118,6 +118,9 @@ func TestPreparePlanDeclineRendersBeforeConfirmationAndDoesNotMutate(t *testing.
 	if strings.Count(text, "Prepare this workstation?") != 1 {
 		t.Fatalf("top-level confirmations=%d\n%s", strings.Count(text, "Prepare this workstation?"), text)
 	}
+	if !strings.Contains(text, "full system upgrade  upgrade  pacman; confirm transaction in pacman") {
+		t.Fatalf("plan did not disclose pacman's transaction boundary:\n%s", text)
+	}
 }
 
 func TestPreparePlanProgressMatchesMutationOrder(t *testing.T) {
@@ -137,7 +140,7 @@ func TestPreparePlanProgressMatchesMutationOrder(t *testing.T) {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
 	wantProgress := []string{
-		"full system upgrade|upgrade|pacman",
+		"full system upgrade|upgrade|pacman; confirm transaction in pacman",
 		"mullvad-vpn -> example-dependency|install|pacman",
 		"mullvad-vpn|install|pacman",
 		"mullvad-vpn -> mullvad-daemon.service|enable|systemd",
