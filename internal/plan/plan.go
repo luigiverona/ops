@@ -3,9 +3,11 @@ package plan
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 
+	"github.com/luigiverona/ops/internal/aurmeta"
 	"github.com/luigiverona/ops/internal/config"
 )
 
@@ -64,16 +66,44 @@ type Package struct {
 type Resolver interface {
 	Pacman(context.Context, string) (Package, bool, error)
 	AUR(context.Context, string) (Package, bool, error)
+	AURSource(context.Context, string) (AURSource, bool, error)
+	OfficialDependency(context.Context, string) (OfficialDependency, error)
+	CompareVersions(context.Context, string, string) (int, error)
 	Flatpak(context.Context, string) (bool, error)
+}
+
+// AURSource pins declarative metadata to the exact reviewed Git commit.
+type AURSource struct {
+	Commit   string
+	Metadata aurmeta.Metadata
+}
+
+// OfficialDependency binds an AUR dependency expression to installed state or
+// the exact repository package selected by pacman's native resolver.
+type OfficialDependency struct {
+	Requirement string
+	Provider    string
+	Packages    []string
+	Satisfied   bool
+}
+
+// BootstrapPackage is one concrete official package installed before building paru.
+type BootstrapPackage struct {
+	Name                  string
+	Purposes              []string
+	Provides              []string
+	AsExplicit            bool
+	RequiredByApplication bool
 }
 
 // Application records one requested application's planned outcome.
 type Application struct {
-	Declaration  config.Application
-	State        string // ready, install, unresolved
-	Dependencies []Dependency
-	Services     []string
-	Cause        string
+	Declaration        config.Application
+	State              string // ready, install, unresolved
+	Dependencies       []Dependency
+	Services           []string
+	Cause              string
+	CoveredByBootstrap bool
 }
 
 // Dependency is a compatible direct optional dependency selected for normal functionality.
@@ -90,6 +120,10 @@ type Plan struct {
 	EnableMultilib         bool
 	FullUpgrade            bool
 	BootstrapParu          bool
+	ParuSource             AURSource
+	ParuDependencies       []OfficialDependency
+	ParuPackages           []BootstrapPackage
+	ParuOutputs            []string
 	AddFlathub             bool
 	GitStatus              string
 	SSHStatus              string
@@ -119,10 +153,78 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 			p.CorePackages = append(p.CorePackages, pkg)
 		}
 	}
-	if !state.Installed["base-devel"] {
+	p.BootstrapParu = !state.Paru
+	if !state.Installed["base-devel"] && !p.BootstrapParu {
 		p.CorePackages = append(p.CorePackages, "base-devel")
 	}
-	p.BootstrapParu = !state.Paru
+	if p.BootstrapParu {
+		compareVersions := func(left, right string) (int, error) {
+			return resolver.CompareVersions(ctx, left, right)
+		}
+		source, found, err := resolver.AURSource(ctx, "paru")
+		if err != nil {
+			return Plan{}, fmt.Errorf("resolve paru source metadata: %w", err)
+		}
+		if !found || source.Commit == "" || source.Metadata.PackageBase != "paru" {
+			return Plan{}, fmt.Errorf("resolve paru source metadata: exact AUR source is unavailable")
+		}
+		outputs, err := source.Metadata.OutputClosure("paru", compareVersions)
+		if err != nil {
+			return Plan{}, fmt.Errorf("resolve paru outputs: %w", err)
+		}
+		p.ParuSource, p.ParuOutputs = source, outputs
+		requirements, err := source.Metadata.BuildRequirements("paru", true, compareVersions)
+		if err != nil {
+			return Plan{}, fmt.Errorf("resolve paru build requirements: %w", err)
+		}
+		// base-devel is makepkg's documented implicit build prerequisite and is
+		// deliberately materialized even though AUR packages do not declare it.
+		requirements = append(requirements, aurmeta.Requirement{Expression: "base-devel", Purpose: "build"})
+		sort.Slice(requirements, func(i, j int) bool {
+			if requirements[i].Expression == requirements[j].Expression {
+				return requirements[i].Purpose < requirements[j].Purpose
+			}
+			return requirements[i].Expression < requirements[j].Expression
+		})
+		resolved := make(map[string]OfficialDependency)
+		packages := make(map[string]*BootstrapPackage)
+		for _, requirement := range requirements {
+			binding, ok := resolved[requirement.Expression]
+			if !ok {
+				binding, err = resolver.OfficialDependency(ctx, requirement.Expression)
+				if err != nil {
+					return Plan{}, fmt.Errorf("resolve paru dependency %q: %w", requirement.Expression, err)
+				}
+				binding.Packages = append([]string(nil), binding.Packages...)
+				sort.Strings(binding.Packages)
+				if err := validateOfficialDependency(binding, requirement.Expression); err != nil {
+					return Plan{}, fmt.Errorf("resolve paru dependency %q: resolver returned an invalid binding: %w", requirement.Expression, err)
+				}
+				resolved[requirement.Expression] = binding
+				p.ParuDependencies = append(p.ParuDependencies, binding)
+			}
+			if binding.Satisfied {
+				continue
+			}
+			for _, packageName := range binding.Packages {
+				pkg := packages[packageName]
+				if pkg == nil {
+					pkg = &BootstrapPackage{Name: packageName}
+					packages[packageName] = pkg
+				}
+				pkg.Purposes = appendUnique(pkg.Purposes, requirement.Purpose)
+				if packageName == binding.Provider && aurmeta.DependencyName(requirement.Expression) != binding.Provider {
+					pkg.Provides = appendUnique(pkg.Provides, aurmeta.DependencyName(requirement.Expression))
+				}
+			}
+		}
+		for _, pkg := range packages {
+			sort.Strings(pkg.Purposes)
+			sort.Strings(pkg.Provides)
+			p.ParuPackages = append(p.ParuPackages, *pkg)
+		}
+		sort.Slice(p.ParuPackages, func(i, j int) bool { return p.ParuPackages[i].Name < p.ParuPackages[j].Name })
+	}
 	p.AddFlathub = !state.Flathub
 	p.ConfigureGit = state.GitName == "" || state.GitEmail == ""
 	p.CreateSSHIdentity = !state.ManagedSSHIdentity
@@ -206,9 +308,77 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 
 	p.EnableMultilib = p.EnableMultilib && !state.Multilib
 	p.CorePackages = uniqueSorted(p.CorePackages)
+	finalizeParuPackages(&p)
 	deduplicateApplicationActions(&p)
 	p.FullUpgrade = len(p.CorePackages) > 0 || p.BootstrapParu || hasPackageInstall(p.Applications)
 	return p, nil
+}
+
+func validateOfficialDependency(binding OfficialDependency, requirement string) error {
+	if binding.Requirement != requirement {
+		return fmt.Errorf("requirement mismatch")
+	}
+	if binding.Satisfied {
+		if binding.Provider != "" || len(binding.Packages) != 0 {
+			return fmt.Errorf("satisfied dependency includes a repository transaction")
+		}
+		return nil
+	}
+	if binding.Provider == "" || len(binding.Packages) == 0 {
+		return fmt.Errorf("missing provider transaction")
+	}
+	seen := make(map[string]bool, len(binding.Packages))
+	providerFound := false
+	for _, name := range binding.Packages {
+		if name == "" || seen[name] {
+			return fmt.Errorf("invalid transaction package")
+		}
+		seen[name] = true
+		providerFound = providerFound || name == binding.Provider
+	}
+	if !providerFound {
+		return fmt.Errorf("provider is absent from transaction")
+	}
+	return nil
+}
+
+func finalizeParuPackages(p *Plan) {
+	core := make(map[string]bool, len(p.CorePackages))
+	for _, name := range p.CorePackages {
+		core[name] = true
+	}
+	for i := range p.Applications {
+		app := &p.Applications[i]
+		if app.State != "install" {
+			continue
+		}
+		if app.Declaration.Source == "pacman" {
+			for j := range p.ParuPackages {
+				if p.ParuPackages[j].Name != app.Declaration.Identifier {
+					continue
+				}
+				p.ParuPackages[j].AsExplicit = true
+				app.CoveredByBootstrap = true
+			}
+		}
+		for _, dependency := range app.Dependencies {
+			if dependency.Source != "pacman" {
+				continue
+			}
+			for j := range p.ParuPackages {
+				if p.ParuPackages[j].Name == dependency.Identifier {
+					p.ParuPackages[j].RequiredByApplication = true
+				}
+			}
+		}
+	}
+	packages := p.ParuPackages[:0]
+	for _, pkg := range p.ParuPackages {
+		if !core[pkg.Name] {
+			packages = append(packages, pkg)
+		}
+	}
+	p.ParuPackages = packages
 }
 
 func deduplicateApplicationActions(p *Plan) {
@@ -217,9 +387,12 @@ func deduplicateApplicationActions(p *Plan) {
 		representedInstalls["pacman\x00"+pkg] = true
 	}
 	for _, application := range p.Applications {
-		if application.State == "install" {
+		if application.State == "install" && !application.CoveredByBootstrap {
 			representedInstalls[application.Declaration.Source+"\x00"+application.Declaration.Identifier] = true
 		}
+	}
+	for _, pkg := range p.ParuPackages {
+		representedInstalls["pacman\x00"+pkg.Name] = true
 	}
 	seenDependencies := make(map[string]bool)
 	seenServices := make(map[string]bool)
@@ -245,6 +418,15 @@ func deduplicateApplicationActions(p *Plan) {
 		}
 		p.Applications[i].Services = services
 	}
+}
+
+func appendUnique(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func coreState(component string, state State) string {

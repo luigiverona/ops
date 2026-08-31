@@ -155,8 +155,84 @@ func (a Runtime) preparePlan(ctx context.Context, p plan.Plan, terminal ui.UI) i
 		return nil
 	}}
 	if p.BootstrapParu {
-		a.showProgress("paru", actionInstall, "AUR bootstrap")
-		if err := aurManager.BootstrapParu(ctx); err != nil {
+		dependencyResolver := resolve.Resolver{Runner: a.Runner}
+		afterReview := func() error {
+			missing := make(map[string]bool)
+			installable := make(map[string]bool, len(p.ParuPackages))
+			for _, pkg := range p.ParuPackages {
+				installable[pkg.Name] = true
+				if pkg.AsExplicit || pkg.RequiredByApplication {
+					missing[pkg.Name] = true
+				}
+			}
+			for _, planned := range p.ParuDependencies {
+				current, err := dependencyResolver.OfficialDependency(ctx, planned.Requirement)
+				if err != nil {
+					return fmt.Errorf("revalidate paru dependency %q: %w", planned.Requirement, err)
+				}
+				if current.Satisfied {
+					continue
+				}
+				if planned.Satisfied || current.Provider != planned.Provider || !packageSubset(current.Packages, planned.Packages) {
+					return fmt.Errorf("paru dependency provider changed after planning; rerun ops")
+				}
+				for _, packageName := range current.Packages {
+					if !installable[packageName] {
+						return fmt.Errorf("paru dependency transaction changed after planning; rerun ops")
+					}
+					missing[packageName] = true
+				}
+			}
+			var packages, explicit []string
+			var progressRows []ui.TableRow
+			for _, pkg := range p.ParuPackages {
+				if !missing[pkg.Name] {
+					continue
+				}
+				progressRows = append(progressRows, ui.TableRow{Item: "paru -> " + pkg.Name, Action: actionInstall, Detail: bootstrapPackageDetail(pkg)})
+				if pkg.AsExplicit {
+					explicit = append(explicit, pkg.Name)
+				}
+				packages = append(packages, pkg.Name)
+			}
+			transaction, err := dependencyResolver.OfficialTransaction(ctx, packages)
+			if err != nil {
+				return fmt.Errorf("revalidate concrete paru dependency transaction: %w", err)
+			}
+			if !packageSubset(transaction, packages) {
+				return fmt.Errorf("paru dependency transaction changed after planning; rerun ops")
+			}
+			if len(progressRows) > 0 {
+				a.showProgressRows(progressRows)
+			}
+			if err := archManager.Install(ctx, packages, true); err != nil {
+				return fmt.Errorf("install paru build dependencies: %w", err)
+			}
+			if err := archManager.MarkExplicit(ctx, explicit); err != nil {
+				return fmt.Errorf("preserve explicit install reason for bootstrap applications: %w", err)
+			}
+			for _, packageName := range explicit {
+				if _, err := a.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qe", packageName}}); err != nil {
+					return fmt.Errorf("verify explicit bootstrap application %q: %w", packageName, err)
+				}
+			}
+			for _, planned := range p.ParuDependencies {
+				current, err := dependencyResolver.OfficialDependency(ctx, planned.Requirement)
+				if err != nil {
+					return fmt.Errorf("verify paru dependency %q: %w", planned.Requirement, err)
+				}
+				if !current.Satisfied {
+					return fmt.Errorf("paru dependency %q is not satisfied after the planned installation", planned.Requirement)
+				}
+			}
+			a.showProgress("paru", actionInstall, "AUR build")
+			return nil
+		}
+		install := func(buildDir string, artifacts []string) error {
+			a.showProgress("paru", actionInstall, "local package")
+			return archManager.InstallArtifacts(ctx, buildDir, artifacts, p.ParuOutputs)
+		}
+		if err := aurManager.BootstrapParu(ctx, p.ParuSource, p.ParuOutputs, afterReview, install); err != nil {
 			return a.coreFatal("paru", err, "AUR support is unavailable")
 		}
 	}
@@ -174,7 +250,7 @@ func (a Runtime) preparePlan(ctx context.Context, p plan.Plan, terminal ui.UI) i
 	var problems []issue
 	readyApps := 0
 	for _, application := range p.Applications {
-		if application.State == "ready" {
+		if application.State == "ready" || application.CoveredByBootstrap {
 			readyApps++
 			continue
 		}
@@ -235,6 +311,19 @@ func (a Runtime) preparePlan(ctx context.Context, p plan.Plan, terminal ui.UI) i
 		return Issues
 	}
 	return Success
+}
+
+func packageSubset(current, planned []string) bool {
+	approved := make(map[string]bool, len(planned))
+	for _, name := range planned {
+		approved[name] = true
+	}
+	for _, name := range current {
+		if !approved[name] {
+			return false
+		}
+	}
+	return true
 }
 
 func (a Runtime) detect(ctx context.Context) error {
@@ -354,7 +443,7 @@ func (a Runtime) Update(ctx context.Context) int {
 }
 
 func needsPrivilege(p plan.Plan) bool {
-	if p.EnableMultilib || p.FullUpgrade || len(p.CorePackages) > 0 {
+	if p.EnableMultilib || p.FullUpgrade || len(p.CorePackages) > 0 || p.BootstrapParu {
 		return true
 	}
 	for _, app := range p.Applications {
@@ -716,6 +805,9 @@ func planSections(p plan.Plan) []outputSection {
 	for _, pkg := range packages {
 		coreRows = append(coreRows, ui.TableRow{Item: pkg, Action: actionInstall, Detail: "pacman"})
 	}
+	for _, pkg := range p.ParuPackages {
+		coreRows = append(coreRows, ui.TableRow{Item: "paru -> " + pkg.Name, Action: actionInstall, Detail: bootstrapPackageDetail(pkg)})
+	}
 	if p.BootstrapParu {
 		coreRows = append(coreRows, ui.TableRow{Item: "paru", Action: actionInstall, Detail: "AUR bootstrap; review required"})
 	}
@@ -728,7 +820,7 @@ func planSections(p plan.Plan) []outputSection {
 
 	var applicationRows []ui.TableRow
 	for _, application := range p.Applications {
-		if application.State == "ready" {
+		if application.State == "ready" || application.CoveredByBootstrap {
 			continue
 		}
 		if application.State != "install" {
@@ -814,6 +906,20 @@ func planSections(p plan.Plan) []outputSection {
 		})
 	}
 	return sections
+}
+
+func bootstrapPackageDetail(pkg plan.BootstrapPackage) string {
+	detail := "pacman"
+	if len(pkg.Provides) > 0 {
+		detail += "; provides " + strings.Join(pkg.Provides, ", ")
+	}
+	if pkg.AsExplicit {
+		detail += "; requested application"
+	}
+	if len(pkg.Purposes) > 0 {
+		detail += "; " + strings.Join(pkg.Purposes, "/") + " dependency"
+	}
+	return detail
 }
 
 func (a Runtime) showProgress(item, action, detail string) {

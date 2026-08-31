@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luigiverona/ops/internal/aurmeta"
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/plan"
 )
@@ -56,6 +57,39 @@ func TestShowPlanApplicationSourcesAndLongIdentifiers(t *testing.T) {
 		"  an-extremely-long-application-identifier  install  aur; review required\n"
 	if output.String() != want {
 		t.Fatalf("plan mismatch\n--- got ---\n%s--- want ---\n%s", output.String(), want)
+	}
+}
+
+func TestShowPlanParuBootstrapConcreteDependencies(t *testing.T) {
+	source := plan.AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
+		PackageBase: "paru", Version: "2.1.0-2", MakeDepends: []string{"cargo"}, Packages: []aurmeta.Package{{Name: "paru"}},
+	}}
+	state := readyExecutionState()
+	state.Paru = false
+	state.Installed["base-devel"] = false
+	p, err := plan.Build(context.Background(), config.Config{Version: 1}, state, outputResolver{
+		source: &source,
+		deps: map[string]plan.OfficialDependency{
+			"base-devel": {Requirement: "base-devel", Provider: "base-devel", Packages: []string{"base-devel"}},
+			"cargo":      {Requirement: "cargo", Provider: "rust", Packages: []string{"llvm-libs", "rust"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	Runtime{Out: &output}.showPlan(p)
+	for _, row := range []string{
+		"paru -> base-devel  install  pacman; build dependency",
+		"paru -> llvm-libs   install  pacman; build dependency",
+		"paru -> rust        install  pacman; provides cargo; build dependency",
+	} {
+		if !strings.Contains(output.String(), row) {
+			t.Fatalf("missing row %q:\n%s", row, output.String())
+		}
+	}
+	if !strings.Contains(output.String(), "AUR bootstrap; review required") {
+		t.Fatalf("missing reviewed paru bootstrap row:\n%s", output.String())
 	}
 }
 
@@ -238,6 +272,8 @@ type outputResolver struct {
 	pacman  map[string]plan.Package
 	aur     map[string]plan.Package
 	flatpak map[string]bool
+	source  *plan.AURSource
+	deps    map[string]plan.OfficialDependency
 }
 
 func (r outputResolver) Pacman(_ context.Context, name string) (plan.Package, bool, error) {
@@ -249,6 +285,24 @@ func (r outputResolver) AUR(_ context.Context, name string) (plan.Package, bool,
 	pkg, ok := r.aur[name]
 	return pkg, ok, nil
 }
+
+func (r outputResolver) AURSource(_ context.Context, _ string) (plan.AURSource, bool, error) {
+	if r.source != nil {
+		return *r.source, true, nil
+	}
+	return plan.AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
+		PackageBase: "paru", Version: "1.0.0-1", Packages: []aurmeta.Package{{Name: "paru"}},
+	}}, true, nil
+}
+
+func (r outputResolver) OfficialDependency(_ context.Context, requirement string) (plan.OfficialDependency, error) {
+	if dependency, ok := r.deps[requirement]; ok {
+		return dependency, nil
+	}
+	return plan.OfficialDependency{Requirement: requirement, Satisfied: true}, nil
+}
+
+func (r outputResolver) CompareVersions(_ context.Context, _, _ string) (int, error) { return 0, nil }
 
 func (r outputResolver) Flatpak(_ context.Context, name string) (bool, error) {
 	return r.flatpak[name], nil

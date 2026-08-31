@@ -2,8 +2,10 @@ package plan
 
 import (
 	"context"
+	"strings"
 	"testing"
 
+	"github.com/luigiverona/ops/internal/aurmeta"
 	"github.com/luigiverona/ops/internal/config"
 )
 
@@ -11,6 +13,8 @@ type fakeResolver struct {
 	pacman map[string]Package
 	aur    map[string]Package
 	flat   map[string]bool
+	source *AURSource
+	deps   map[string]OfficialDependency
 }
 
 func (f fakeResolver) Pacman(_ context.Context, name string) (Package, bool, error) {
@@ -21,7 +25,26 @@ func (f fakeResolver) AUR(_ context.Context, name string) (Package, bool, error)
 	p, ok := f.aur[name]
 	return p, ok, nil
 }
-func (f fakeResolver) Flatpak(_ context.Context, name string) (bool, error) { return f.flat[name], nil }
+func (f fakeResolver) AURSource(_ context.Context, _ string) (AURSource, bool, error) {
+	if f.source != nil {
+		return *f.source, true, nil
+	}
+	return testParuSource(), true, nil
+}
+func (f fakeResolver) OfficialDependency(_ context.Context, requirement string) (OfficialDependency, error) {
+	if dependency, ok := f.deps[requirement]; ok {
+		return dependency, nil
+	}
+	return OfficialDependency{Requirement: requirement, Satisfied: true}, nil
+}
+func (f fakeResolver) CompareVersions(_ context.Context, _, _ string) (int, error) { return 0, nil }
+func (f fakeResolver) Flatpak(_ context.Context, name string) (bool, error)        { return f.flat[name], nil }
+
+func testParuSource() AURSource {
+	return AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
+		PackageBase: "paru", Version: "1.0.0-1", Packages: []aurmeta.Package{{Name: "paru"}},
+	}}
+}
 
 func emptyState() State {
 	return State{Installed: map[string]bool{}, Foreign: map[string]bool{}, Flatpaks: map[string]bool{}}
@@ -233,6 +256,82 @@ func TestIdempotencyAndNoRemovalPlanning(t *testing.T) {
 		t.Fatalf("second run not idempotent: %#v, %v", p, err)
 	}
 	// old-app is absent from intent and no removal operation exists in Plan.
+}
+
+func TestParuBootstrapPlansConcreteDependencyTransaction(t *testing.T) {
+	source := AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
+		PackageBase: "paru", Version: "2.1.0-2",
+		Depends: []string{"git", "libalpm.so>=14"}, MakeDepends: []string{"cargo"}, CheckDepends: []string{"test-tool"},
+		Packages: []aurmeta.Package{{Name: "paru", Depends: []string{"runtime-helper"}}},
+	}}
+	resolver := fakeResolver{source: &source, deps: map[string]OfficialDependency{
+		"base-devel":     {Requirement: "base-devel", Provider: "base-devel", Packages: []string{"base-devel"}},
+		"cargo":          {Requirement: "cargo", Provider: "rust", Packages: []string{"llvm-libs", "rust"}},
+		"git":            {Requirement: "git", Satisfied: true},
+		"libalpm.so>=14": {Requirement: "libalpm.so>=14", Satisfied: true},
+		"runtime-helper": {Requirement: "runtime-helper", Satisfied: true},
+		"test-tool":      {Requirement: "test-tool", Provider: "test-tool", Packages: []string{"test-tool"}},
+	}}
+	state := readyState()
+	state.Paru = false
+	state.Installed["base-devel"] = false
+	p, err := Build(context.Background(), config.Config{Version: 1}, state, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.BootstrapParu || strings.Join(p.ParuOutputs, ",") != "paru" {
+		t.Fatalf("bootstrap outputs=%v enabled=%v", p.ParuOutputs, p.BootstrapParu)
+	}
+	var packages []string
+	for _, pkg := range p.ParuPackages {
+		packages = append(packages, pkg.Name)
+	}
+	if strings.Join(packages, ",") != "base-devel,llvm-libs,rust,test-tool" {
+		t.Fatalf("bootstrap packages=%v", p.ParuPackages)
+	}
+	if contains(p.CorePackages, "base-devel") {
+		t.Fatalf("base-devel escaped the post-review bootstrap boundary: %v", p.CorePackages)
+	}
+	if len(p.ParuDependencies) != 6 {
+		t.Fatalf("dependency bindings=%#v", p.ParuDependencies)
+	}
+}
+
+func TestParuBootstrapDeduplicatesConcretePackagesAndApplicationInstall(t *testing.T) {
+	source := AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
+		PackageBase: "paru", Version: "1-1", MakeDepends: []string{"cargo", "rustfmt"}, Packages: []aurmeta.Package{{Name: "paru"}},
+	}}
+	transaction := []string{"llvm-libs", "rust"}
+	resolver := fakeResolver{
+		source: &source,
+		deps: map[string]OfficialDependency{
+			"base-devel": {Requirement: "base-devel", Satisfied: true},
+			"cargo":      {Requirement: "cargo", Provider: "rust", Packages: transaction},
+			"rustfmt":    {Requirement: "rustfmt", Provider: "rust", Packages: transaction},
+		},
+		pacman: map[string]Package{"rust": {Name: "rust", Repository: "extra"}},
+	}
+	state := readyState()
+	state.Paru = false
+	p, err := Build(context.Background(), config.Config{Version: 1, Applications: []config.Application{{Source: "pacman", Identifier: "rust"}}}, state, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.ParuPackages) != 2 || p.ParuPackages[0].Name != "llvm-libs" || p.ParuPackages[1].Name != "rust" || !p.ParuPackages[1].AsExplicit {
+		t.Fatalf("deduplicated packages=%#v", p.ParuPackages)
+	}
+	if !p.Applications[0].CoveredByBootstrap || len(p.Applications[0].Dependencies) != 0 {
+		t.Fatalf("application was not represented exactly once: %#v", p.Applications[0])
+	}
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestUnresolved(t *testing.T) {
