@@ -58,6 +58,65 @@ Preparation is interactive and requires a TTY. `doctor`, `--help`, and
 `--version` remain line-oriented when redirected. There is no dry-run flag and
 there are no other public commands.
 
+The preparation plan lists changes rather than repeating every discovered
+ready state. Actions use concrete verbs, application sources occupy a separate
+column, and already satisfied work is reduced to an `Unchanged` summary. For
+example:
+
+```text
+Plan
+
+System
+  full system upgrade  upgrade  pacman; confirm transaction in pacman
+
+Core
+  paru  install  AUR bootstrap; review required
+
+Applications
+  bitwarden              install  pacman
+  com.tutanota.Tutanota  install  flatpak
+
+Identity and access
+  SSH identities                review        unrelated local keys
+  github.com SSH configuration  configure     managed identity and host trust
+  github                        authenticate  CLI login
+  GitHub SSH keys               review        existing keys after login, if present
+  GitHub SSH key                configure     register after login, if missing
+
+Unchanged
+  5 core components
+  6 applications
+
+Prepare this workstation? [Y/n]
+```
+
+Preparation generally follows inspect -> plan -> confirm -> mutate -> verify.
+After confirmation, `Progress` records identify each operation owned by ops.
+That single plan confirmation authorizes deterministic listed actions; AUR package
+review remains intentionally separate, as do prompts that collect required values,
+drive external authentication/passphrase flows, or make explicit security review
+and deletion decisions.
+
+For v1.0.1, a full `pacman -Syu` is also intentionally interactive. After the ops
+plan is approved, Pacman presents and owns the final system transaction review and
+confirmation. ops does not use `--noconfirm` or automate Pacman prompts, because
+Pacman can make package replacement, provider-selection, or key-import decisions
+that ops cannot yet represent safely before confirmation.
+Noninteractive subprocess output is captured and included in actionable errors.
+Programs that require package review, upstream decisions, passwords,
+passphrases, or account authentication retain their interactive terminal
+streams.
+
+Application dependencies and maintained services are separate planned actions,
+with their owning application retained in the item name:
+
+```text
+Applications
+  mullvad-vpn -> libfoo                  install  pacman
+  mullvad-vpn                            install  pacman
+  mullvad-vpn -> mullvad-daemon.service  enable   systemd
+```
+
 ## Applications
 
 Configuration lives at `~/.config/ops/apps.toml`:
@@ -114,10 +173,10 @@ user-scoped.
 ## Idempotency and recovery
 
 There is no internal state database. Every run discovers real pacman, Flatpak,
-Git, SSH, agent, gh, GitHub, and configuration state. Ready components are
-skipped. Removing a declaration never uninstalls it. After interruption or a
-partial run, rerun `ops`; completed operations are preserved and actual state is
-rediscovered.
+Git, SSH, agent, gh, GitHub account keys, and configuration state. Ready
+components are skipped. Removing a declaration never uninstalls it. After
+interruption or a partial run, rerun `ops`; completed operations are preserved
+and actual state is rediscovered.
 
 ## Git, SSH, and GitHub
 
@@ -128,24 +187,37 @@ The managed SSH identity is Ed25519 at `~/.ssh/ops` and `~/.ssh/ops.pub`, with
 passphrase handling delegated to `ssh-keygen`. Discovery validates key material,
 pairs by fingerprint, ignores symlinks, and protects `config`, `known_hosts`,
 `authorized_keys`, certificates, directories, and sockets. Existing identities
+are inspected before planning. When SSH setup is required, unrelated identities
 are reviewed individually. Deletion shows exact files and requires a second
 confirmation defaulting to no.
 
 Agent identities are separate from local files; unloading never deletes files.
-An isolated, marked `~/.ssh/ops_config` and first-match Include make
-`github.com` use `~/.ssh/ops` with `IdentitiesOnly yes` after reboot. Ops obtains
-GitHub's current public SSH host keys from GitHub's official HTTPS metadata,
-validates them, and atomically maintains marked `~/.ssh/ops_known_hosts` with
+An isolated, marked `~/.ssh/ops_config` makes `github.com` use only
+`~/.ssh/ops` with `IdentitiesOnly yes` after reboot. Because OpenSSH
+`IdentityFile` directives are additive, a marked dispatcher in `~/.ssh/config`
+excludes the byte-for-byte preserved `~/.ssh/ops_user_config` only for
+`github.com` and includes it for every other host. The preserved file remains
+the user's configuration; ops owns only its marked dispatcher and isolated
+managed files. Ops obtains GitHub's current public SSH host keys from GitHub's
+official HTTPS metadata, validates them, and atomically maintains marked
+`~/.ssh/ops_known_hosts` with
 `StrictHostKeyChecking yes`. The user's ordinary `known_hosts` is preserved and
-is not required. Existing unmarked ops-specific files and unsafe symlinks are
-refused rather than overwritten. Effective configuration is verified with
-`ssh -G`.
+is not required. Recognized local configuration and host-key freshness are
+inspected separately. A temporary metadata transport/service failure is
+reported as unavailable and never causes a rewrite; malformed authoritative
+metadata remains a hard error. Existing unmarked ops-specific files and unsafe
+symlinks are refused rather than overwritten. Effective configuration is
+structurally verified with `ssh -G`.
 
 Authentication is delegated to `gh auth login --git-protocol ssh
---skip-ssh-key`; ops never stores tokens. Existing GitHub keys are reviewed one
-at a time by title/fingerprint. Remote deletion gets a second default-no
-confirmation. The managed key gets a fingerprint-derived title, duplicates are
-avoided, and SSH access is verified.
+--skip-ssh-key`; ops never stores tokens. When key reconciliation is required,
+unrelated existing GitHub keys are reviewed one at a time by title/fingerprint.
+Remote deletion gets a second default-no confirmation. The managed key gets a
+fingerprint-derived title, duplicates are avoided, and SSH access is verified.
+When already authenticated, ops reads the account's keys before planning and
+matches the managed key by fingerprint. When authentication is unavailable,
+the plan explicitly makes key inspection and conditional registration dependent
+on login; no remote mutation occurs during inspection.
 
 ## Doctor and update
 

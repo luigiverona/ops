@@ -27,6 +27,16 @@ type githubMetadata struct {
 	SSHKeys []string `json:"ssh_keys"`
 }
 
+type metadataUnavailableError struct{ err error }
+
+func (e metadataUnavailableError) Error() string { return e.err.Error() }
+func (e metadataUnavailableError) Unwrap() error { return e.err }
+
+func metadataUnavailable(err error) bool {
+	var unavailable metadataUnavailableError
+	return errors.As(err, &unavailable)
+}
+
 func (m Manager) fetchGitHubHostKeys(ctx context.Context) ([]string, error) {
 	endpoint := m.MetadataURL
 	if endpoint == "" {
@@ -49,16 +59,27 @@ func (m Manager) fetchGitHubHostKeys(ctx context.Context) ([]string, error) {
 	req.Header.Set("User-Agent", "ops/1")
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return nil, ctx.Err()
+		}
+		return nil, metadataUnavailableError{err: err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub metadata returned HTTP %s", resp.Status)
+		err := fmt.Errorf("GitHub metadata returned HTTP %s", resp.Status)
+		if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests ||
+			resp.StatusCode == http.StatusForbidden || resp.StatusCode >= http.StatusInternalServerError {
+			return nil, metadataUnavailableError{err: err}
+		}
+		return nil, err
 	}
 	reader := io.LimitReader(resp.Body, metadataLimit+1)
 	data, err := io.ReadAll(reader)
 	if err != nil {
-		return nil, err
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return nil, ctx.Err()
+		}
+		return nil, metadataUnavailableError{err: err}
 	}
 	if len(data) > metadataLimit {
 		return nil, errors.New("GitHub metadata exceeds size limit")

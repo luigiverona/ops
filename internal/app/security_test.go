@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/run"
 	sshops "github.com/luigiverona/ops/internal/ssh"
 	"github.com/luigiverona/ops/internal/ui"
@@ -24,15 +25,13 @@ func TestSSHDeletionRequiresBothConfirmations(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, ".ssh")
 	_ = os.Mkdir(dir, 0o700)
+	generateTestIdentity(t, dir, "ops")
 	private := filepath.Join(dir, "existing")
-	cmd := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", private)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("ssh-keygen: %v: %s", err, output)
-	}
+	generateTestIdentity(t, dir, "existing")
 	runtime := Runtime{Home: home, Runner: run.Exec{In: strings.NewReader(""), Out: io.Discard, Err: io.Discard}, Out: io.Discard, Err: io.Discard}
-	terminal := ui.UI{In: strings.NewReader("n\ny\nn\n"), Out: io.Discard}
-	status, _, issues, fatal := runtime.configureSSH(context.Background(), terminal)
-	if fatal != nil || len(issues) != 0 || status != "skipped" {
+	terminal := ui.UI{In: strings.NewReader("n\ny\n"), Out: io.Discard}
+	status, _, issues, fatal := runtime.configureSSH(context.Background(), terminal, plan.Plan{ReviewSSHIdentities: true})
+	if fatal != nil || len(issues) != 0 || status != "ready" {
 		t.Fatalf("status=%s issues=%v fatal=%v", status, issues, fatal)
 	}
 	if _, err := os.Stat(private); !os.IsNotExist(err) {
@@ -50,16 +49,22 @@ func TestSSHDeletionDefaultsToKeep(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, ".ssh")
 	_ = os.Mkdir(dir, 0o700)
+	generateTestIdentity(t, dir, "ops")
 	private := filepath.Join(dir, "existing")
-	cmd := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", private)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("ssh-keygen: %v: %s", err, output)
-	}
+	generateTestIdentity(t, dir, "existing")
 	runtime := Runtime{Home: home, Runner: run.Exec{In: strings.NewReader(""), Out: io.Discard, Err: io.Discard}, Out: io.Discard, Err: io.Discard}
-	terminal := ui.UI{In: strings.NewReader("\nn\n"), Out: io.Discard}
-	_, _, _, _ = runtime.configureSSH(context.Background(), terminal)
+	terminal := ui.UI{In: strings.NewReader("\n"), Out: io.Discard}
+	_, _, _, _ = runtime.configureSSH(context.Background(), terminal, plan.Plan{ReviewSSHIdentities: true})
 	if _, err := os.Stat(private); err != nil {
 		t.Fatal("default keep removed identity")
+	}
+}
+
+func generateTestIdentity(t *testing.T, dir, name string) {
+	t.Helper()
+	cmd := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", filepath.Join(dir, name))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen: %v: %s", err, output)
 	}
 }
 
@@ -91,9 +96,9 @@ func (f *githubFake) Run(_ context.Context, spec run.Spec) (run.Result, error) {
 func TestGitHubKeysReviewedIndividuallyAndDoubleConfirmed(t *testing.T) {
 	fake := &githubFake{}
 	runtime := Runtime{Runner: fake, Out: io.Discard, Err: io.Discard}
-	terminal := ui.UI{In: strings.NewReader("y\nn\ny\n"), Out: io.Discard}
+	terminal := ui.UI{In: strings.NewReader("n\ny\n"), Out: io.Discard}
 	fingerprint, _ := sshops.PublicFingerprint(wirePublic(1))
-	status, issues := runtime.configureGitHub(context.Background(), terminal, &sshops.Identity{PublicPath: "unused", Fingerprint: fingerprint})
+	status, issues := runtime.configureGitHub(context.Background(), terminal, &sshops.Identity{PublicPath: "unused", Fingerprint: fingerprint}, plan.Plan{ReviewGitHubKeys: true})
 	if status != "ready" || len(issues) != 0 || len(fake.deleted) != 1 || fake.deleted[0] != "2" {
 		t.Fatalf("status=%s issues=%v deleted=%v", status, issues, fake.deleted)
 	}
@@ -103,7 +108,7 @@ func TestGitHubDeletionFailureIsReported(t *testing.T) {
 	fake := &githubFake{failDelete: true}
 	runtime := Runtime{Runner: fake, Out: io.Discard, Err: io.Discard}
 	terminal := ui.UI{In: strings.NewReader("n\ny\n"), Out: io.Discard}
-	status, issues := runtime.configureGitHub(context.Background(), terminal, &sshops.Identity{})
+	status, issues := runtime.configureGitHub(context.Background(), terminal, &sshops.Identity{}, plan.Plan{ReviewGitHubKeys: true})
 	if status != "failed" || len(issues) != 1 {
 		t.Fatalf("status=%s issues=%v", status, issues)
 	}

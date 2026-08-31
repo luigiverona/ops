@@ -28,8 +28,9 @@ type AgentIdentity struct {
 	Fingerprint string
 }
 
-// Manager owns only ~/.ssh/ops, ~/.ssh/ops.pub, ~/.ssh/ops_config, and
-// ~/.ssh/ops_known_hosts.
+// Manager owns only ~/.ssh/ops, ~/.ssh/ops.pub, ~/.ssh/ops_config,
+// ~/.ssh/ops_known_hosts, and the marked dispatcher in ~/.ssh/config. Existing
+// user configuration is preserved byte-for-byte in ~/.ssh/ops_user_config.
 type Manager struct {
 	Home        string
 	Runner      run.Runner
@@ -202,16 +203,30 @@ func (m Manager) Load(ctx context.Context, path string) error {
 	return err
 }
 
-// ConfigureGitHub atomically adds a first-match Include and owns an isolated Host block.
+// ConfigureGitHub isolates GitHub from additive user IdentityFile directives while
+// preserving the user's configuration for every other host.
 func (m Manager) ConfigureGitHub(ctx context.Context) error {
 	if err := secureDir(m.dir()); err != nil {
 		return err
 	}
 	configPath := filepath.Join(m.dir(), "config")
 	includePath := filepath.Join(m.dir(), "ops_config")
+	userConfigPath := filepath.Join(m.dir(), "ops_user_config")
 	knownHostsPath := filepath.Join(m.dir(), "ops_known_hosts")
 	legacy := []byte("Host github.com\n    HostName github.com\n    User git\n    IdentityFile ~/.ssh/ops\n    IdentitiesOnly yes\n")
-	managed := []byte(managedMarker + "\nHost github.com\n    HostName github.com\n    User git\n    IdentityFile ~/.ssh/ops\n    IdentitiesOnly yes\n    UserKnownHostsFile ~/.ssh/ops_known_hosts\n    StrictHostKeyChecking yes\n")
+	identityPath, err := sshConfigArgument(filepath.Join(m.dir(), "ops"))
+	if err != nil {
+		return err
+	}
+	knownHostsArgument, err := sshConfigArgument(knownHostsPath)
+	if err != nil {
+		return err
+	}
+	dispatcher, err := renderGitHubDispatcher(includePath, userConfigPath)
+	if err != nil {
+		return err
+	}
+	managed := []byte(fmt.Sprintf("%s\nHost github.com\n    HostName github.com\n    User git\n    IdentityFile %s\n    IdentitiesOnly yes\n    UserKnownHostsFile %s\n    StrictHostKeyChecking yes\n", managedMarker, identityPath, knownHostsArgument))
 	var existing []byte
 	if info, err := os.Lstat(configPath); err == nil {
 		if !info.Mode().IsRegular() {
@@ -223,6 +238,21 @@ func (m Manager) ConfigureGitHub(ctx context.Context) error {
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	dispatcherCurrent := string(existing) == string(dispatcher)
+	preserved, preservedExists, err := readSafeUserConfig(userConfigPath)
+	if err != nil {
+		return err
+	}
+	if !dispatcherCurrent {
+		userContent, err := withoutManagedDispatcher(existing)
+		if err != nil {
+			return err
+		}
+		if preservedExists && string(preserved) != string(userContent) {
+			return errors.New("refusing to overwrite existing ~/.ssh/ops_user_config")
+		}
+		preserved = userContent
 	}
 	hostKeys, err := m.fetchGitHubHostKeys(ctx)
 	if err != nil {
@@ -241,10 +271,13 @@ func (m Manager) ConfigureGitHub(ctx context.Context) error {
 	if err := atomicManagedWrite(includePath, managed, 0o600, legacy); err != nil {
 		return err
 	}
-	include := "Include ~/.ssh/ops_config"
-	if !hasActiveLine(existing, include) {
-		updated := append([]byte(managedIncludeStart+"\n"+include+"\n"+managedIncludeEnd+"\n"), existing...)
-		if err := atomicRegularWrite(configPath, updated, 0o600); err != nil {
+	if !preservedExists {
+		if err := atomicRegularWrite(userConfigPath, preserved, 0o600); err != nil {
+			return err
+		}
+	}
+	if !dispatcherCurrent {
+		if err := atomicRegularWrite(configPath, dispatcher, 0o600); err != nil {
 			return err
 		}
 	}
@@ -252,8 +285,7 @@ func (m Manager) ConfigureGitHub(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("verify effective SSH configuration: %w", err)
 	}
-	effective := strings.ToLower(result.Stdout)
-	if !effectiveGitHubConfig(effective, m.Home) {
+	if !effectiveGitHubConfig(result.Stdout, m.Home) {
 		return errors.New("effective SSH configuration does not enforce the managed identity and host-key trust")
 	}
 	return nil
@@ -265,12 +297,59 @@ func (m Manager) GitHubConfigured(ctx context.Context) bool {
 		return false
 	}
 	configPath := filepath.Join(m.dir(), "config")
+	dispatcher, err := renderGitHubDispatcher(filepath.Join(m.dir(), "ops_config"), filepath.Join(m.dir(), "ops_user_config"))
+	if err != nil {
+		return false
+	}
+	if !recognizedExactFile(configPath, dispatcher) {
+		return false
+	}
+	if _, exists, err := readSafeUserConfig(filepath.Join(m.dir(), "ops_user_config")); err != nil || !exists {
+		return false
+	}
 	result, err := m.Runner.Run(ctx, run.Spec{Name: "ssh", Args: []string{"-G", "github.com", "-F", configPath}})
 	if err != nil {
 		return false
 	}
-	effective := strings.ToLower(result.Stdout)
-	return effectiveGitHubConfig(effective, m.Home)
+	return effectiveGitHubConfig(result.Stdout, m.Home)
+}
+
+// HostKeyFreshness records whether recognized managed host keys match current
+// authoritative metadata without conflating an unavailable check with staleness.
+type HostKeyFreshness string
+
+const (
+	HostKeyFreshnessUnknown     HostKeyFreshness = "unknown"
+	HostKeyFreshnessCurrent     HostKeyFreshness = "current"
+	HostKeyFreshnessStale       HostKeyFreshness = "stale"
+	HostKeyFreshnessUnavailable HostKeyFreshness = "unavailable"
+)
+
+// GitHubConfigurationStatus separates local configuration safety from remote
+// host-key freshness. LocalReady is false when managed files are not recognized.
+type GitHubConfigurationStatus struct {
+	LocalReady bool
+	Freshness  HostKeyFreshness
+}
+
+// InspectGitHubConfiguration performs read-only local verification and, only
+// for recognized configuration, compares host keys with official metadata.
+func (m Manager) InspectGitHubConfiguration(ctx context.Context) (GitHubConfigurationStatus, error) {
+	if !m.GitHubConfigured(ctx) {
+		return GitHubConfigurationStatus{Freshness: HostKeyFreshnessUnknown}, nil
+	}
+	hostKeys, err := m.fetchGitHubHostKeys(ctx)
+	if err != nil {
+		if metadataUnavailable(err) {
+			return GitHubConfigurationStatus{LocalReady: true, Freshness: HostKeyFreshnessUnavailable}, nil
+		}
+		return GitHubConfigurationStatus{}, err
+	}
+	freshness := HostKeyFreshnessStale
+	if recognizedExactFile(filepath.Join(m.dir(), "ops_known_hosts"), renderKnownHosts(hostKeys)) {
+		freshness = HostKeyFreshnessCurrent
+	}
+	return GitHubConfigurationStatus{LocalReady: true, Freshness: freshness}, nil
 }
 
 // PublicFingerprint validates a single public-key line and returns its OpenSSH SHA256 fingerprint.
@@ -321,7 +400,7 @@ func privateHeader(data []byte) bool {
 
 func protectedName(name string) bool {
 	switch name {
-	case "config", "known_hosts", "known_hosts.old", "authorized_keys", "authorized_keys2", "ops_config", "ops_known_hosts":
+	case "config", "known_hosts", "known_hosts.old", "authorized_keys", "authorized_keys2", "ops_config", "ops_user_config", "ops_known_hosts":
 		return true
 	}
 	return strings.HasSuffix(name, "-cert.pub") || strings.HasSuffix(name, "-cert")
@@ -420,51 +499,154 @@ func recognizedManagedFile(path string) bool {
 	return err == nil && hasManagedMarker(data)
 }
 
+func recognizedExactFile(path string, want []byte) bool {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	return err == nil && string(data) == string(want)
+}
+
 func hasManagedMarker(data []byte) bool {
 	line, _, _ := strings.Cut(string(data), "\n")
 	return line == managedMarker
 }
 
-func hasActiveLine(data []byte, want string) bool {
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "#") && line == want {
-			return true
-		}
+func effectiveGitHubConfig(output, home string) bool {
+	parsed, ok := parseEffectiveSSHConfig(output)
+	if !ok || !parsed.singleEqualFold("host", "github.com") ||
+		!parsed.singleEqualFold("hostname", "github.com") ||
+		!parsed.single("user", "git") ||
+		!parsed.enabled("identitiesonly") ||
+		!parsed.enabled("stricthostkeychecking") {
+		return false
 	}
-	return false
+	return parsed.singlePath("identityfile", filepath.Join(home, ".ssh", "ops"), "~/.ssh/ops") &&
+		parsed.singlePath("userknownhostsfile", filepath.Join(home, ".ssh", "ops_known_hosts"), "~/.ssh/ops_known_hosts")
 }
 
-func containsIdentityFile(output, path string) bool {
-	path = strings.ToLower(path)
-	for _, line := range strings.Split(output, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 2 && fields[0] == "identityfile" && (fields[1] == path || fields[1] == "~/.ssh/ops") {
-			return true
-		}
-	}
-	return false
-}
+type effectiveSSHConfig map[string][][]string
 
-func containsKnownHostsFile(output, path string) bool {
-	path = strings.ToLower(path)
+func parseEffectiveSSHConfig(output string) (effectiveSSHConfig, bool) {
+	wanted := map[string]bool{
+		"host": true, "hostname": true, "user": true,
+		"identitiesonly": true, "stricthostkeychecking": true,
+		"identityfile": true, "userknownhostsfile": true,
+	}
+	parsed := make(effectiveSSHConfig)
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[0] != "userknownhostsfile" {
+		if len(fields) == 0 {
 			continue
 		}
-		for _, value := range fields[1:] {
-			if value == path || value == "~/.ssh/ops_known_hosts" {
-				return true
+		key := strings.ToLower(fields[0])
+		if !wanted[key] {
+			continue
+		}
+		if len(fields) < 2 {
+			return nil, false
+		}
+		parsed[key] = append(parsed[key], fields[1:])
+	}
+	return parsed, true
+}
+
+func (c effectiveSSHConfig) single(key, want string) bool {
+	values := c[key]
+	return len(values) == 1 && len(values[0]) == 1 && values[0][0] == want
+}
+
+func (c effectiveSSHConfig) singleEqualFold(key, want string) bool {
+	values := c[key]
+	return len(values) == 1 && len(values[0]) == 1 && strings.EqualFold(values[0][0], want)
+}
+
+func (c effectiveSSHConfig) enabled(key string) bool {
+	values := c[key]
+	if len(values) != 1 || len(values[0]) != 1 {
+		return false
+	}
+	value := strings.ToLower(values[0][0])
+	return value == "yes" || value == "true"
+}
+
+func (c effectiveSSHConfig) singlePath(key string, allowed ...string) bool {
+	values := c[key]
+	if len(values) != 1 || len(values[0]) != 1 {
+		return false
+	}
+	for _, value := range allowed {
+		if values[0][0] == value {
+			return true
+		}
+	}
+	return false
+}
+
+func sshConfigArgument(value string) (string, error) {
+	if strings.ContainsAny(value, "\x00\r\n") {
+		return "", errors.New("SSH configuration path contains invalid characters")
+	}
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `"`, `\"`)
+	return `"` + value + `"`, nil
+}
+
+func renderGitHubDispatcher(includePath, userConfigPath string) ([]byte, error) {
+	includeArgument, err := sshConfigArgument(includePath)
+	if err != nil {
+		return nil, err
+	}
+	userConfigArgument, err := sshConfigArgument(userConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(fmt.Sprintf("%s\nInclude %s\n# Preserve user configuration for every host except github.com.\nHost * !github.com\n    Include %s\n%s\n", managedIncludeStart, includeArgument, userConfigArgument, managedIncludeEnd)), nil
+}
+
+func readSafeUserConfig(path string) ([]byte, bool, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, errors.New("refusing non-regular ~/.ssh/ops_user_config")
+	}
+	data, err := os.ReadFile(path)
+	return data, true, err
+}
+
+func withoutManagedDispatcher(data []byte) ([]byte, error) {
+	var output strings.Builder
+	inside := false
+	starts, ends := 0, 0
+	for _, line := range strings.SplitAfter(string(data), "\n") {
+		text := strings.TrimSuffix(line, "\n")
+		switch text {
+		case managedIncludeStart:
+			starts++
+			if inside {
+				return nil, errors.New("malformed ops managed SSH configuration markers")
+			}
+			inside = true
+		case managedIncludeEnd:
+			ends++
+			if !inside {
+				return nil, errors.New("malformed ops managed SSH configuration markers")
+			}
+			inside = false
+		default:
+			if !inside {
+				output.WriteString(line)
 			}
 		}
 	}
-	return false
-}
-
-func effectiveGitHubConfig(output, home string) bool {
-	return strings.Contains(output, "identitiesonly yes") &&
-		strings.Contains(output, "stricthostkeychecking yes") &&
-		containsIdentityFile(output, filepath.Join(home, ".ssh", "ops")) &&
-		containsKnownHostsFile(output, filepath.Join(home, ".ssh", "ops_known_hosts"))
+	if inside || starts != ends || starts > 1 {
+		return nil, errors.New("malformed ops managed SSH configuration markers")
+	}
+	return []byte(output.String()), nil
 }

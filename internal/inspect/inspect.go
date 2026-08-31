@@ -3,11 +3,15 @@ package inspect
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/luigiverona/ops/internal/arch"
 	gitops "github.com/luigiverona/ops/internal/git"
+	githubops "github.com/luigiverona/ops/internal/github"
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/run"
 	sshops "github.com/luigiverona/ops/internal/ssh"
@@ -15,14 +19,19 @@ import (
 
 // Workstation performs read-only command and file inspection.
 type Workstation struct {
-	Runner     run.Runner
-	PacmanConf string
-	Home       string
+	Runner         run.Runner
+	PacmanConf     string
+	Home           string
+	SSHHTTP        *http.Client
+	SSHMetadataURL string
 }
 
 // State returns the observable state. Optional tools being absent is state, not an inspection failure.
 func (w Workstation) State(ctx context.Context) (plan.State, error) {
-	state := plan.State{Installed: map[string]bool{}, Foreign: map[string]bool{}, Flatpaks: map[string]bool{}}
+	state := plan.State{
+		Installed: map[string]bool{}, Foreign: map[string]bool{}, Flatpaks: map[string]bool{},
+		SSHHostKeyFreshness: plan.SSHHostKeyFreshnessUnknown,
+	}
 	if result, err := w.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qq"}}); err == nil {
 		addLines(state.Installed, result.Stdout)
 	} else {
@@ -63,18 +72,76 @@ func (w Workstation) State(ctx context.Context) (plan.State, error) {
 	if !gitops.ValidEmail(state.GitEmail) {
 		state.GitEmail = ""
 	}
-	sshManager := sshops.Manager{Home: w.Home, Runner: w.Runner}
-	if identities, err := sshManager.Discover(ctx); err == nil {
-		for _, identity := range identities {
-			if identity.PrivatePath == w.Home+"/.ssh/ops" && identity.PublicPath == w.Home+"/.ssh/ops.pub" {
-				state.SSHReady = sshManager.GitHubConfigured(ctx)
+	var managedFingerprint string
+	sshManager := sshops.Manager{Home: w.Home, Runner: w.Runner, HTTP: w.SSHHTTP, MetadataURL: w.SSHMetadataURL}
+	identities, err := sshManager.Discover(ctx)
+	if err != nil {
+		return state, fmt.Errorf("inspect SSH identities: %w", err)
+	}
+	managedPrivate := filepath.Join(w.Home, ".ssh", "ops")
+	managedPublic := managedPrivate + ".pub"
+	for _, identity := range identities {
+		if identity.PrivatePath == managedPrivate {
+			if identity.PublicPath == managedPublic {
+				state.ManagedSSHIdentity = true
+				managedFingerprint = identity.Fingerprint
+			}
+			continue
+		}
+		state.UnrelatedSSHIdentities++
+	}
+	if state.ManagedSSHIdentity {
+		configuration, inspectErr := sshManager.InspectGitHubConfiguration(ctx)
+		state.SSHConfigurationReady = configuration.LocalReady
+		switch configuration.Freshness {
+		case sshops.HostKeyFreshnessUnknown:
+			state.SSHHostKeyFreshness = plan.SSHHostKeyFreshnessUnknown
+		case sshops.HostKeyFreshnessCurrent:
+			state.SSHHostKeyFreshness = plan.SSHHostKeyFreshnessCurrent
+		case sshops.HostKeyFreshnessStale:
+			state.SSHHostKeyFreshness = plan.SSHHostKeyFreshnessStale
+		case sshops.HostKeyFreshnessUnavailable:
+			state.SSHHostKeyFreshness = plan.SSHHostKeyFreshnessUnavailable
+		}
+		err = inspectErr
+		if err != nil {
+			return state, fmt.Errorf("inspect GitHub SSH configuration: %w", err)
+		}
+	}
+	if state.Installed["openssh"] && (!state.ManagedSSHIdentity || !state.SSHConfigurationReady) {
+		agentIdentities, available, err := sshManager.AgentIdentities(ctx)
+		if err != nil {
+			return state, fmt.Errorf("inspect ssh-agent identities: %w", err)
+		}
+		state.SSHAgentAvailable = available
+		for _, identity := range agentIdentities {
+			if managedFingerprint != "" && identity.Fingerprint == managedFingerprint {
+				state.ManagedSSHAgentIdentity = true
+				continue
+			}
+			state.UnrelatedSSHAgentIdentities++
+		}
+	}
+
+	githubManager := githubops.Manager{Runner: w.Runner}
+	state.GitHubAuth = githubManager.Authenticated(ctx)
+	if state.GitHubAuth {
+		keys, err := githubManager.Keys(ctx)
+		if err != nil {
+			return state, fmt.Errorf("inspect GitHub SSH keys: %w", err)
+		}
+		state.GitHubKeysKnown = true
+		if managedFingerprint != "" {
+			state.ManagedGitHubKeyKnown = true
+			for _, key := range keys {
+				if key.Fingerprint == managedFingerprint {
+					state.ManagedGitHubKey = true
+					continue
+				}
+				state.OtherGitHubKeys++
 			}
 		}
 	}
-	if _, err := w.Runner.Run(ctx, run.Spec{Name: "gh", Args: []string{"auth", "status", "--hostname", "github.com", "--active"}}); err == nil {
-		state.GitHubAuth = true
-	}
-	state.GitHubSSHAccess = state.SSHReady
 	return state, nil
 }
 
