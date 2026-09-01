@@ -4,11 +4,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/luigiverona/ops/internal/config"
@@ -26,6 +31,7 @@ type prepareRunner struct {
 	authenticated  bool
 	remoteKeys     string
 	failKeyAPI     bool
+	sshAddErr      error
 	home           string
 	sshPublicKey   string
 	gitName        string
@@ -76,6 +82,9 @@ func (f *prepareRunner) Run(_ context.Context, spec run.Spec) (run.Result, error
 	}
 	if spec.Name == "ssh-keygen" && f.sshFingerprint != "" {
 		return run.Result{Stdout: "256 " + f.sshFingerprint + " ops (ED25519)\n"}, nil
+	}
+	if spec.Name == "ssh-add" && len(spec.Args) > 0 && spec.Args[0] != "-L" && f.sshAddErr != nil {
+		return run.Result{Stderr: "ssh-add: passphrase rejected"}, f.sshAddErr
 	}
 	if spec.Name == "gh" && len(spec.Args) > 1 && spec.Args[0] == "auth" && spec.Args[1] == "status" {
 		if f.authenticated {
@@ -162,6 +171,11 @@ func TestPreparePlanProgressMatchesMutationOrder(t *testing.T) {
 	if strings.Count(output.String(), "Prepare this workstation?") != 1 {
 		t.Fatalf("top-level confirmation count is not one:\n%s", output.String())
 	}
+	planEnd := strings.Index(output.String(), "Prepare this workstation?")
+	sudoAt := strings.Index(output.String(), "sudo  configure  privileged operations")
+	if planEnd < 0 || sudoAt <= planEnd || strings.Contains(output.String()[:planEnd], "sudo") {
+		t.Fatalf("sudo was not an explicit post-confirmation execution boundary:\n%s", output.String())
+	}
 }
 
 func readyExecutionState() plan.State {
@@ -237,6 +251,83 @@ func TestPreparePlanNoOpGolden(t *testing.T) {
 	}
 }
 
+func TestPreparePublicNoActionPathDoesNotRequireTTY(t *testing.T) {
+	if mode := os.Getenv("OPS_TEST_NO_TTY_MODE"); mode != "" {
+		runtime, output, runner := noActionPrepareRuntime(t, mode == "diagnostic")
+		code := runtime.Prepare(context.Background())
+		if code != Success || !strings.Contains(output.String(), "\nFinal\n") {
+			t.Fatalf("mode=%s code=%d\n%s", mode, code, output.String())
+		}
+		if mode == "diagnostic" && !strings.Contains(output.String(), "GitHub SSH host-key freshness  unavailable") {
+			t.Fatalf("diagnostic no-op was not reported:\n%s", output.String())
+		}
+		for _, call := range runner.calls {
+			if call.Name == "sudo" || call.Interactive {
+				t.Fatalf("no-op performed interactive work: %#v", call)
+			}
+		}
+		return
+	}
+	for _, mode := range []string{"ready", "diagnostic"} {
+		t.Run(mode, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestPreparePublicNoActionPathDoesNotRequireTTY$")
+			cmd.Env = append(os.Environ(), "OPS_TEST_NO_TTY_MODE="+mode)
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("public no-op without controlling TTY failed: %v\n%s", err, output)
+			}
+		})
+	}
+}
+
+func noActionPrepareRuntime(t *testing.T, unavailable bool) (Runtime, *bytes.Buffer, *doctorRunner) {
+	t.Helper()
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Dir(config.Path(home)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.Path(home), []byte(config.Default), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.Mkdir(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	managedKey := wirePublic(13)
+	if err := os.WriteFile(filepath.Join(sshDir, "ops"), []byte("-----BEGIN OPENSSH PRIVATE KEY-----\nfixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sshDir, "ops.pub"), []byte(managedKey+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := &doctorRunner{home: home, managedKey: managedKey}
+	hostKey := strings.Fields(wirePublic(14))
+	metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"ssh_keys":["`+hostKey[0]+` `+hostKey[1]+`"]}`)
+	}))
+	if !unavailable {
+		t.Cleanup(metadata.Close)
+	}
+	manager := sshops.Manager{Home: home, Runner: runner, HTTP: metadata.Client(), MetadataURL: metadata.URL}
+	if err := manager.ConfigureGitHub(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if unavailable {
+		metadata.Close()
+	}
+	runner.calls = nil
+	osRelease := filepath.Join(t.TempDir(), "os-release")
+	if err := os.WriteFile(osRelease, []byte("ID=arch\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output := &bytes.Buffer{}
+	return Runtime{
+		Runner: runner, Out: output, Err: output, Home: home, EUID: func() int { return 1000 }, OSRelease: osRelease,
+		SSHHTTP: metadata.Client(), SSHMetadataURL: metadata.URL,
+	}, output, runner
+}
+
 func TestPreparePlanDiagnosticOnlyDoesNotConfirmOrMutate(t *testing.T) {
 	p := plan.Plan{Core: readyCore(), Applications: []plan.Application{{Declaration: config.Application{Identifier: "broken", Source: "aur"}, State: "failed", Cause: "source resolution failed: unavailable"}}, GitStatus: "ready", SSHStatus: "ready", GitHubStatus: "ready"}
 	var output bytes.Buffer
@@ -301,7 +392,7 @@ func TestPreparePlanUnauthenticatedGitHubReconcilesOnlyAfterConfirmation(t *test
 		if code != Success {
 			t.Fatalf("code=%d\n%s", code, output.String())
 		}
-		want := []string{"github|authenticate|CLI login; SSH-key permission", "GitHub SSH key|configure|managed key"}
+		want := []string{"github|authenticate|CLI login; SSH-key permission", "GitHub SSH keys|inspect|reconcile account keys", "GitHub SSH key|configure|managed key"}
 		if got := progressRecords(output.String()); strings.Join(got, "\n") != strings.Join(want, "\n") {
 			t.Fatalf("progress=%v, want=%v\n%s", got, want, output.String())
 		}
@@ -317,8 +408,11 @@ func TestPreparePlanUnauthenticatedGitHubReconcilesOnlyAfterConfirmation(t *test
 		if !loginInteractive {
 			t.Fatal("gh auth login did not retain its interactive stream")
 		}
-		if !strings.Contains(output.String(), "GitHub SSH keys") || !strings.Contains(output.String(), "existing keys after login, if present") {
+		if !strings.Contains(output.String(), "GitHub SSH keys") || !strings.Contains(output.String(), "reconcile after login") {
 			t.Fatalf("unknown remote-key state was not planned:\n%s", output.String())
+		}
+		if strings.Contains(output.String(), "GitHub SSH keys  review") || strings.Contains(output.String(), "\nReview\n") {
+			t.Fatalf("zero remote keys produced fake review content:\n%s", output.String())
 		}
 		for _, prompt := range []string{"Authenticate GitHub CLI?", "Register ~/.ssh/ops.pub with GitHub?"} {
 			if strings.Contains(output.String(), prompt) {
@@ -326,6 +420,78 @@ func TestPreparePlanUnauthenticatedGitHubReconcilesOnlyAfterConfirmation(t *test
 			}
 		}
 	})
+}
+
+func TestPreparePlanReviewsDeferredAndKnownGitHubKeysAccurately(t *testing.T) {
+	home, fingerprint, deferred := unauthenticatedGitHubFixture(t)
+	other := wirePublic(10)
+	remote := `[{"id":2,"title":"other","key":` + strconv.Quote(other) + `}]`
+
+	t.Run("deferred keys are reviewed only after login finds one", func(t *testing.T) {
+		var output bytes.Buffer
+		runner := &prepareRunner{sshFingerprint: fingerprint, remoteKeys: remote}
+		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), deferred, ui.UI{In: strings.NewReader("y\ny\n"), Out: &output})
+		if code != Success || !strings.Contains(output.String(), "GitHub SSH keys") || !strings.Contains(output.String(), "inspect") || !strings.Contains(output.String(), "reconcile after login") || !strings.Contains(output.String(), "\nReview\n") || !strings.Contains(output.String(), "Keep this key?") {
+			t.Fatalf("code=%d\n%s", code, output.String())
+		}
+	})
+
+	t.Run("known unrelated key is a real planned review", func(t *testing.T) {
+		state := readyExecutionState()
+		state.ManagedGitHubKey = false
+		state.OtherGitHubKeys = 1
+		p, err := plan.Build(context.Background(), config.Config{Version: 1}, state, outputResolver{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var planOutput bytes.Buffer
+		Runtime{Out: &planOutput}.showPlan(p)
+		if !strings.Contains(planOutput.String(), "GitHub SSH keys") || !strings.Contains(planOutput.String(), "review") || !strings.Contains(planOutput.String(), "account keys") {
+			t.Fatalf("known keys were not planned as review:\n%s", planOutput.String())
+		}
+		var output bytes.Buffer
+		runner := &prepareRunner{sshFingerprint: fingerprint, authenticated: true, remoteKeys: remote}
+		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\ny\n"), Out: &output})
+		if code != Success || !strings.Contains(output.String(), "\nReview\n") || !strings.Contains(output.String(), "Keep this key?") {
+			t.Fatalf("code=%d\n%s", code, output.String())
+		}
+	})
+}
+
+func TestPreparePlanSSHAddOutcomesAreAccurate(t *testing.T) {
+	home, fingerprint, _ := unauthenticatedGitHubFixture(t)
+	tests := []struct {
+		name       string
+		sshAddErr  error
+		wantCode   int
+		wantSSH    string
+		githubWork bool
+	}{
+		{name: "success", wantCode: Success, wantSSH: "ready"},
+		{name: "failure", sshAddErr: errors.New("passphrase rejected"), wantCode: Issues, wantSSH: "failed", githubWork: true},
+		{name: "cancelled", sshAddErr: context.Canceled, wantCode: Issues, wantSSH: "failed", githubWork: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			p := plan.Plan{Core: readyCore(), LoadSSHAgent: true, GitStatus: "ready", SSHStatus: "required", GitHubStatus: "ready", AuthenticateGitHub: test.githubWork}
+			var output bytes.Buffer
+			runner := &prepareRunner{sshFingerprint: fingerprint, sshAddErr: test.sshAddErr}
+			code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+			if code != test.wantCode || !strings.Contains(output.String(), "ssh     "+test.wantSSH) {
+				t.Fatalf("code=%d\n%s", code, output.String())
+			}
+			if test.sshAddErr != nil {
+				if !strings.Contains(output.String(), "ssh-agent") || !strings.Contains(output.String(), "github  skipped") {
+					t.Fatalf("failed load was not reported or GitHub work was not skipped:\n%s", output.String())
+				}
+				for _, call := range runner.calls {
+					if call.Name == "gh" && len(call.Args) > 1 && call.Args[0] == "auth" && call.Args[1] == "login" {
+						t.Fatalf("GitHub authentication ran after failed ssh-add: %#v", call)
+					}
+				}
+			}
+		})
+	}
 }
 
 func TestApprovedGitAndSSHActionsDoNotAskForSecondAuthorization(t *testing.T) {

@@ -41,6 +41,7 @@ const (
 	actionEnable       = "enable"
 	actionAuthenticate = "authenticate"
 	actionReview       = "review"
+	actionInspect      = "inspect"
 
 	fullUpgradeDetail = "pacman; confirm transaction in pacman"
 )
@@ -84,6 +85,9 @@ func (a Runtime) Prepare(ctx context.Context) int {
 	p, err := plan.Build(ctx, cfg, state, resolve.Resolver{Runner: a.Runner})
 	if err != nil {
 		return a.fatal(err)
+	}
+	if !hasPlanActions(p) {
+		return a.preparePlan(ctx, p, ui.UI{})
 	}
 
 	tty, err := ui.OpenTTY()
@@ -314,10 +318,12 @@ func (a Runtime) preparePlan(ctx context.Context, p plan.Plan, terminal ui.UI) i
 	}
 
 	githubStatus := p.GitHubStatus
-	if githubWork {
+	if githubWork && sshStatus != "failed" {
 		var githubIssues []issue
 		githubStatus, githubIssues = a.configureGitHub(ctx, terminal, managed, p)
 		problems = append(problems, githubIssues...)
+	} else if githubWork {
+		githubStatus = "skipped"
 	} else if sshWork && sshStatus == "ready" && managed != nil {
 		if err := (githubops.Manager{Runner: a.Runner}).VerifySSH(ctx); err != nil {
 			githubStatus = "failed"
@@ -720,7 +726,9 @@ func (a Runtime) configureSSH(ctx context.Context, terminal ui.UI, p plan.Plan) 
 			if p.LoadSSHAgent && !loaded {
 				a.showProgress("ssh-agent managed key", actionConfigure, "load identity")
 				a.showExternal("ssh-add", "SSH key passphrase prompt")
-				_ = m.Load(ctx, managed.PrivatePath)
+				if err := m.Load(ctx, managed.PrivatePath); err != nil {
+					return "failed", managed, []issue{*setupIssue("ssh-agent", err)}, nil
+				}
 			}
 		}
 	}
@@ -769,6 +777,9 @@ func (a Runtime) configureGitHub(ctx context.Context, terminal ui.UI, managed *s
 		if err := m.RefreshSSHKeyScope(ctx); err != nil {
 			return "failed", []issue{*setupIssue("GitHub authorization", err)}
 		}
+	}
+	if p.GitHubKeyStateUnknown {
+		a.showProgress("GitHub SSH keys", actionInspect, "reconcile account keys")
 	}
 	keys, err := m.Keys(ctx)
 	if err != nil {
@@ -963,14 +974,18 @@ func planSections(p plan.Plan) []outputSection {
 	}
 	if p.ReviewGitHubKeys {
 		detail := "account keys"
-		if p.GitHubKeyAfterIdentity {
-			detail = "reconcile after identity creation"
-		} else if p.RefreshGitHubSSHKeyScope {
-			detail = "existing keys after authorization refresh, if present"
-		} else if p.GitHubKeyStateUnknown {
-			detail = "existing keys after login, if present"
+		action := actionReview
+		if p.GitHubKeyStateUnknown {
+			action = actionInspect
+			if p.GitHubKeyAfterIdentity {
+				detail = "reconcile after identity creation"
+			} else if p.RefreshGitHubSSHKeyScope {
+				detail = "reconcile after authorization refresh"
+			} else {
+				detail = "reconcile after login"
+			}
 		}
-		accessRows = append(accessRows, ui.TableRow{Item: "GitHub SSH keys", Action: actionReview, Detail: detail})
+		accessRows = append(accessRows, ui.TableRow{Item: "GitHub SSH keys", Action: action, Detail: detail})
 	}
 	if p.ConfigureGitHubKey {
 		detail := "managed key"

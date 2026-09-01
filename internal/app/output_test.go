@@ -28,7 +28,7 @@ func TestShowPlanRealV100Workstation(t *testing.T) {
 		"  SSH identities                review        unrelated local keys\n" +
 		"  github.com SSH configuration  configure     managed identity and host trust\n" +
 		"  github                        authenticate  CLI login; SSH-key permission\n" +
-		"  GitHub SSH keys               review        existing keys after login, if present\n" +
+		"  GitHub SSH keys               inspect       reconcile after login\n" +
 		"  GitHub SSH key                configure     register after login, if missing\n" +
 		"\nUnchanged\n" +
 		"  5 core components\n" +
@@ -269,10 +269,11 @@ func TestPlanActionVocabularyIsCompleteAndClosed(t *testing.T) {
 			Services: []string{"example.service"},
 		}},
 		ConfigureGit: true, ReviewSSHIdentities: true, AuthenticateGitHub: true,
+		ReviewGitHubKeys: true, GitHubKeyStateUnknown: true,
 	}
 	want := map[string]bool{
 		actionInstall: true, actionConfigure: true, actionUpgrade: true,
-		actionEnable: true, actionAuthenticate: true, actionReview: true,
+		actionEnable: true, actionAuthenticate: true, actionReview: true, actionInspect: true,
 	}
 	got := make(map[string]bool)
 	for _, section := range planSections(p) {
