@@ -69,7 +69,7 @@ func (f *stateRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) 
 		if len(spec.Args) > 0 && spec.Args[0] == "api" {
 			f.apiCalls++
 			if f.insufficientScope {
-				return run.Result{}, errors.New(`gh: This API operation needs the "admin:public_key" scope`)
+				return run.Result{}, &run.Error{Name: "gh", Args: spec.Args, Stderr: `gh: This API operation needs the "admin:public_key" scope`, Err: errors.New("exit status 1")}
 			}
 			return run.Result{Stdout: `[{"id":1,"title":"managed","key":"` + f.managedKey + `"},{"id":2,"title":"other","key":"` + f.otherKey + `"}]`}, nil
 		}

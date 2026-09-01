@@ -60,11 +60,15 @@ func (m Manager) RefreshSSHKeyScope(ctx context.Context) error {
 // IsSSHKeyScopeError identifies GitHub's documented insufficient-scope API
 // response without inspecting a token or credential store.
 func IsSSHKeyScopeError(err error) bool {
-	if err == nil {
+	var commandErr *run.Error
+	if !errors.As(err, &commandErr) || commandErr.Name != "gh" || !sshKeyAPI(commandErr.Args) {
 		return false
 	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, sshKeyScope) && strings.Contains(message, "scope")
+	return strings.Contains(strings.ToLower(commandErr.Stderr), `this api operation needs the "admin:public_key" scope`)
+}
+
+func sshKeyAPI(args []string) bool {
+	return len(args) == 3 && args[0] == "api" && args[1] == "--paginate" && args[2] == "user/keys"
 }
 
 func (m Manager) Keys(ctx context.Context) ([]Key, error) {

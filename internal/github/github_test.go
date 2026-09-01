@@ -87,12 +87,33 @@ func TestRefreshSSHKeyScopeUsesSupportedGHCommand(t *testing.T) {
 }
 
 func TestIsSSHKeyScopeError(t *testing.T) {
-	if !IsSSHKeyScopeError(errors.New(`gh: This API operation needs the "admin:public_key" scope`)) {
-		t.Fatal("scope error was not recognized")
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "known user keys scope diagnostic", err: ghKeyAPIError(`gh: This API operation needs the "admin:public_key" scope`), want: true},
+		{name: "ordinary 401", err: ghKeyAPIError("gh: Bad credentials (HTTP 401)"), want: false},
+		{name: "ordinary 403", err: ghKeyAPIError("gh: Resource not accessible by integration (HTTP 403)"), want: false},
+		{name: "unrelated 404", err: ghKeyAPIError("gh: Not Found (HTTP 404)"), want: false},
+		{name: "rate limit", err: ghKeyAPIError("gh: API rate limit exceeded (HTTP 403)"), want: false},
+		{name: "network", err: ghKeyAPIError("dial tcp: network unavailable"), want: false},
+		{name: "malformed JSON", err: errors.New("parse GitHub SSH keys: invalid character '<' looking for beginning of value"), want: false},
+		{name: "unrelated scope text", err: ghKeyAPIError(`admin:public_key is mentioned by an unrelated scope error`), want: false},
+		{name: "wrong gh operation", err: &run.Error{Name: "gh", Args: []string{"api", "user/repos"}, Stderr: `This API operation needs the "admin:public_key" scope`, Err: errors.New("exit status 1")}, want: false},
+		{name: "unstructured wrapped text", err: errors.New(`gh: This API operation needs the "admin:public_key" scope`), want: false},
 	}
-	if IsSSHKeyScopeError(errors.New("network unavailable")) {
-		t.Fatal("unrelated error was classified as scope failure")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := IsSSHKeyScopeError(test.err); got != test.want {
+				t.Fatalf("IsSSHKeyScopeError(%v)=%v, want %v", test.err, got, test.want)
+			}
+		})
 	}
+}
+
+func ghKeyAPIError(stderr string) error {
+	return &run.Error{Name: "gh", Args: []string{"api", "--paginate", "user/keys"}, Stderr: stderr, Err: errors.New("exit status 1")}
 }
 
 func TestKeysAndDeleteFailure(t *testing.T) {
