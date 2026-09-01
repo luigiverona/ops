@@ -80,7 +80,7 @@ Identity and access
   SSH identities                review        unrelated local keys
   github.com SSH configuration  configure     managed identity and host trust
   github                        authenticate  CLI login
-  GitHub SSH keys               review        existing keys after login, if present
+  GitHub SSH keys               inspect       reconcile after login
   GitHub SSH key                configure     register after login, if missing
 
 Unchanged
@@ -114,7 +114,9 @@ passphrases, or account authentication retain their interactive terminal
 streams. ops marks those streams in `Progress` with an `external` row before the
 program runs. In v1.0.2, GitHub login requests `admin:public_key`, the minimum
 scope needed for ops-managed account SSH-key reconciliation; an existing session
-without it is explicitly planned for `gh auth refresh`.
+without it is explicitly planned for `gh auth refresh`. Deferred key
+reconciliation is `inspect`; `Review` appears only when keys are actually
+available for review.
 
 Application dependencies and maintained services are separate planned actions,
 with their owning application retained in the item name:
