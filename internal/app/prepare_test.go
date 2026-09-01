@@ -355,8 +355,8 @@ func TestPreparePlanContinuesUnrelatedWorkWhenHostKeyFreshnessUnavailable(t *tes
 		t.Fatalf("unavailable check hid or blocked unrelated work:\n%s", output.String())
 	}
 	for _, call := range runner.calls {
-		if call.Name == "ssh" || call.Name == "ssh-keygen" || call.Name == "ssh-add" {
-			t.Fatalf("unavailable freshness invented SSH work: %#v", call)
+		if call.Name == "ssh" || call.Name == "ssh-keygen" || call.Name == "ssh-add" || call.Name == "sudo" {
+			t.Fatalf("nonprivileged plan performed unexpected work: %#v", call)
 		}
 	}
 }
