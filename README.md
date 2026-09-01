@@ -54,7 +54,8 @@ ops --help      show command help
 ops --version   show the installed version
 ```
 
-Preparation is interactive and requires a TTY. `doctor`, `--help`, and
+Actionable preparation requires a TTY. A fully converged or diagnostic-only
+invocation can inspect and report without one. `doctor`, `--help`, and
 `--version` remain line-oriented when redirected. There is no dry-run flag and
 there are no other public commands.
 

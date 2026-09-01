@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -170,4 +171,59 @@ func TestAuthFailureAndSSHVerification(t *testing.T) {
 	if err := m.VerifySSH(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestVerifySSHIsStrictlyNoninteractive(t *testing.T) {
+	f := &fakeRunner{fn: func(spec run.Spec) (run.Result, error) {
+		if spec.Name != "ssh" {
+			t.Fatalf("command = %#v, want ssh", spec)
+		}
+		if got, want := spec.Args, []string{"-o", "BatchMode=yes", "-T", "git@github.com"}; !equalStrings(got, want) {
+			t.Fatalf("args = %#v, want %#v", got, want)
+		}
+		if spec.Interactive || spec.Interaction != "" {
+			t.Fatalf("verification unexpectedly owns terminal: %#v", spec)
+		}
+		if spec.Stdin == nil {
+			t.Fatal("verification inherited stdin")
+		}
+		data, err := io.ReadAll(spec.Stdin)
+		if err != nil {
+			t.Fatalf("read verification stdin: %v", err)
+		}
+		if len(data) != 0 {
+			t.Fatalf("verification stdin = %q, want EOF", data)
+		}
+		return run.Result{Stderr: "Hi! You've successfully authenticated, but GitHub does not provide shell access."}, errors.New("exit status 1")
+	}}
+	if err := (Manager{Runner: f}).VerifySSH(context.Background()); err != nil {
+		t.Fatalf("VerifySSH() error = %v, want successful authentication", err)
+	}
+}
+
+func TestVerifySSHReturnsActionableAuthenticationFailure(t *testing.T) {
+	f := &fakeRunner{fn: func(spec run.Spec) (run.Result, error) {
+		return run.Result{Stderr: "git@github.com: Permission denied (publickey)."}, &run.Error{
+			Name:   spec.Name,
+			Args:   spec.Args,
+			Stderr: "git@github.com: Permission denied (publickey).",
+			Err:    errors.New("exit status 255"),
+		}
+	}}
+	err := (Manager{Runner: f}).VerifySSH(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Permission denied (publickey)") {
+		t.Fatalf("VerifySSH() error = %v, want actionable authentication failure", err)
+	}
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }

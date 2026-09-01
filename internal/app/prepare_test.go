@@ -109,7 +109,7 @@ func (f *prepareRunner) Run(_ context.Context, spec run.Spec) (run.Result, error
 		}
 		return run.Result{Stdout: "[]"}, nil
 	}
-	if spec.Name == "ssh" && len(spec.Args) > 0 && spec.Args[0] == "-T" {
+	if spec.Name == "ssh" && len(spec.Args) == 4 && spec.Args[0] == "-o" && spec.Args[1] == "BatchMode=yes" && spec.Args[2] == "-T" && spec.Args[3] == "git@github.com" {
 		return run.Result{Stderr: "successfully authenticated"}, errors.New("exit status 1")
 	}
 	return run.Result{}, nil

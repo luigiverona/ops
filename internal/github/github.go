@@ -142,7 +142,11 @@ func (m Manager) AddManaged(ctx context.Context, path string) (bool, error) {
 
 // VerifySSH accepts GitHub's intentional exit 1 when its success message proves authentication.
 func (m Manager) VerifySSH(ctx context.Context) error {
-	result, err := m.Runner.Run(ctx, run.Spec{Name: "ssh", Args: []string{"-T", "git@github.com"}})
+	result, err := m.Runner.Run(ctx, run.Spec{
+		Name:  "ssh",
+		Args:  []string{"-o", "BatchMode=yes", "-T", "git@github.com"},
+		Stdin: strings.NewReader(""),
+	})
 	combined := strings.ToLower(result.Stdout + "\n" + result.Stderr)
 	if strings.Contains(combined, "successfully authenticated") {
 		return nil
