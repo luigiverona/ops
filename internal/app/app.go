@@ -479,6 +479,9 @@ func (a Runtime) Update(ctx context.Context) int {
 	}
 	defer verified.Close()
 	fmt.Fprintf(a.Out, "Verified\n  release         %s\n  signature       valid\n  sha256          valid\n", latest)
+	a.presentation = &presentation{}
+	a.showProgress("sudo", actionConfigure, "install verified update")
+	a.showExternal("sudo", "password prompt")
 	keeper, err := sudoops.Acquire(ctx, a.Runner)
 	if err != nil {
 		return a.fatal(fmt.Errorf("sudo authorization failed: %w", err))
