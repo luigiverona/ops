@@ -94,10 +94,10 @@ func (m Manager) BootstrapParu(ctx context.Context, source plan.AURSource, outpu
 	if err != nil || !sameFiles(files, currentFiles) {
 		return errors.New("reviewed AUR files changed before build")
 	}
-	if _, err := m.Runner.Run(ctx, run.Spec{Name: "makepkg", Dir: repo}); err != nil {
+	if _, err := m.Runner.Run(ctx, run.Spec{Name: "makepkg", Dir: repo, Stdin: strings.NewReader("")}); err != nil {
 		return err
 	}
-	result, err = m.Runner.Run(ctx, run.Spec{Name: "makepkg", Args: []string{"--packagelist"}, Dir: repo})
+	result, err = m.Runner.Run(ctx, run.Spec{Name: "makepkg", Args: []string{"--packagelist"}, Dir: repo, Stdin: strings.NewReader("")})
 	if err != nil {
 		return err
 	}

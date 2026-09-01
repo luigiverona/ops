@@ -3,6 +3,7 @@ package aur
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -222,6 +223,13 @@ func TestBootstrapParuReviewDriftBuildAndInstallOrder(t *testing.T) {
 		for _, call := range runner.calls {
 			if call.Name != "makepkg" {
 				continue
+			}
+			if call.Stdin == nil {
+				t.Fatalf("makepkg inherited runner stdin: %#v", call)
+			}
+			input, err := io.ReadAll(call.Stdin)
+			if err != nil || len(input) != 0 {
+				t.Fatalf("makepkg stdin=%q err=%v", input, err)
 			}
 			if len(call.Args) == 0 {
 				if call.Interactive {

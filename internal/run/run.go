@@ -64,7 +64,7 @@ func (e Exec) Run(ctx context.Context, spec Spec) (Result, error) {
 	err := cmd.Run()
 	result := Result{Stdout: stdout.String(), Stderr: stderr.String()}
 	if err != nil {
-		return result, &Error{Name: spec.Name, Args: append([]string(nil), spec.Args...), Stderr: strings.TrimSpace(result.Stderr), Err: err}
+		return result, &Error{Name: spec.Name, Args: append([]string(nil), spec.Args...), Stderr: strings.TrimSpace(result.Stderr), Presented: spec.Interactive, Err: err}
 	}
 	return result, nil
 }
@@ -92,14 +92,15 @@ func (b *tailBuffer) String() string { return string(b.data) }
 
 // Error preserves actionable stderr while avoiding shell-formatted commands.
 type Error struct {
-	Name   string
-	Args   []string
-	Stderr string
-	Err    error
+	Name      string
+	Args      []string
+	Stderr    string
+	Presented bool
+	Err       error
 }
 
 func (e *Error) Error() string {
-	if e.Stderr != "" {
+	if e.Stderr != "" && !e.Presented {
 		return fmt.Sprintf("%s failed: %s", e.Name, e.Stderr)
 	}
 	return fmt.Sprintf("%s failed: %v", e.Name, e.Err)
