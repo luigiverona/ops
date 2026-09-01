@@ -410,7 +410,7 @@ func (a Runtime) Doctor(ctx context.Context) int {
 	fmt.Fprintln(a.Out, "Doctor\n\nSystem\n  platform        ready\n  privilege       normal user")
 	fmt.Fprintln(a.Out, "\nCore")
 	for _, component := range plan.CoreOrder {
-		fmt.Fprintf(a.Out, "  %-15s %s\n", component, p.Core[component])
+		fmt.Fprintf(a.Out, "  %-15s %s\n", ui.PrintableASCII(component), ui.PrintableASCII(p.Core[component]))
 		actionable = actionable || p.Core[component] != "ready"
 	}
 	fmt.Fprintln(a.Out, "\nApplications")
@@ -418,10 +418,10 @@ func (a Runtime) Doctor(ctx context.Context) int {
 		fmt.Fprintln(a.Out, "  declared        none")
 	}
 	for _, application := range p.Applications {
-		fmt.Fprintf(a.Out, "  %-15s %s\n", application.Declaration.Identifier, application.State)
+		fmt.Fprintf(a.Out, "  %-15s %s\n", ui.PrintableASCII(application.Declaration.Identifier), ui.PrintableASCII(application.State))
 		actionable = actionable || application.State != "ready"
 	}
-	fmt.Fprintf(a.Out, "\nConfiguration\n  git             %s\n  ssh             %s\n  github          %s\n", p.GitStatus, p.SSHStatus, p.GitHubStatus)
+	fmt.Fprintf(a.Out, "\nConfiguration\n  git             %s\n  ssh             %s\n  github          %s\n", ui.PrintableASCII(p.GitStatus), ui.PrintableASCII(p.SSHStatus), ui.PrintableASCII(p.GitHubStatus))
 	actionable = actionable || p.GitStatus != "ready" || p.SSHStatus != "ready" || p.GitHubStatus != "ready"
 	if p.SSHHostKeyFreshness == plan.SSHHostKeyFreshnessUnavailable {
 		fmt.Fprintln(a.Out, "\nChecks\n  GitHub SSH host-key freshness  unavailable  retry later")
