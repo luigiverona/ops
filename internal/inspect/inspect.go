@@ -128,6 +128,10 @@ func (w Workstation) State(ctx context.Context) (plan.State, error) {
 	if state.GitHubAuth {
 		keys, err := githubManager.Keys(ctx)
 		if err != nil {
+			if githubops.IsSSHKeyScopeError(err) {
+				state.GitHubSSHKeyScopeInsufficient = true
+				return state, nil
+			}
 			return state, fmt.Errorf("inspect GitHub SSH keys: %w", err)
 		}
 		state.GitHubKeysKnown = true

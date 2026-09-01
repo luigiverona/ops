@@ -18,11 +18,12 @@ import (
 )
 
 type stateRunner struct {
-	managedKey    string
-	otherKey      string
-	authenticated bool
-	apiCalls      int
-	home          string
+	managedKey        string
+	otherKey          string
+	authenticated     bool
+	insufficientScope bool
+	apiCalls          int
+	home              string
 }
 
 func (f *stateRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
@@ -67,10 +68,24 @@ func (f *stateRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) 
 		}
 		if len(spec.Args) > 0 && spec.Args[0] == "api" {
 			f.apiCalls++
+			if f.insufficientScope {
+				return run.Result{}, errors.New(`gh: This API operation needs the "admin:public_key" scope`)
+			}
 			return run.Result{Stdout: `[{"id":1,"title":"managed","key":"` + f.managedKey + `"},{"id":2,"title":"other","key":"` + f.otherKey + `"}]`}, nil
 		}
 	}
 	return run.Result{}, errors.New("unexpected command")
+}
+
+func TestStatePlansScopeRefreshInsteadOfFailingInspection(t *testing.T) {
+	runner := &stateRunner{managedKey: statePublicKey(1), otherKey: statePublicKey(2), authenticated: true, insufficientScope: true}
+	state, err := (Workstation{Home: t.TempDir(), Runner: runner, PacmanConf: filepath.Join(t.TempDir(), "missing")}).State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.GitHubAuth || !state.GitHubSSHKeyScopeInsufficient || state.GitHubKeysKnown || runner.apiCalls != 1 {
+		t.Fatalf("scope state=%#v api=%d", state, runner.apiCalls)
+	}
 }
 
 func TestStateInspectsManagedLocalAgentAndGitHubKeysReadOnly(t *testing.T) {
