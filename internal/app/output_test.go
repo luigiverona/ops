@@ -27,7 +27,7 @@ func TestShowPlanRealV100Workstation(t *testing.T) {
 		"\nIdentity and access\n" +
 		"  SSH identities                review        unrelated local keys\n" +
 		"  github.com SSH configuration  configure     managed identity and host trust\n" +
-		"  github                        authenticate  CLI login\n" +
+		"  github                        authenticate  CLI login; SSH-key permission\n" +
 		"  GitHub SSH keys               review        existing keys after login, if present\n" +
 		"  GitHub SSH key                configure     register after login, if missing\n" +
 		"\nUnchanged\n" +
@@ -57,6 +57,53 @@ func TestShowPlanApplicationSourcesAndLongIdentifiers(t *testing.T) {
 		"  an-extremely-long-application-identifier  install  aur; review required\n"
 	if output.String() != want {
 		t.Fatalf("plan mismatch\n--- got ---\n%s--- want ---\n%s", output.String(), want)
+	}
+}
+
+func TestShowPlanSeparatesApplicationDiagnosticsFromReviewActions(t *testing.T) {
+	p := plan.Plan{Applications: []plan.Application{
+		{Declaration: config.Application{Identifier: "librewolf-bin", Source: "aur"}, State: "unresolved", Cause: "exact identifier was not found in the declared source"},
+		{Declaration: config.Application{Identifier: "mullvad-browser-bin", Source: "aur"}, State: "failed", Cause: "optional dependency resolution failed: source unavailable"},
+		{Declaration: config.Application{Identifier: "bitwarden", Source: "pacman"}, State: "install"},
+	}, ReviewSSHIdentities: true}
+	var output bytes.Buffer
+	Runtime{Out: &output}.showPlan(p)
+	got := output.String()
+	if !strings.Contains(got, "Application diagnostics\n  librewolf-bin        unresolved") || !strings.Contains(got, "mullvad-browser-bin  failed") {
+		t.Fatalf("diagnostics were not distinct:\n%s", got)
+	}
+	if strings.Contains(got, "librewolf-bin        review") || !strings.Contains(got, "SSH identities  review") {
+		t.Fatalf("review vocabulary was not reserved for real review:\n%s", got)
+	}
+}
+
+func TestShowPlanIncludesScopeRefreshOnlyWhenNeeded(t *testing.T) {
+	state := readyExecutionState()
+	state.GitHubSSHKeyScopeInsufficient = true
+	p, err := plan.Build(context.Background(), config.Config{Version: 1}, state, outputResolver{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.AuthenticateGitHub || !p.RefreshGitHubSSHKeyScope {
+		t.Fatalf("scope refresh plan=%#v", p)
+	}
+	var output bytes.Buffer
+	Runtime{Out: &output}.showPlan(p)
+	if !strings.Contains(output.String(), "github           authenticate  add SSH-key management permission") {
+		t.Fatalf("scope refresh was not planned:\n%s", output.String())
+	}
+}
+
+func TestReportGroupsIssuesAndPreservesMultilineAlignment(t *testing.T) {
+	p := plan.Plan{Applications: []plan.Application{{Declaration: config.Application{Identifier: "one", Source: "aur"}}, {Declaration: config.Application{Identifier: "two", Source: "flatpak"}}}}
+	var output bytes.Buffer
+	Runtime{Out: &output}.report(p, 0, "ready", "ready", "failed", []issue{
+		{State: "Unresolved", Name: "one", Source: "aur", Cause: "missing\nnext\x1b[31m", Impact: "not installed", Action: "fix declaration"},
+		{State: "Failed", Name: "two", Stage: "setup", Cause: "broken", Impact: "not installed", Action: "retry"},
+	})
+	want := "\nIssues\n\nUnresolved\n\none\n  source  aur\n  cause   missing\n          next\\x1b[31m\n  impact  not installed\n  action  fix declaration\n\nFailed\n\ntwo\n  stage   setup\n  cause   broken\n  impact  not installed\n  action  retry\n\nFinal\n  system  ready\n  core    7/7\n  apps    0/2\n  git     ready\n  ssh     ready\n  github  failed\n\nWorkstation completed with issues.\n"
+	if output.String() != want {
+		t.Fatalf("report mismatch\n--- got ---\n%s--- want ---\n%s", output.String(), want)
 	}
 }
 
@@ -208,7 +255,7 @@ func TestProgressAndFailureRenderingRemainStructured(t *testing.T) {
 
 	var failure bytes.Buffer
 	code := (Runtime{Err: &failure}).fatal(errors.New("example failure"))
-	want := "Failed\n\nops\n  cause           example failure\n  impact          workstation preparation could not safely continue\n  action          resolve the error and run ops again\n\nWorkstation preparation stopped.\n"
+	want := "Issues\n\nFailed\n\nops\n  cause   example failure\n  impact  workstation preparation could not safely continue\n  action  resolve the error and run ops again\n\nFinal\n  system  stopped\nWorkstation preparation stopped.\n"
 	if code != Fatal || failure.String() != want {
 		t.Fatalf("failure code=%d\n--- got ---\n%s--- want ---\n%s", code, failure.String(), want)
 	}

@@ -105,7 +105,7 @@ func (m Manager) EnableMultilib(ctx context.Context) error {
 }
 
 func (m Manager) FullUpgrade(ctx context.Context) error {
-	_, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "pacman", "-Syu"}, Interactive: true})
+	_, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "pacman", "-Syu"}, Interactive: true, Interaction: "pacman transaction decisions"})
 	return err
 }
 

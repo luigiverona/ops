@@ -228,8 +228,8 @@ func TestPreparePlanDeterministicParuBootstrap(t *testing.T) {
 				t.Fatalf("approved bootstrap transaction became interactive: %#v", call)
 			}
 		}
-		if call.Name == "makepkg" && len(call.Args) == 0 && !call.Interactive {
-			t.Fatalf("makepkg did not run as the interactive normal-user build: %#v", call)
+		if call.Name == "makepkg" && len(call.Args) == 0 && call.Interactive {
+			t.Fatalf("makepkg leaked an unnecessary interactive stream: %#v", call)
 		}
 	}
 	if interactiveSudo != 1 {
@@ -244,6 +244,7 @@ func TestPreparePlanDeterministicParuBootstrap(t *testing.T) {
 		}
 	}
 	wantProgress := []string{
+		"sudo|configure|privileged operations",
 		"full system upgrade|upgrade|pacman; confirm transaction in pacman",
 		"paru -> base-devel|install|pacman; build dependency",
 		"paru -> llvm-libs|install|pacman; build dependency",

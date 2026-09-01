@@ -94,7 +94,7 @@ func (m Manager) BootstrapParu(ctx context.Context, source plan.AURSource, outpu
 	if err != nil || !sameFiles(files, currentFiles) {
 		return errors.New("reviewed AUR files changed before build")
 	}
-	if _, err := m.Runner.Run(ctx, run.Spec{Name: "makepkg", Dir: repo, Interactive: true}); err != nil {
+	if _, err := m.Runner.Run(ctx, run.Spec{Name: "makepkg", Dir: repo}); err != nil {
 		return err
 	}
 	result, err = m.Runner.Run(ctx, run.Spec{Name: "makepkg", Args: []string{"--packagelist"}, Dir: repo})
@@ -179,7 +179,7 @@ func (m Manager) install(ctx context.Context, name string, asDependency bool) er
 		args = append(args, "--asdeps")
 	}
 	args = append(args, "--", name)
-	_, err := m.Runner.Run(ctx, run.Spec{Name: "paru", Args: args, Interactive: true})
+	_, err := m.Runner.Run(ctx, run.Spec{Name: "paru", Args: args, Interactive: true, Interaction: "AUR package review and transaction decisions"})
 	return err
 }
 

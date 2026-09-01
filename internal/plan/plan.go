@@ -30,26 +30,27 @@ const (
 
 // State is discovered from real package and user configuration state.
 type State struct {
-	Installed                   map[string]bool
-	Foreign                     map[string]bool
-	Flatpaks                    map[string]bool
-	Paru                        bool
-	Flathub                     bool
-	Multilib                    bool
-	GitName                     string
-	GitEmail                    string
-	ManagedSSHIdentity          bool
-	SSHConfigurationReady       bool // recognized, locally safe managed configuration
-	SSHHostKeyFreshness         SSHHostKeyFreshness
-	UnrelatedSSHIdentities      int
-	SSHAgentAvailable           bool
-	ManagedSSHAgentIdentity     bool
-	UnrelatedSSHAgentIdentities int
-	GitHubAuth                  bool
-	GitHubKeysKnown             bool // remote list retrieval succeeded
-	ManagedGitHubKeyKnown       bool // comparison was possible with a local fingerprint
-	ManagedGitHubKey            bool // the exact managed fingerprint was found
-	OtherGitHubKeys             int
+	Installed                     map[string]bool
+	Foreign                       map[string]bool
+	Flatpaks                      map[string]bool
+	Paru                          bool
+	Flathub                       bool
+	Multilib                      bool
+	GitName                       string
+	GitEmail                      string
+	ManagedSSHIdentity            bool
+	SSHConfigurationReady         bool // recognized, locally safe managed configuration
+	SSHHostKeyFreshness           SSHHostKeyFreshness
+	UnrelatedSSHIdentities        int
+	SSHAgentAvailable             bool
+	ManagedSSHAgentIdentity       bool
+	UnrelatedSSHAgentIdentities   int
+	GitHubAuth                    bool
+	GitHubSSHKeyScopeInsufficient bool // gh authenticated, but user/keys requires admin:public_key
+	GitHubKeysKnown               bool // remote list retrieval succeeded
+	ManagedGitHubKeyKnown         bool // comparison was possible with a local fingerprint
+	ManagedGitHubKey              bool // the exact managed fingerprint was found
+	OtherGitHubKeys               int
 }
 
 // Package is remote metadata required to plan optional functionality and repositories.
@@ -114,32 +115,33 @@ type Dependency struct {
 
 // Plan is a complete, immutable plan presented before authorization.
 type Plan struct {
-	Core                   map[string]string
-	Applications           []Application
-	CorePackages           []string
-	EnableMultilib         bool
-	FullUpgrade            bool
-	BootstrapParu          bool
-	ParuSource             AURSource
-	ParuDependencies       []OfficialDependency
-	ParuPackages           []BootstrapPackage
-	ParuOutputs            []string
-	AddFlathub             bool
-	GitStatus              string
-	SSHStatus              string
-	GitHubStatus           string
-	ConfigureGit           bool
-	CreateSSHIdentity      bool
-	ReviewSSHIdentities    bool
-	ReviewSSHAgent         bool
-	LoadSSHAgent           bool
-	ConfigureSSH           bool
-	AuthenticateGitHub     bool
-	ReviewGitHubKeys       bool
-	ConfigureGitHubKey     bool
-	GitHubKeyStateUnknown  bool
-	GitHubKeyAfterIdentity bool
-	SSHHostKeyFreshness    SSHHostKeyFreshness
+	Core                     map[string]string
+	Applications             []Application
+	CorePackages             []string
+	EnableMultilib           bool
+	FullUpgrade              bool
+	BootstrapParu            bool
+	ParuSource               AURSource
+	ParuDependencies         []OfficialDependency
+	ParuPackages             []BootstrapPackage
+	ParuOutputs              []string
+	AddFlathub               bool
+	GitStatus                string
+	SSHStatus                string
+	GitHubStatus             string
+	ConfigureGit             bool
+	CreateSSHIdentity        bool
+	ReviewSSHIdentities      bool
+	ReviewSSHAgent           bool
+	LoadSSHAgent             bool
+	ConfigureSSH             bool
+	AuthenticateGitHub       bool
+	RefreshGitHubSSHKeyScope bool
+	ReviewGitHubKeys         bool
+	ConfigureGitHubKey       bool
+	GitHubKeyStateUnknown    bool
+	GitHubKeyAfterIdentity   bool
+	SSHHostKeyFreshness      SSHHostKeyFreshness
 }
 
 // Build resolves only missing declarations and produces a deterministic plan.
@@ -241,7 +243,8 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 	p.ReviewSSHAgent = sshSetupRequired && state.SSHAgentAvailable && state.UnrelatedSSHAgentIdentities > 0
 	p.LoadSSHAgent = sshSetupRequired && state.SSHAgentAvailable && !state.ManagedSSHAgentIdentity
 	p.AuthenticateGitHub = !state.GitHubAuth
-	p.GitHubKeyStateUnknown = !state.GitHubAuth || !state.GitHubKeysKnown || !state.ManagedGitHubKeyKnown
+	p.RefreshGitHubSSHKeyScope = state.GitHubAuth && state.GitHubSSHKeyScopeInsufficient
+	p.GitHubKeyStateUnknown = !state.GitHubAuth || p.RefreshGitHubSSHKeyScope || !state.GitHubKeysKnown || !state.ManagedGitHubKeyKnown
 	p.GitHubKeyAfterIdentity = !state.ManagedSSHIdentity
 	p.ConfigureGitHubKey = p.GitHubKeyStateUnknown || !state.ManagedGitHubKey
 	p.ReviewGitHubKeys = p.GitHubKeyStateUnknown || (p.ConfigureGitHubKey && state.OtherGitHubKeys > 0)
@@ -250,7 +253,7 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 	if state.SSHConfigurationReady && p.SSHHostKeyFreshness == SSHHostKeyFreshnessUnavailable {
 		p.SSHStatus = "unavailable"
 	}
-	p.GitHubStatus = pairStatus(!p.AuthenticateGitHub && !p.ReviewGitHubKeys && !p.ConfigureGitHubKey)
+	p.GitHubStatus = pairStatus(!p.AuthenticateGitHub && !p.RefreshGitHubSSHKeyScope && !p.ReviewGitHubKeys && !p.ConfigureGitHubKey)
 
 	for _, declaration := range cfg.Applications {
 		app := Application{Declaration: declaration}

@@ -18,6 +18,10 @@ type Spec struct {
 	Env         []string
 	Stdin       io.Reader
 	Interactive bool
+	// Interaction documents why this child, rather than ops, must own the
+	// terminal. Interactive commands without it are rejected to prevent an
+	// implementation shortcut from leaking arbitrary child output.
+	Interaction string
 }
 
 // Result contains captured output. Output is limited by callers when reported.
@@ -39,6 +43,9 @@ type Exec struct {
 }
 
 func (e Exec) Run(ctx context.Context, spec Spec) (Result, error) {
+	if spec.Interactive && spec.Interaction == "" {
+		return Result{}, fmt.Errorf("interactive command %q has no declared terminal boundary", spec.Name)
+	}
 	cmd := exec.CommandContext(ctx, spec.Name, spec.Args...)
 	cmd.Dir = spec.Dir
 	cmd.Env = append(os.Environ(), spec.Env...)

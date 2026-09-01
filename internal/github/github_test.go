@@ -59,8 +59,39 @@ func TestAuthenticationStatesAndLoginFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := strings.Join(f.calls[1].spec.Args, " ")
-	if !strings.Contains(args, "--git-protocol ssh") || !strings.Contains(args, "--skip-ssh-key") {
+	if !strings.Contains(args, "--git-protocol ssh") || !strings.Contains(args, "--skip-ssh-key") || !strings.Contains(args, "--scopes admin:public_key") {
 		t.Fatalf("unsafe login args: %s", args)
+	}
+	if !f.calls[1].spec.Interactive || f.calls[1].spec.Interaction == "" {
+		t.Fatalf("login terminal ownership was not declared: %#v", f.calls[1].spec)
+	}
+}
+
+func TestRefreshSSHKeyScopeUsesSupportedGHCommand(t *testing.T) {
+	f := &fakeRunner{fn: func(spec run.Spec) (run.Result, error) {
+		if len(spec.Args) > 1 && spec.Args[0] == "auth" && spec.Args[1] == "refresh" {
+			return run.Result{}, nil
+		}
+		if len(spec.Args) > 1 && spec.Args[0] == "auth" && spec.Args[1] == "status" {
+			return run.Result{}, nil
+		}
+		return run.Result{}, errors.New("unexpected command")
+	}}
+	if err := (Manager{Runner: f}).RefreshSSHKeyScope(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(f.calls[0].spec.Args, " ")
+	if args != "auth refresh --hostname github.com --scopes admin:public_key" || !f.calls[0].spec.Interactive || f.calls[0].spec.Interaction == "" {
+		t.Fatalf("refresh=%#v", f.calls[0].spec)
+	}
+}
+
+func TestIsSSHKeyScopeError(t *testing.T) {
+	if !IsSSHKeyScopeError(errors.New(`gh: This API operation needs the "admin:public_key" scope`)) {
+		t.Fatal("scope error was not recognized")
+	}
+	if IsSSHKeyScopeError(errors.New("network unavailable")) {
+		t.Fatal("unrelated error was classified as scope failure")
 	}
 }
 

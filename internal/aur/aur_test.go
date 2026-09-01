@@ -224,8 +224,8 @@ func TestBootstrapParuReviewDriftBuildAndInstallOrder(t *testing.T) {
 				continue
 			}
 			if len(call.Args) == 0 {
-				if !call.Interactive {
-					t.Fatal("makepkg build lost normal-user interactive stream")
+				if call.Interactive {
+					t.Fatal("makepkg build leaked a normal-user interactive stream")
 				}
 				continue
 			}

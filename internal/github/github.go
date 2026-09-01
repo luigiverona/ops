@@ -26,13 +26,15 @@ type Key struct {
 // Manager invokes gh without handling tokens itself.
 type Manager struct{ Runner run.Runner }
 
+const sshKeyScope = "admin:public_key"
+
 func (m Manager) Authenticated(ctx context.Context) bool {
 	_, err := m.Runner.Run(ctx, run.Spec{Name: "gh", Args: []string{"auth", "status", "--hostname", "github.com", "--active"}})
 	return err == nil
 }
 
 func (m Manager) Login(ctx context.Context) error {
-	_, err := m.Runner.Run(ctx, run.Spec{Name: "gh", Args: []string{"auth", "login", "--hostname", "github.com", "--git-protocol", "ssh", "--skip-ssh-key", "--web"}, Interactive: true})
+	_, err := m.Runner.Run(ctx, run.Spec{Name: "gh", Args: []string{"auth", "login", "--hostname", "github.com", "--git-protocol", "ssh", "--skip-ssh-key", "--web", "--scopes", sshKeyScope}, Interactive: true, Interaction: "GitHub device authentication"})
 	if err != nil {
 		return err
 	}
@@ -40,6 +42,29 @@ func (m Manager) Login(ctx context.Context) error {
 		return errors.New("GitHub authentication verification failed")
 	}
 	return nil
+}
+
+// RefreshSSHKeyScope adds only the authorization needed to enumerate and
+// manage account SSH keys. gh continues to own all credential storage.
+func (m Manager) RefreshSSHKeyScope(ctx context.Context) error {
+	_, err := m.Runner.Run(ctx, run.Spec{Name: "gh", Args: []string{"auth", "refresh", "--hostname", "github.com", "--scopes", sshKeyScope}, Interactive: true, Interaction: "GitHub SSH-key authorization"})
+	if err != nil {
+		return err
+	}
+	if !m.Authenticated(ctx) {
+		return errors.New("GitHub authentication verification failed")
+	}
+	return nil
+}
+
+// IsSSHKeyScopeError identifies GitHub's documented insufficient-scope API
+// response without inspecting a token or credential store.
+func IsSSHKeyScopeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, sshKeyScope) && strings.Contains(message, "scope")
 }
 
 func (m Manager) Keys(ctx context.Context) ([]Key, error) {

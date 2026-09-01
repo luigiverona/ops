@@ -55,10 +55,16 @@ type Runtime struct {
 	OSRelease      string
 	SSHHTTP        *http.Client
 	SSHMetadataURL string
+	presentation   *presentation
 }
 
 type issue struct {
 	State, Name, Source, Stage, Cause, Impact, Action string
+}
+
+type presentation struct {
+	progressStarted bool
+	reviewActive    bool
 }
 
 // Prepare executes the interactive reconciliation lifecycle.
@@ -93,19 +99,30 @@ func (a Runtime) Prepare(ctx context.Context) int {
 }
 
 func (a Runtime) preparePlan(ctx context.Context, p plan.Plan, terminal ui.UI) int {
+	a.presentation = &presentation{}
 	a.showPlan(p)
+	plannedProblems := planIssues(p)
+	if !hasPlanActions(p) {
+		a.report(p, readyApplicationCount(p), p.GitStatus, p.SSHStatus, p.GitHubStatus, plannedProblems)
+		if len(plannedProblems) > 0 {
+			return Issues
+		}
+		return Success
+	}
 	confirmed, err := terminal.Confirm("Prepare this workstation?", true)
 	if err != nil {
 		return a.fatal(err)
 	}
 	if !confirmed {
-		fmt.Fprintln(a.Out, "\nFinal\n  system          skipped\n\nWorkstation prepared.")
+		a.reportSkipped(p)
 		return Success
 	}
 
 	privileged := needsPrivilege(p)
 	var keeper *sudoops.Keeper
 	if privileged {
+		a.showProgress("sudo", actionConfigure, "privileged operations")
+		a.showExternal("sudo", "password prompt")
 		keeper, err = sudoops.Acquire(ctx, a.Runner)
 		if err != nil {
 			return a.fatal(fmt.Errorf("sudo authorization failed: %w", err))
@@ -122,6 +139,7 @@ func (a Runtime) preparePlan(ctx context.Context, p plan.Plan, terminal ui.UI) i
 	}
 	if p.FullUpgrade {
 		a.showProgress("full system upgrade", actionUpgrade, fullUpgradeDetail)
+		a.showExternal("pacman -Syu", "pacman transaction decisions")
 		if err := archManager.FullUpgrade(ctx); err != nil {
 			return a.coreFatal("Arch system upgrade", err, "package installation cannot continue safely")
 		}
@@ -138,14 +156,14 @@ func (a Runtime) preparePlan(ctx context.Context, p plan.Plan, terminal ui.UI) i
 	}
 
 	aurManager := aur.Manager{Runner: a.Runner, Review: func(name string, files map[string]string) error {
-		fmt.Fprintf(terminal.Out, "\nAUR build files for %s are untrusted community instructions.\n", name)
+		a.showReview("AUR build files for "+name, []ui.Field{{Name: "notice", Value: "untrusted community instructions"}})
 		names := make([]string, 0, len(files))
 		for filename := range files {
 			names = append(names, filename)
 		}
 		sort.Strings(names)
 		for _, filename := range names {
-			fmt.Fprintf(terminal.Out, "\nFile %s\n%s\n", filename, files[filename])
+			fmt.Fprintf(a.Out, "\n%s", ui.RenderReviewFile(filename, files[filename]))
 		}
 		ok, err := terminal.Confirm("Build and install this reviewed AUR package?", false)
 		if err != nil {
@@ -249,7 +267,7 @@ func (a Runtime) preparePlan(ctx context.Context, p plan.Plan, terminal ui.UI) i
 		return a.coreFatal("core verification", err, "the required core is incomplete")
 	}
 
-	var problems []issue
+	problems := plannedProblems
 	readyApps := 0
 	for _, application := range p.Applications {
 		if application.State == "ready" || application.CoveredByBootstrap {
@@ -257,7 +275,6 @@ func (a Runtime) preparePlan(ctx context.Context, p plan.Plan, terminal ui.UI) i
 			continue
 		}
 		if application.State == "unresolved" || application.State == "failed" {
-			problems = append(problems, issue{State: titleState(application.State), Name: application.Declaration.Identifier, Source: application.Declaration.Source, Cause: application.Cause, Impact: "application was not installed", Action: "check the declared identifier and source, then run ops again"})
 			continue
 		}
 		if err := a.installApplication(ctx, archManager, aurManager, flatpakManager, application); err != nil {
@@ -279,7 +296,7 @@ func (a Runtime) preparePlan(ctx context.Context, p plan.Plan, terminal ui.UI) i
 	sshStatus := p.SSHStatus
 	var managed *sshops.Identity
 	sshWork := p.CreateSSHIdentity || p.ReviewSSHIdentities || p.ReviewSSHAgent || p.LoadSSHAgent || p.ConfigureSSH
-	githubWork := p.AuthenticateGitHub || p.ReviewGitHubKeys || p.ConfigureGitHubKey
+	githubWork := p.AuthenticateGitHub || p.RefreshGitHubSSHKeyScope || p.ReviewGitHubKeys || p.ConfigureGitHubKey
 	if sshWork {
 		var sshIssues []issue
 		var fatalErr error
@@ -326,6 +343,36 @@ func packageSubset(current, planned []string) bool {
 		}
 	}
 	return true
+}
+
+func hasPlanActions(p plan.Plan) bool {
+	for _, section := range planSections(p) {
+		if !section.Diagnostic {
+			return true
+		}
+	}
+	return false
+}
+
+func planIssues(p plan.Plan) []issue {
+	problems := make([]issue, 0)
+	for _, application := range p.Applications {
+		if application.State != "unresolved" && application.State != "failed" {
+			continue
+		}
+		problems = append(problems, issue{State: titleState(application.State), Name: application.Declaration.Identifier, Source: application.Declaration.Source, Cause: application.Cause, Impact: "application was not installed", Action: "check the declared identifier and source, then run ops again"})
+	}
+	return problems
+}
+
+func readyApplicationCount(p plan.Plan) int {
+	ready := 0
+	for _, application := range p.Applications {
+		if application.State == "ready" || application.CoveredByBootstrap {
+			ready++
+		}
+	}
+	return ready
 }
 
 func (a Runtime) detect(ctx context.Context) error {
@@ -457,6 +504,9 @@ func needsPrivilege(p plan.Plan) bool {
 }
 
 func (a Runtime) installApplication(ctx context.Context, am arch.Manager, au aur.Manager, fm flatpak.Manager, application plan.Application) error {
+	if a.presentation == nil {
+		a.presentation = &presentation{}
+	}
 	var deps []string
 	for _, dependency := range application.Dependencies {
 		if dependency.Source == "pacman" {
@@ -476,6 +526,7 @@ func (a Runtime) installApplication(ctx context.Context, am arch.Manager, au aur
 	for _, dependency := range application.Dependencies {
 		if dependency.Source == "aur" {
 			a.showProgress(application.Declaration.Identifier+" -> "+dependency.Identifier, actionInstall, "aur")
+			a.showExternal("paru", "AUR package review and transaction decisions")
 			if err := au.InstallDependency(ctx, dependency.Identifier); err != nil {
 				return fmt.Errorf("recommended AUR dependency installation failed: %w", err)
 			}
@@ -489,6 +540,7 @@ func (a Runtime) installApplication(ctx context.Context, am arch.Manager, au aur
 			return err
 		}
 	case "aur":
+		a.showExternal("paru", "AUR package review and transaction decisions")
 		if err := au.Install(ctx, name); err != nil {
 			return err
 		}
@@ -535,12 +587,16 @@ func (a Runtime) verifyCore(ctx context.Context) error {
 }
 
 func (a Runtime) configureGit(ctx context.Context, terminal ui.UI) (string, *issue) {
+	if a.presentation == nil {
+		a.presentation = &presentation{}
+	}
 	m := gitops.Manager{Runner: a.Runner}
 	current := m.Inspect(ctx)
 	if gitops.ValidName(current.Name) && gitops.ValidEmail(current.Email) {
 		return "ready", nil
 	}
 	name, email := current.Name, current.Email
+	a.showProgress("git", actionConfigure, "user identity; input required")
 	var err error
 	if !gitops.ValidName(name) {
 		name, err = terminal.Ask("Git user.name:")
@@ -554,7 +610,6 @@ func (a Runtime) configureGit(ctx context.Context, terminal ui.UI) (string, *iss
 			return "failed", setupIssue("Git", err)
 		}
 	}
-	a.showProgress("git", actionConfigure, "user identity")
 	if err := m.SetMissing(ctx, current, name, email); err != nil {
 		return "failed", setupIssue("Git", err)
 	}
@@ -562,6 +617,9 @@ func (a Runtime) configureGit(ctx context.Context, terminal ui.UI) (string, *iss
 }
 
 func (a Runtime) configureSSH(ctx context.Context, terminal ui.UI, p plan.Plan) (string, *sshops.Identity, []issue, error) {
+	if a.presentation == nil {
+		a.presentation = &presentation{}
+	}
 	m := sshops.Manager{Home: a.Home, Runner: a.Runner, HTTP: a.SSHHTTP, MetadataURL: a.SSHMetadataURL}
 	identities, err := m.Discover(ctx)
 	if err != nil {
@@ -588,7 +646,7 @@ func (a Runtime) configureSSH(ctx context.Context, terminal ui.UI, p plan.Plan) 
 			a.showProgress("SSH identities", actionReview, "unrelated local keys")
 		}
 		for i, identity := range unrelated {
-			fmt.Fprintf(a.Out, "\nIdentity %d/%d\n  path            %s\n  fingerprint     %s\n", i+1, len(unrelated), identity.PrivatePath, identity.Fingerprint)
+			a.showReview(fmt.Sprintf("SSH identity %d/%d", i+1, len(unrelated)), []ui.Field{{Name: "path", Value: identity.PrivatePath}, {Name: "fingerprint", Value: identity.Fingerprint}})
 			keep, err := terminal.Confirm("Keep this identity?", true)
 			if err != nil {
 				return "failed", managed, nil, err
@@ -596,10 +654,9 @@ func (a Runtime) configureSSH(ctx context.Context, terminal ui.UI, p plan.Plan) 
 			if keep {
 				continue
 			}
-			fmt.Fprintln(a.Out, "Files selected for permanent deletion:")
-			fmt.Fprintf(a.Out, "  %s\n", identity.PrivatePath)
+			a.showReview("Files selected for permanent deletion", []ui.Field{{Name: "path", Value: identity.PrivatePath}})
 			if identity.PublicPath != "" {
-				fmt.Fprintf(a.Out, "  %s\n", identity.PublicPath)
+				fmt.Fprint(a.Out, ui.RenderFields([]ui.Field{{Name: "public path", Value: identity.PublicPath}}))
 			}
 			remove, err := terminal.Confirm("Permanently delete this identity?", false)
 			if err != nil {
@@ -614,6 +671,7 @@ func (a Runtime) configureSSH(ctx context.Context, terminal ui.UI, p plan.Plan) 
 	}
 	if p.CreateSSHIdentity && managed == nil {
 		a.showProgress("SSH identity", actionConfigure, "managed Ed25519 key")
+		a.showExternal("ssh-keygen", "SSH key passphrase prompt")
 		identity, err := m.EnsureIdentity(ctx)
 		if err != nil {
 			return "failed", nil, []issue{*setupIssue("SSH", err)}, nil
@@ -645,7 +703,7 @@ func (a Runtime) configureSSH(ctx context.Context, terminal ui.UI, p plan.Plan) 
 				if !p.ReviewSSHAgent {
 					break
 				}
-				fmt.Fprintf(a.Out, "\nAgent identity %d/%d\n  fingerprint     %s\n", i+1, len(unrelated), key.Fingerprint)
+				a.showReview(fmt.Sprintf("ssh-agent identity %d/%d", i+1, len(unrelated)), []ui.Field{{Name: "fingerprint", Value: key.Fingerprint}})
 				keep, err := terminal.Confirm("Keep this identity loaded in ssh-agent?", true)
 				if err != nil {
 					return "failed", managed, nil, err
@@ -658,6 +716,7 @@ func (a Runtime) configureSSH(ctx context.Context, terminal ui.UI, p plan.Plan) 
 			}
 			if p.LoadSSHAgent && !loaded {
 				a.showProgress("ssh-agent managed key", actionConfigure, "load identity")
+				a.showExternal("ssh-add", "SSH key passphrase prompt")
 				_ = m.Load(ctx, managed.PrivatePath)
 			}
 		}
@@ -687,14 +746,25 @@ func (a Runtime) managedSSHIdentity(ctx context.Context) (*sshops.Identity, erro
 }
 
 func (a Runtime) configureGitHub(ctx context.Context, terminal ui.UI, managed *sshops.Identity, p plan.Plan) (string, []issue) {
+	if a.presentation == nil {
+		a.presentation = &presentation{}
+	}
 	if managed == nil {
 		return "skipped", nil
 	}
 	m := githubops.Manager{Runner: a.Runner}
 	if p.AuthenticateGitHub && !m.Authenticated(ctx) {
-		a.showProgress("github", actionAuthenticate, "CLI login")
+		a.showProgress("github", actionAuthenticate, "CLI login; SSH-key permission")
+		a.showExternal("gh auth login", "GitHub device authentication")
 		if err := m.Login(ctx); err != nil {
 			return "failed", []issue{*setupIssue("GitHub authentication", err)}
+		}
+	}
+	if p.RefreshGitHubSSHKeyScope {
+		a.showProgress("github", actionAuthenticate, "add SSH-key management permission")
+		a.showExternal("gh auth refresh", "GitHub SSH-key authorization")
+		if err := m.RefreshSSHKeyScope(ctx); err != nil {
+			return "failed", []issue{*setupIssue("GitHub authorization", err)}
 		}
 	}
 	keys, err := m.Keys(ctx)
@@ -713,7 +783,7 @@ func (a Runtime) configureGitHub(ctx context.Context, terminal ui.UI, managed *s
 	if p.ReviewGitHubKeys && len(unrelated) > 0 {
 		a.showProgress("GitHub SSH keys", actionReview, "account keys")
 		for i, key := range unrelated {
-			fmt.Fprintf(a.Out, "\nGitHub key %d/%d\n  title           %s\n  fingerprint     %s\n", i+1, len(unrelated), key.Title, key.Fingerprint)
+			a.showReview(fmt.Sprintf("GitHub key %d/%d", i+1, len(unrelated)), []ui.Field{{Name: "title", Value: key.Title}, {Name: "fingerprint", Value: key.Fingerprint}})
 			keep, err := terminal.Confirm("Keep this key?", true)
 			if err != nil {
 				return "failed", []issue{*setupIssue("GitHub SSH keys", err)}
@@ -748,10 +818,12 @@ func (a Runtime) showPlan(p plan.Plan) {
 	fmt.Fprintln(a.Out, "Plan")
 	sections := planSections(p)
 	hasActions := false
+	hasDiagnostics := false
 	for _, section := range sections {
 		hasActions = hasActions || !section.Diagnostic
+		hasDiagnostics = hasDiagnostics || section.Diagnostic
 	}
-	if !hasActions && p.SSHHostKeyFreshness == plan.SSHHostKeyFreshnessUnavailable {
+	if !hasActions && (p.SSHHostKeyFreshness == plan.SSHHostKeyFreshnessUnavailable || hasDiagnostics) {
 		fmt.Fprintln(a.Out, "\nNo changes planned")
 	} else if !hasActions {
 		fmt.Fprintln(a.Out, "\nNo changes\n  workstation is already ready")
@@ -820,7 +892,7 @@ func planSections(p plan.Plan) []outputSection {
 		sections = append(sections, outputSection{Name: "Core", Rows: coreRows})
 	}
 
-	var applicationRows []ui.TableRow
+	var applicationRows, diagnosticRows []ui.TableRow
 	for _, application := range p.Applications {
 		if application.State == "ready" || application.CoveredByBootstrap {
 			continue
@@ -830,7 +902,7 @@ func planSections(p plan.Plan) []outputSection {
 			if application.Cause != "" {
 				detail += "; " + application.Cause
 			}
-			applicationRows = append(applicationRows, ui.TableRow{Item: application.Declaration.Identifier, Action: actionReview, Detail: detail})
+			diagnosticRows = append(diagnosticRows, ui.TableRow{Item: application.Declaration.Identifier, Action: application.State, Detail: detail})
 			continue
 		}
 		dependencies := append([]plan.Dependency(nil), application.Dependencies...)
@@ -857,6 +929,9 @@ func planSections(p plan.Plan) []outputSection {
 	if len(applicationRows) > 0 {
 		sections = append(sections, outputSection{Name: "Applications", Rows: applicationRows})
 	}
+	if len(diagnosticRows) > 0 {
+		sections = append(sections, outputSection{Name: "Application diagnostics", Rows: diagnosticRows, Diagnostic: true})
+	}
 
 	var accessRows []ui.TableRow
 	if p.ConfigureGit {
@@ -878,12 +953,17 @@ func planSections(p plan.Plan) []outputSection {
 		accessRows = append(accessRows, ui.TableRow{Item: "github.com SSH configuration", Action: actionConfigure, Detail: "managed identity and host trust"})
 	}
 	if p.AuthenticateGitHub {
-		accessRows = append(accessRows, ui.TableRow{Item: "github", Action: actionAuthenticate, Detail: "CLI login"})
+		accessRows = append(accessRows, ui.TableRow{Item: "github", Action: actionAuthenticate, Detail: "CLI login; SSH-key permission"})
+	}
+	if p.RefreshGitHubSSHKeyScope {
+		accessRows = append(accessRows, ui.TableRow{Item: "github", Action: actionAuthenticate, Detail: "add SSH-key management permission"})
 	}
 	if p.ReviewGitHubKeys {
 		detail := "account keys"
 		if p.GitHubKeyAfterIdentity {
 			detail = "reconcile after identity creation"
+		} else if p.RefreshGitHubSSHKeyScope {
+			detail = "existing keys after authorization refresh, if present"
 		} else if p.GitHubKeyStateUnknown {
 			detail = "existing keys after login, if present"
 		}
@@ -893,6 +973,8 @@ func planSections(p plan.Plan) []outputSection {
 		detail := "managed key"
 		if p.GitHubKeyAfterIdentity {
 			detail = "register after identity creation, if missing"
+		} else if p.RefreshGitHubSSHKeyScope {
+			detail = "register after authorization refresh, if missing"
 		} else if p.GitHubKeyStateUnknown {
 			detail = "register after login, if missing"
 		}
@@ -929,21 +1011,70 @@ func (a Runtime) showProgress(item, action, detail string) {
 }
 
 func (a Runtime) showProgressRows(rows []ui.TableRow) {
-	fmt.Fprintf(a.Out, "\nProgress\n%s", ui.RenderTable(rows))
+	if len(rows) == 0 {
+		return
+	}
+	if a.presentation == nil {
+		fmt.Fprintf(a.Out, "\nProgress\n%s", ui.RenderTable(rows))
+		return
+	}
+	if !a.presentation.progressStarted {
+		fmt.Fprint(a.Out, "\nProgress\n")
+		a.presentation.progressStarted = true
+	}
+	a.presentation.reviewActive = false
+	fmt.Fprint(a.Out, ui.RenderTable(rows))
+}
+
+func (a Runtime) showExternal(program, purpose string) {
+	a.showProgress(program, "external", purpose)
+}
+
+func (a Runtime) showReview(name string, fields []ui.Field) {
+	if a.presentation == nil || !a.presentation.reviewActive {
+		fmt.Fprint(a.Out, "\nReview\n")
+		if a.presentation != nil {
+			a.presentation.reviewActive = true
+			a.presentation.progressStarted = false
+		}
+	}
+	fmt.Fprintf(a.Out, "\n%s\n%s", ui.PrintableASCII(name), ui.RenderFields(fields))
 }
 
 func (a Runtime) report(p plan.Plan, ready int, gitStatus, sshStatus, githubStatus string, problems []issue) {
-	for _, problem := range problems {
-		fmt.Fprintf(a.Out, "\n%s\n\n%s\n", problem.State, problem.Name)
-		if problem.Source != "" {
-			fmt.Fprintf(a.Out, "  source          %s\n", problem.Source)
+	if len(problems) > 0 {
+		fmt.Fprint(a.Out, "\nIssues\n")
+		states := []string{"Unresolved", "Failed"}
+		for _, state := range states {
+			found := false
+			for _, problem := range problems {
+				if problem.State == state {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+			fmt.Fprintf(a.Out, "\n%s\n", state)
+			for _, problem := range problems {
+				if problem.State != state {
+					continue
+				}
+				fmt.Fprintf(a.Out, "\n%s\n", ui.PrintableASCII(problem.Name))
+				fields := make([]ui.Field, 0, 5)
+				if problem.Source != "" {
+					fields = append(fields, ui.Field{Name: "source", Value: problem.Source})
+				}
+				if problem.Stage != "" {
+					fields = append(fields, ui.Field{Name: "stage", Value: problem.Stage})
+				}
+				fields = append(fields, ui.Field{Name: "cause", Value: problem.Cause}, ui.Field{Name: "impact", Value: problem.Impact}, ui.Field{Name: "action", Value: problem.Action})
+				fmt.Fprint(a.Out, ui.RenderFields(fields))
+			}
 		}
-		if problem.Stage != "" {
-			fmt.Fprintf(a.Out, "  stage           %s\n", problem.Stage)
-		}
-		fmt.Fprintf(a.Out, "  cause           %s\n  impact          %s\n  action          %s\n", problem.Cause, problem.Impact, problem.Action)
 	}
-	fmt.Fprintf(a.Out, "\nFinal\n  system          ready\n  core            7/7\n  apps            %d/%d\n  git             %s\n  ssh             %s\n  github          %s\n\n", ready, len(p.Applications), gitStatus, sshStatus, githubStatus)
+	fmt.Fprintf(a.Out, "\nFinal\n%s\n", ui.RenderFields([]ui.Field{{Name: "system", Value: "ready"}, {Name: "core", Value: "7/7"}, {Name: "apps", Value: fmt.Sprintf("%d/%d", ready, len(p.Applications))}, {Name: "git", Value: gitStatus}, {Name: "ssh", Value: sshStatus}, {Name: "github", Value: githubStatus}}))
 	if len(problems) > 0 {
 		fmt.Fprintln(a.Out, "Workstation completed with issues.")
 		return
@@ -959,14 +1090,33 @@ func (a Runtime) report(p plan.Plan, ready int, gitStatus, sshStatus, githubStat
 	fmt.Fprintln(a.Out, "Workstation ready.")
 }
 
+func (a Runtime) reportSkipped(p plan.Plan) {
+	fmt.Fprintf(a.Out, "\nFinal\n%s\n", ui.RenderFields([]ui.Field{{Name: "system", Value: "skipped"}, {Name: "core", Value: "skipped"}, {Name: "apps", Value: fmt.Sprintf("%d/%d", readyApplicationCount(p), len(p.Applications))}, {Name: "git", Value: p.GitStatus}, {Name: "ssh", Value: p.SSHStatus}, {Name: "github", Value: p.GitHubStatus}}))
+	fmt.Fprintln(a.Out, "Workstation preparation skipped.")
+}
+
 func (a Runtime) fatal(err error) int {
-	fmt.Fprintf(a.Err, "Failed\n\nops\n  cause           %s\n  impact          workstation preparation could not safely continue\n  action          resolve the error and run ops again\n\nWorkstation preparation stopped.\n", err)
+	a.renderFatal("ops", "", err, "workstation preparation could not safely continue")
 	return Fatal
 }
 
 func (a Runtime) coreFatal(name string, err error, impact string) int {
-	fmt.Fprintf(a.Err, "Failed\n\n%s\n  stage           core\n  cause           %s\n  impact          %s\n  action          resolve the package error and run ops again\n\nWorkstation preparation stopped.\n", name, err, impact)
+	a.renderFatal(name, "core", err, impact)
 	return Fatal
+}
+
+func (a Runtime) renderFatal(name, stage string, err error, impact string) {
+	fmt.Fprint(a.Err, "Issues\n\nFailed\n\n")
+	fmt.Fprintln(a.Err, ui.PrintableASCII(name))
+	fields := []ui.Field{}
+	if stage != "" {
+		fields = append(fields, ui.Field{Name: "stage", Value: stage})
+	}
+	fields = append(fields, ui.Field{Name: "cause", Value: err.Error()}, ui.Field{Name: "impact", Value: impact}, ui.Field{Name: "action", Value: "resolve the error and run ops again"})
+	fmt.Fprint(a.Err, ui.RenderFields(fields))
+	fmt.Fprint(a.Err, "\nFinal\n")
+	fmt.Fprint(a.Err, ui.RenderFields([]ui.Field{{Name: "system", Value: "stopped"}}))
+	fmt.Fprintln(a.Err, "Workstation preparation stopped.")
 }
 
 func setupIssue(name string, err error) *issue {

@@ -92,6 +92,12 @@ Prepare this workstation? [Y/n]
 
 Preparation generally follows inspect -> plan -> confirm -> mutate -> verify.
 After confirmation, `Progress` records identify each operation owned by ops.
+One `Progress` block covers an uninterrupted sequence of operations; a later
+block starts only after `Review` content deliberately interrupts that sequence.
+`Issues` groups unresolved and failed work, and `Final` is emitted once with the
+observed outcome. A plan containing only diagnostics or unavailable checks is a
+true no-op: ops does not request confirmation or sudo and reports `Final`
+directly.
 That single plan confirmation authorizes deterministic listed actions; AUR package
 review remains intentionally separate, as do prompts that collect required values,
 drive external authentication/passphrase flows, or make explicit security review
@@ -105,7 +111,10 @@ that ops cannot yet represent safely before confirmation.
 Noninteractive subprocess output is captured and included in actionable errors.
 Programs that require package review, upstream decisions, passwords,
 passphrases, or account authentication retain their interactive terminal
-streams.
+streams. ops marks those streams in `Progress` with an `external` row before the
+program runs. In v1.0.2, GitHub login requests `admin:public_key`, the minimum
+scope needed for ops-managed account SSH-key reconciliation; an existing session
+without it is explicitly planned for `gh auth refresh`.
 
 Application dependencies and maintained services are separate planned actions,
 with their owning application retained in the item name:
