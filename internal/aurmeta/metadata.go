@@ -11,6 +11,13 @@ import (
 
 var dependencyNamePattern = regexp.MustCompile(`^[A-Za-z0-9@._+][A-Za-z0-9@._+-]*$`)
 
+// ValidPackageName reports whether value is safe as an Arch package or package
+// base identity. Callers use it before treating AUR metadata as a path or URL
+// component.
+func ValidPackageName(value string) bool {
+	return dependencyNamePattern.MatchString(value)
+}
+
 // Package is one output declared by an AUR package base.
 type Package struct {
 	Name     string
@@ -99,6 +106,9 @@ func Parse(data []byte) (Metadata, error) {
 	if metadata.PackageBase == "" || pkgver == "" || pkgrel == "" || len(metadata.Packages) == 0 {
 		return Metadata{}, errors.New(".SRCINFO is missing required package identity fields")
 	}
+	if !ValidPackageName(metadata.PackageBase) {
+		return Metadata{}, errors.New(".SRCINFO contains an invalid package base")
+	}
 	metadata.Version = pkgver + "-" + pkgrel
 	if epoch != "" && epoch != "0" {
 		metadata.Version = epoch + ":" + metadata.Version
@@ -109,7 +119,7 @@ func Parse(data []byte) (Metadata, error) {
 	metadata.CheckDepends = normalized(metadata.CheckDepends)
 	seen := make(map[string]bool)
 	for i := range metadata.Packages {
-		if metadata.Packages[i].Name == "" || seen[metadata.Packages[i].Name] {
+		if !ValidPackageName(metadata.Packages[i].Name) || seen[metadata.Packages[i].Name] {
 			return Metadata{}, errors.New(".SRCINFO contains an invalid or duplicate output package")
 		}
 		seen[metadata.Packages[i].Name] = true

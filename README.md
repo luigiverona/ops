@@ -176,11 +176,12 @@ changes are minimal, staged, checked for concurrent edits, validated by
 `pacman-conf`, and atomically replaced. Package mutations get exactly one full
 `pacman -Syu` before installs. `ops` never uses standalone `pacman -Sy`.
 
-AUR instructions are untrusted community content. The paru bootstrap displays
-sanitized tracked files and requires explicit review. Declared AUR applications
-use paru's interactive review and are forced to the AUR source. `makepkg` and
-paru run as the normal user, never through sudo. Flatpak and Flathub are always
-user-scoped.
+AUR instructions are untrusted community content. The paru bootstrap and
+declared AUR applications display sanitized tracked files and require explicit
+review of a pinned source revision. ops revalidates that source, builds with
+normal-user `makepkg`, and installs only exact staged package outputs; declared
+applications do not delegate dependency or installation decisions to interactive
+paru. Flatpak and Flathub are always user-scoped.
 
 ## Idempotency and recovery
 

@@ -88,7 +88,8 @@ type OfficialDependency struct {
 	Satisfied   bool
 }
 
-// BootstrapPackage is one concrete official package installed before building paru.
+// BootstrapPackage is one concrete official package installed before building a
+// pinned AUR source.
 type BootstrapPackage struct {
 	Name                  string
 	Purposes              []string
@@ -100,8 +101,12 @@ type BootstrapPackage struct {
 // Application records one requested application's planned outcome.
 type Application struct {
 	Declaration        config.Application
-	State              string // ready, install, unresolved
+	State              string // ready, install, unresolved, failed
 	Dependencies       []Dependency
+	AURSource          AURSource
+	AURDependencies    []OfficialDependency
+	AURPackages        []BootstrapPackage
+	AUROutputs         []string
 	Services           []string
 	Cause              string
 	CoveredByBootstrap bool
@@ -109,8 +114,9 @@ type Application struct {
 
 // Dependency is a compatible direct optional dependency selected for normal functionality.
 type Dependency struct {
-	Source     string
-	Identifier string
+	Source      string
+	Identifier  string
+	Requirement string // Arch dependency expression retained for deterministic resolution
 }
 
 // Plan is a complete, immutable plan presented before authorization.
@@ -160,9 +166,6 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 		p.CorePackages = append(p.CorePackages, "base-devel")
 	}
 	if p.BootstrapParu {
-		compareVersions := func(left, right string) (int, error) {
-			return resolver.CompareVersions(ctx, left, right)
-		}
 		source, found, err := resolver.AURSource(ctx, "paru")
 		if err != nil {
 			return Plan{}, fmt.Errorf("resolve paru source metadata: %w", err)
@@ -170,62 +173,11 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 		if !found || source.Commit == "" || source.Metadata.PackageBase != "paru" {
 			return Plan{}, fmt.Errorf("resolve paru source metadata: exact AUR source is unavailable")
 		}
-		outputs, err := source.Metadata.OutputClosure("paru", compareVersions)
+		outputs, dependencies, packages, err := resolveAURBuild(ctx, resolver, source, "paru", nil)
 		if err != nil {
-			return Plan{}, fmt.Errorf("resolve paru outputs: %w", err)
+			return Plan{}, fmt.Errorf("resolve paru build: %w", err)
 		}
-		p.ParuSource, p.ParuOutputs = source, outputs
-		requirements, err := source.Metadata.BuildRequirements("paru", true, compareVersions)
-		if err != nil {
-			return Plan{}, fmt.Errorf("resolve paru build requirements: %w", err)
-		}
-		// base-devel is makepkg's documented implicit build prerequisite and is
-		// deliberately materialized even though AUR packages do not declare it.
-		requirements = append(requirements, aurmeta.Requirement{Expression: "base-devel", Purpose: "build"})
-		sort.Slice(requirements, func(i, j int) bool {
-			if requirements[i].Expression == requirements[j].Expression {
-				return requirements[i].Purpose < requirements[j].Purpose
-			}
-			return requirements[i].Expression < requirements[j].Expression
-		})
-		resolved := make(map[string]OfficialDependency)
-		packages := make(map[string]*BootstrapPackage)
-		for _, requirement := range requirements {
-			binding, ok := resolved[requirement.Expression]
-			if !ok {
-				binding, err = resolver.OfficialDependency(ctx, requirement.Expression)
-				if err != nil {
-					return Plan{}, fmt.Errorf("resolve paru dependency %q: %w", requirement.Expression, err)
-				}
-				binding.Packages = append([]string(nil), binding.Packages...)
-				sort.Strings(binding.Packages)
-				if err := validateOfficialDependency(binding, requirement.Expression); err != nil {
-					return Plan{}, fmt.Errorf("resolve paru dependency %q: resolver returned an invalid binding: %w", requirement.Expression, err)
-				}
-				resolved[requirement.Expression] = binding
-				p.ParuDependencies = append(p.ParuDependencies, binding)
-			}
-			if binding.Satisfied {
-				continue
-			}
-			for _, packageName := range binding.Packages {
-				pkg := packages[packageName]
-				if pkg == nil {
-					pkg = &BootstrapPackage{Name: packageName}
-					packages[packageName] = pkg
-				}
-				pkg.Purposes = appendUnique(pkg.Purposes, requirement.Purpose)
-				if packageName == binding.Provider && aurmeta.DependencyName(requirement.Expression) != binding.Provider {
-					pkg.Provides = appendUnique(pkg.Provides, aurmeta.DependencyName(requirement.Expression))
-				}
-			}
-		}
-		for _, pkg := range packages {
-			sort.Strings(pkg.Purposes)
-			sort.Strings(pkg.Provides)
-			p.ParuPackages = append(p.ParuPackages, *pkg)
-		}
-		sort.Slice(p.ParuPackages, func(i, j int) bool { return p.ParuPackages[i].Name < p.ParuPackages[j].Name })
+		p.ParuSource, p.ParuOutputs, p.ParuDependencies, p.ParuPackages = source, outputs, dependencies, packages
 	}
 	p.AddFlathub = !state.Flathub
 	p.ConfigureGit = state.GitName == "" || state.GitEmail == ""
@@ -303,6 +255,57 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 				}
 			}
 		}
+		if declaration.Source == "aur" {
+			unsupportedOptional := ""
+			for _, dependency := range app.Dependencies {
+				if dependency.Source == "aur" {
+					unsupportedOptional = dependency.Identifier
+					break
+				}
+			}
+			if unsupportedOptional != "" {
+				app.State = "failed"
+				app.Cause = "AUR optional dependency " + unsupportedOptional + " cannot be resolved deterministically"
+				p.Applications = append(p.Applications, app)
+				continue
+			}
+			source, sourceFound, sourceErr := resolver.AURSource(ctx, metadata.PackageBase)
+			if sourceErr != nil || !sourceFound || source.Commit == "" || source.Metadata.PackageBase != metadata.PackageBase {
+				app.State = "failed"
+				if sourceErr != nil {
+					app.Cause = "pinned AUR source resolution failed: " + sourceErr.Error()
+				} else {
+					app.Cause = "pinned AUR source is unavailable"
+				}
+				p.Applications = append(p.Applications, app)
+				continue
+			}
+			var optionalRequirements []aurmeta.Requirement
+			for _, dependency := range app.Dependencies {
+				requirement := dependency.Requirement
+				if requirement == "" {
+					requirement = dependency.Identifier
+				}
+				if _, err := aurmeta.ParseDependency(requirement); err != nil {
+					app.State = "failed"
+					app.Cause = "AUR optional dependency is invalid: " + err.Error()
+					break
+				}
+				optionalRequirements = append(optionalRequirements, aurmeta.Requirement{Expression: requirement, Purpose: "optional"})
+			}
+			if app.State == "failed" {
+				p.Applications = append(p.Applications, app)
+				continue
+			}
+			outputs, dependencies, packages, buildErr := resolveAURBuild(ctx, resolver, source, declaration.Identifier, optionalRequirements)
+			if buildErr != nil {
+				app.State = "failed"
+				app.Cause = "AUR build dependency resolution failed: " + buildErr.Error()
+				p.Applications = append(p.Applications, app)
+				continue
+			}
+			app.AURSource, app.AUROutputs, app.AURDependencies, app.AURPackages = source, outputs, dependencies, packages
+		}
 		if declaration.Identifier == "mullvad-vpn" {
 			app.Services = append(app.Services, "mullvad-daemon.service")
 		}
@@ -315,6 +318,69 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 	deduplicateApplicationActions(&p)
 	p.FullUpgrade = len(p.CorePackages) > 0 || p.BootstrapParu || hasPackageInstall(p.Applications)
 	return p, nil
+}
+
+func resolveAURBuild(ctx context.Context, resolver Resolver, source AURSource, target string, additional []aurmeta.Requirement) ([]string, []OfficialDependency, []BootstrapPackage, error) {
+	compareVersions := func(left, right string) (int, error) { return resolver.CompareVersions(ctx, left, right) }
+	outputs, err := source.Metadata.OutputClosure(target, compareVersions)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve outputs: %w", err)
+	}
+	requirements, err := source.Metadata.BuildRequirements(target, true, compareVersions)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve build requirements: %w", err)
+	}
+	// base-devel is makepkg's documented implicit build prerequisite and must
+	// be materialized even when the AUR metadata does not declare it.
+	requirements = append(requirements, aurmeta.Requirement{Expression: "base-devel", Purpose: "build"})
+	requirements = append(requirements, additional...)
+	sort.Slice(requirements, func(i, j int) bool {
+		if requirements[i].Expression == requirements[j].Expression {
+			return requirements[i].Purpose < requirements[j].Purpose
+		}
+		return requirements[i].Expression < requirements[j].Expression
+	})
+	resolved := make(map[string]OfficialDependency)
+	packages := make(map[string]*BootstrapPackage)
+	var bindings []OfficialDependency
+	for _, requirement := range requirements {
+		binding, ok := resolved[requirement.Expression]
+		if !ok {
+			binding, err = resolver.OfficialDependency(ctx, requirement.Expression)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("resolve dependency %q: %w", requirement.Expression, err)
+			}
+			binding.Packages = append([]string(nil), binding.Packages...)
+			sort.Strings(binding.Packages)
+			if err := validateOfficialDependency(binding, requirement.Expression); err != nil {
+				return nil, nil, nil, fmt.Errorf("resolve dependency %q: resolver returned an invalid binding: %w", requirement.Expression, err)
+			}
+			resolved[requirement.Expression] = binding
+			bindings = append(bindings, binding)
+		}
+		if binding.Satisfied {
+			continue
+		}
+		for _, packageName := range binding.Packages {
+			pkg := packages[packageName]
+			if pkg == nil {
+				pkg = &BootstrapPackage{Name: packageName}
+				packages[packageName] = pkg
+			}
+			pkg.Purposes = appendUnique(pkg.Purposes, requirement.Purpose)
+			if packageName == binding.Provider && aurmeta.DependencyName(requirement.Expression) != binding.Provider {
+				pkg.Provides = appendUnique(pkg.Provides, aurmeta.DependencyName(requirement.Expression))
+			}
+		}
+	}
+	planned := make([]BootstrapPackage, 0, len(packages))
+	for _, pkg := range packages {
+		sort.Strings(pkg.Purposes)
+		sort.Strings(pkg.Provides)
+		planned = append(planned, *pkg)
+	}
+	sort.Slice(planned, func(i, j int) bool { return planned[i].Name < planned[j].Name })
+	return outputs, bindings, planned, nil
 }
 
 func validateOfficialDependency(binding OfficialDependency, requirement string) error {
@@ -490,10 +556,10 @@ func optionalDependencies(ctx context.Context, pkg Package, state State, resolve
 			if !found {
 				continue
 			}
-			candidates = append(candidates, candidate{Dependency{"aur", name}, metadata})
+			candidates = append(candidates, candidate{Dependency{Source: "aur", Identifier: name, Requirement: dependencyExpression(raw)}, metadata})
 			continue
 		}
-		candidates = append(candidates, candidate{Dependency{"pacman", name}, metadata})
+		candidates = append(candidates, candidate{Dependency{Source: "pacman", Identifier: name, Requirement: dependencyExpression(raw)}, metadata})
 		multilib = multilib || metadata.Repository == "multilib"
 	}
 	conflicting := make(map[string]bool)
@@ -516,11 +582,25 @@ func optionalDependencies(ctx context.Context, pkg Package, state State, resolve
 }
 
 func dependencyName(value string) string {
-	value, _, _ = strings.Cut(value, ":")
-	value = strings.TrimSpace(value)
+	value = dependencyExpression(value)
 	if i := strings.IndexAny(value, "<>="); i >= 0 {
 		value = value[:i]
 	}
+	return strings.TrimSpace(value)
+}
+
+func dependencyExpression(value string) string {
+	value = strings.TrimSpace(value)
+	if index := strings.Index(value, ": "); index >= 0 {
+		return strings.TrimSpace(value[:index])
+	}
+	if _, err := aurmeta.ParseDependency(value); err == nil {
+		return value
+	}
+	// optdepends descriptions conventionally follow a colon. Retain epoch
+	// colons when the complete value is a valid dependency expression, but
+	// retain compatibility with descriptions written without a following space.
+	value, _, _ = strings.Cut(value, ":")
 	return strings.TrimSpace(value)
 }
 

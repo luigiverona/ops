@@ -236,6 +236,25 @@ func TestInstallArtifactsBindsStagedBytesAndExcludesDebug(t *testing.T) {
 	}
 }
 
+func TestInstallArtifactsSelectsOnlyExactSplitOutputs(t *testing.T) {
+	dir := t.TempDir()
+	cli := filepath.Join(dir, "suite-cli.pkg.tar.zst")
+	libs := filepath.Join(dir, "suite-libs.pkg.tar.zst")
+	docs := filepath.Join(dir, "suite-docs.pkg.tar.zst")
+	for path, identity := range map[string]string{cli: "suite-cli", libs: "suite-libs", docs: "suite-docs"} {
+		if err := os.WriteFile(path, []byte(identity), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner := newArtifactStageRunner()
+	if err := (Manager{Runner: runner}).InstallArtifacts(context.Background(), dir, []string{docs, libs, cli}, []string{"suite-cli", "suite-libs"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.installed) != 2 || strings.Join([]string{string(runner.installedBytes[0]), string(runner.installedBytes[1])}, ",") != "suite-cli,suite-libs" {
+		t.Fatalf("installed=%v bytes=%q", runner.installed, runner.installedBytes)
+	}
+}
+
 func TestInstallArtifactsRejectsUnsafeSourcesBeforePrivilege(t *testing.T) {
 	for _, kind := range []string{"symlink", "directory", "fifo", "outside"} {
 		t.Run(kind, func(t *testing.T) {

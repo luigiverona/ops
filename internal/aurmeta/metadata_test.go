@@ -56,6 +56,17 @@ pkgname = example
 	}
 }
 
+func TestParseRejectsUnsafePackageIdentityPaths(t *testing.T) {
+	for _, source := range []string{
+		"pkgbase = ../escape\npkgver = 1\npkgrel = 1\npkgname = example\n",
+		"pkgbase = example\npkgver = 1\npkgrel = 1\npkgname = ../escape\n",
+	} {
+		if _, err := Parse([]byte(source)); err == nil {
+			t.Fatalf("unsafe package identity was accepted: %q", source)
+		}
+	}
+}
+
 func TestParseRetainsAllX8664PlanningFieldsAndSplitPackageValues(t *testing.T) {
 	metadata, err := Parse([]byte(`pkgbase = suite
 	epoch = 2

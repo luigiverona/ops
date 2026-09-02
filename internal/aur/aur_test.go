@@ -14,28 +14,6 @@ import (
 	"github.com/luigiverona/ops/internal/run"
 )
 
-type fakeRunner struct{ spec run.Spec }
-
-func (f *fakeRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
-	f.spec = spec
-	return run.Result{}, nil
-}
-func TestInstallUsesParuAsNormalUserWithReview(t *testing.T) {
-	f := &fakeRunner{}
-	m := Manager{Runner: f}
-	if err := m.Install(context.Background(), "example-bin"); err != nil {
-		t.Fatal(err)
-	}
-	if f.spec.Name != "paru" || !f.spec.Interactive {
-		t.Fatalf("unsafe AUR invocation: %#v", f.spec)
-	}
-	for _, arg := range f.spec.Args {
-		if arg == "--skipreview" || arg == "--noconfirm" {
-			t.Fatalf("review bypassed: %#v", f.spec.Args)
-		}
-	}
-}
-
 /*type artifactRunner struct {
 	names map[string]string
 	calls []run.Spec
@@ -191,6 +169,28 @@ func paruMetadata(t *testing.T, srcinfo string) aurmeta.Metadata {
 		t.Fatal(err)
 	}
 	return metadata
+}
+
+func TestBuildRejectsUnsafePlannedSourceIdentityBeforeFilesystemUse(t *testing.T) {
+	runner := &bootstrapRunner{}
+	err := (Manager{Runner: runner}).Build(context.Background(), plan.AURSource{
+		Commit:   "0123456789012345678901234567890123456789",
+		Metadata: aurmeta.Metadata{PackageBase: "../escape", Packages: []aurmeta.Package{{Name: "example"}}},
+	}, "example", []string{"example"}, func() error { return nil }, func(string, []string) error { return nil })
+	if err == nil || len(runner.calls) != 0 {
+		t.Fatalf("unsafe planned source reached filesystem work: err=%v calls=%#v", err, runner.calls)
+	}
+}
+
+func TestBootstrapParuRejectsNonParuSourceBeforeFilesystemUse(t *testing.T) {
+	runner := &bootstrapRunner{}
+	err := (Manager{Runner: runner}).BootstrapParu(context.Background(), plan.AURSource{
+		Commit:   "0123456789012345678901234567890123456789",
+		Metadata: aurmeta.Metadata{PackageBase: "other", Packages: []aurmeta.Package{{Name: "paru"}}},
+	}, []string{"paru"}, func() error { return nil }, func(string, []string) error { return nil })
+	if err == nil || len(runner.calls) != 0 {
+		t.Fatalf("non-paru bootstrap source reached filesystem work: err=%v calls=%#v", err, runner.calls)
+	}
 }
 
 func TestBootstrapParuReviewDriftBuildAndInstallOrder(t *testing.T) {

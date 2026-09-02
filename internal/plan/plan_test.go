@@ -325,6 +325,94 @@ func TestParuBootstrapDeduplicatesConcretePackagesAndApplicationInstall(t *testi
 	}
 }
 
+func TestAURApplicationPinsSourceAndPlansOfficialBuildDependencies(t *testing.T) {
+	source := AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
+		PackageBase: "browser-bin", Version: "1-1", Depends: []string{"runtime"}, MakeDepends: []string{"builder"},
+		Packages: []aurmeta.Package{{Name: "browser-bin"}},
+	}}
+	state := readyState()
+	state.Installed["base-devel"] = true
+	resolver := fakeResolver{
+		aur:    map[string]Package{"browser-bin": {Name: "browser-bin", PackageBase: "browser-bin", Optional: []string{"feature>=1:2: optional integration"}}},
+		pacman: map[string]Package{"feature": {Name: "feature", Repository: "extra"}},
+		source: &source,
+		deps: map[string]OfficialDependency{
+			"runtime":      {Requirement: "runtime", Provider: "runtime", Packages: []string{"runtime", "runtime-libs"}},
+			"builder":      {Requirement: "builder", Provider: "builder", Packages: []string{"builder"}},
+			"feature>=1:2": {Requirement: "feature>=1:2", Provider: "feature", Packages: []string{"feature", "feature-libs"}},
+			"base-devel":   {Requirement: "base-devel", Satisfied: true},
+		},
+	}
+	p, err := Build(context.Background(), config.Config{Version: 1, Applications: []config.Application{{Source: "aur", Identifier: "browser-bin"}}}, state, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := p.Applications[0]
+	if app.State != "install" || app.AURSource.Commit != source.Commit || strings.Join(app.AUROutputs, ",") != "browser-bin" {
+		t.Fatalf("application=%#v", app)
+	}
+	if len(app.AURDependencies) != 4 || strings.Join([]string{app.AURPackages[0].Name, app.AURPackages[1].Name, app.AURPackages[2].Name, app.AURPackages[3].Name, app.AURPackages[4].Name}, ",") != "builder,feature,feature-libs,runtime,runtime-libs" {
+		t.Fatalf("planned AUR dependency transaction=%#v", app.AURPackages)
+	}
+	if app.AURDependencies[2].Requirement != "feature>=1:2" || strings.Join(app.AURPackages[1].Purposes, ",") != "optional" {
+		t.Fatalf("optional dependency was not bound into the planned transaction: %#v", app)
+	}
+}
+
+func TestAURApplicationUnsupportedDependencyFailsClosed(t *testing.T) {
+	source := AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
+		PackageBase: "browser-bin", Version: "1-1", Depends: []string{"aur-only-helper"}, Packages: []aurmeta.Package{{Name: "browser-bin"}},
+	}}
+	state := readyState()
+	resolver := fakeResolver{
+		aur:    map[string]Package{"browser-bin": {Name: "browser-bin", PackageBase: "browser-bin"}},
+		source: &source,
+		deps: map[string]OfficialDependency{
+			"base-devel":      {Requirement: "base-devel", Satisfied: true},
+			"aur-only-helper": {Requirement: "aur-only-helper"},
+		},
+	}
+	p, err := Build(context.Background(), config.Config{Version: 1, Applications: []config.Application{{Source: "aur", Identifier: "browser-bin"}}}, state, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := p.Applications[0]
+	if app.State != "failed" || !strings.Contains(app.Cause, "missing provider transaction") || len(app.AURPackages) != 0 {
+		t.Fatalf("unsupported AUR dependency was planned: %#v", app)
+	}
+}
+
+func TestAURApplicationUnsupportedOptionalDependencyFailsClosed(t *testing.T) {
+	state := readyState()
+	resolver := fakeResolver{
+		aur: map[string]Package{
+			"browser-bin": {Name: "browser-bin", PackageBase: "browser-bin", Optional: []string{"aur-helper: optional integration"}},
+			"aur-helper":  {Name: "aur-helper", PackageBase: "aur-helper"},
+		},
+	}
+	p, err := Build(context.Background(), config.Config{Version: 1, Applications: []config.Application{{Source: "aur", Identifier: "browser-bin"}}}, state, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Applications) != 1 || p.Applications[0].State != "failed" || !strings.Contains(p.Applications[0].Cause, "cannot be resolved deterministically") {
+		t.Fatalf("unsupported optional AUR dependency was not rejected: %#v", p.Applications)
+	}
+}
+
+func TestInstalledAURApplicationConvergesWithoutAnotherBuildPlan(t *testing.T) {
+	state := readyState()
+	state.Installed["browser-bin"] = true
+	state.Foreign["browser-bin"] = true
+	p, err := Build(context.Background(), config.Config{Version: 1, Applications: []config.Application{{Source: "aur", Identifier: "browser-bin"}}}, state, fakeResolver{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := p.Applications[0]
+	if app.State != "ready" || app.AURSource.Commit != "" || len(app.AURPackages) != 0 {
+		t.Fatalf("installed AUR application was planned again: %#v", app)
+	}
+}
+
 func contains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

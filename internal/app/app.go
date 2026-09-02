@@ -505,7 +505,7 @@ func needsPrivilege(p plan.Plan) bool {
 		return true
 	}
 	for _, app := range p.Applications {
-		if app.State == "install" && (app.Declaration.Source == "pacman" || len(app.Services) > 0 || len(app.Dependencies) > 0) {
+		if app.State == "install" && (app.Declaration.Source == "pacman" || app.Declaration.Source == "aur" || len(app.Services) > 0 || len(app.Dependencies) > 0 || len(app.AURPackages) > 0) {
 			return true
 		}
 	}
@@ -522,23 +522,21 @@ func (a Runtime) installApplication(ctx context.Context, am arch.Manager, au aur
 			deps = append(deps, dependency.Identifier)
 		}
 	}
-	if len(deps) > 0 {
+	if len(deps) > 0 && application.Declaration.Source != "aur" {
 		rows := make([]ui.TableRow, 0, len(deps))
 		for _, dependency := range deps {
 			rows = append(rows, ui.TableRow{Item: application.Declaration.Identifier + " -> " + dependency, Action: actionInstall, Detail: "pacman"})
 		}
 		a.showProgressRows(rows)
 	}
-	if err := am.Install(ctx, deps, true); err != nil {
-		return fmt.Errorf("recommended dependency installation failed: %w", err)
+	if application.Declaration.Source != "aur" {
+		if err := am.Install(ctx, deps, true); err != nil {
+			return fmt.Errorf("recommended dependency installation failed: %w", err)
+		}
 	}
 	for _, dependency := range application.Dependencies {
 		if dependency.Source == "aur" {
-			a.showProgress(application.Declaration.Identifier+" -> "+dependency.Identifier, actionInstall, "aur")
-			a.showExternal("paru", "AUR package review and transaction decisions")
-			if err := au.InstallDependency(ctx, dependency.Identifier); err != nil {
-				return fmt.Errorf("recommended AUR dependency installation failed: %w", err)
-			}
+			return fmt.Errorf("AUR optional dependency %q was not deterministically planned", dependency.Identifier)
 		}
 	}
 	name := application.Declaration.Identifier
@@ -549,8 +547,7 @@ func (a Runtime) installApplication(ctx context.Context, am arch.Manager, au aur
 			return err
 		}
 	case "aur":
-		a.showExternal("paru", "AUR package review and transaction decisions")
-		if err := au.Install(ctx, name); err != nil {
+		if err := a.installAURApplication(ctx, am, au, application); err != nil {
 			return err
 		}
 	case "flatpak":
@@ -577,6 +574,76 @@ func (a Runtime) installApplication(ctx context.Context, am arch.Manager, au aur
 		}
 	}
 	return nil
+}
+
+func (a Runtime) installAURApplication(ctx context.Context, am arch.Manager, au aur.Manager, application plan.Application) error {
+	if application.AURSource.Commit == "" || len(application.AUROutputs) == 0 {
+		return errors.New("AUR application was not resolved to a pinned build plan")
+	}
+	resolver := resolve.Resolver{Runner: a.Runner}
+	afterReview := func() error {
+		missing := make(map[string]bool)
+		installable := make(map[string]bool, len(application.AURPackages))
+		for _, pkg := range application.AURPackages {
+			installable[pkg.Name] = true
+		}
+		for _, planned := range application.AURDependencies {
+			current, err := resolver.OfficialDependency(ctx, planned.Requirement)
+			if err != nil {
+				return fmt.Errorf("revalidate AUR dependency %q: %w", planned.Requirement, err)
+			}
+			if current.Satisfied {
+				continue
+			}
+			if planned.Satisfied || current.Provider != planned.Provider || !packageSubset(current.Packages, planned.Packages) {
+				return errors.New("AUR dependency provider changed after planning; rerun ops")
+			}
+			for _, packageName := range current.Packages {
+				if !installable[packageName] {
+					return errors.New("AUR dependency transaction changed after planning; rerun ops")
+				}
+				missing[packageName] = true
+			}
+		}
+		var packages []string
+		var progress []ui.TableRow
+		for _, pkg := range application.AURPackages {
+			if !missing[pkg.Name] {
+				continue
+			}
+			packages = append(packages, pkg.Name)
+			progress = append(progress, ui.TableRow{Item: application.Declaration.Identifier + " -> " + pkg.Name, Action: actionInstall, Detail: bootstrapPackageDetail(pkg)})
+		}
+		transaction, err := resolver.OfficialTransaction(ctx, packages)
+		if err != nil {
+			return fmt.Errorf("revalidate concrete AUR dependency transaction: %w", err)
+		}
+		if !packageSubset(transaction, packages) {
+			return errors.New("AUR dependency transaction changed after planning; rerun ops")
+		}
+		if len(progress) > 0 {
+			a.showProgressRows(progress)
+		}
+		if err := am.Install(ctx, packages, true); err != nil {
+			return fmt.Errorf("install AUR build dependencies: %w", err)
+		}
+		for _, planned := range application.AURDependencies {
+			current, err := resolver.OfficialDependency(ctx, planned.Requirement)
+			if err != nil {
+				return fmt.Errorf("verify AUR dependency %q: %w", planned.Requirement, err)
+			}
+			if !current.Satisfied {
+				return fmt.Errorf("AUR dependency %q is not satisfied after the planned installation", planned.Requirement)
+			}
+		}
+		a.showProgress(application.Declaration.Identifier, actionInstall, "AUR build")
+		return nil
+	}
+	install := func(buildDir string, artifacts []string) error {
+		a.showProgress(application.Declaration.Identifier, actionInstall, "local package")
+		return am.InstallArtifacts(ctx, buildDir, artifacts, application.AUROutputs)
+	}
+	return au.Build(ctx, application.AURSource, application.Declaration.Identifier, application.AUROutputs, afterReview, install)
 }
 
 func (a Runtime) verifyCore(ctx context.Context) error {
@@ -919,15 +986,20 @@ func planSections(p plan.Plan) []outputSection {
 			diagnosticRows = append(diagnosticRows, ui.TableRow{Item: application.Declaration.Identifier, Action: application.State, Detail: detail})
 			continue
 		}
-		dependencies := append([]plan.Dependency(nil), application.Dependencies...)
-		sort.Slice(dependencies, func(i, j int) bool {
-			if dependencies[i].Identifier == dependencies[j].Identifier {
-				return dependencies[i].Source < dependencies[j].Source
+		if application.Declaration.Source != "aur" {
+			dependencies := append([]plan.Dependency(nil), application.Dependencies...)
+			sort.Slice(dependencies, func(i, j int) bool {
+				if dependencies[i].Identifier == dependencies[j].Identifier {
+					return dependencies[i].Source < dependencies[j].Source
+				}
+				return dependencies[i].Identifier < dependencies[j].Identifier
+			})
+			for _, dependency := range dependencies {
+				applicationRows = append(applicationRows, ui.TableRow{Item: application.Declaration.Identifier + " -> " + dependency.Identifier, Action: actionInstall, Detail: dependency.Source})
 			}
-			return dependencies[i].Identifier < dependencies[j].Identifier
-		})
-		for _, dependency := range dependencies {
-			applicationRows = append(applicationRows, ui.TableRow{Item: application.Declaration.Identifier + " -> " + dependency.Identifier, Action: actionInstall, Detail: dependency.Source})
+		}
+		for _, pkg := range application.AURPackages {
+			applicationRows = append(applicationRows, ui.TableRow{Item: application.Declaration.Identifier + " -> " + pkg.Name, Action: actionInstall, Detail: bootstrapPackageDetail(pkg)})
 		}
 		detail := application.Declaration.Source
 		if application.Declaration.Source == "aur" {

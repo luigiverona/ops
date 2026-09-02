@@ -103,7 +103,7 @@ func (r Resolver) AUR(ctx context.Context, name string) (plan.Package, bool, err
 
 // AURSource pins .SRCINFO to the exact AUR Git commit that will be reviewed.
 func (r Resolver) AURSource(ctx context.Context, name string) (plan.AURSource, bool, error) {
-	if name == "" || strings.ContainsAny(name, "/\\\x00\r\n") {
+	if !aurmeta.ValidPackageName(name) {
 		return plan.AURSource{}, false, errors.New("invalid AUR package base")
 	}
 	repository := "https://aur.archlinux.org/" + name + ".git"
