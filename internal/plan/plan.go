@@ -157,10 +157,14 @@ type Plan struct {
 // Build resolves only missing declarations and produces a deterministic plan.
 func Build(ctx context.Context, cfg config.Config, state State, resolver Resolver) (Plan, error) {
 	p := Plan{Core: make(map[string]string)}
-	declaredPackages := make(map[string]bool)
+	declaredPacman := make(map[string]bool)
+	declaredAUR := make(map[string]bool)
 	for _, declaration := range cfg.Applications {
-		if declaration.Source == "pacman" || declaration.Source == "aur" {
-			declaredPackages[declaration.Identifier] = true
+		switch declaration.Source {
+		case "pacman":
+			declaredPacman[declaration.Identifier] = true
+		case "aur":
+			declaredAUR[declaration.Identifier] = true
 		}
 	}
 	for _, component := range CoreOrder {
@@ -318,7 +322,7 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 			for _, dependency := range app.Dependencies {
 				extraRequirements = append(extraRequirements, aurmeta.Requirement{Expression: dependency.Requirement, Purpose: "optional"})
 			}
-			outputs, dependencies, packages, buildErr := resolveAURBuild(ctx, resolver, source, declaration.Identifier, extraRequirements, declaredPackages, state.Installed, state.Explicit)
+			outputs, dependencies, packages, buildErr := resolveAURBuild(ctx, resolver, source, declaration.Identifier, extraRequirements, declaredPacman, state.Installed, state.Explicit)
 			if buildErr != nil {
 				app.State = "failed"
 				app.Cause = "AUR build dependency resolution failed: " + buildErr.Error()
@@ -341,7 +345,7 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 				continue
 			}
 			for _, output := range outputs {
-				if output == declaration.Identifier || declaredPackages[output] || (state.Installed[output] && state.Explicit[output]) {
+				if output == declaration.Identifier || declaredAUR[output] || (state.Installed[output] && state.Explicit[output]) {
 					app.AURExplicitOutputs = append(app.AURExplicitOutputs, output)
 				}
 			}

@@ -432,14 +432,18 @@ func TestAURApplicationSigningKeyInspectionFailureFailsClosed(t *testing.T) {
 	}
 }
 
-func TestAURSplitOutputsAndDeclaredOfficialDependenciesKeepExplicitIntent(t *testing.T) {
+func TestAURInstallReasonsKeepPacmanAndAURDeclarationsSeparate(t *testing.T) {
 	source := AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
 		PackageBase: "suite", Version: "1-1", Depends: []string{"shared"}, Packages: []aurmeta.Package{
-			{Name: "suite-cli", Depends: []string{"suite-libs=1-1"}}, {Name: "suite-libs"},
+			{Name: "suite-cli", Depends: []string{"foo=1-1"}}, {Name: "foo"},
 		},
 	}}
 	resolver := fakeResolver{
-		aur:    map[string]Package{"suite-cli": {Name: "suite-cli", PackageBase: "suite"}, "suite-libs": {Name: "suite-libs", PackageBase: "suite"}},
+		aur: map[string]Package{
+			"suite-cli": {Name: "suite-cli", PackageBase: "suite"},
+			"foo":       {Name: "foo", PackageBase: "other"},
+			"shared":    {Name: "shared", PackageBase: "other"},
+		},
 		source: &source,
 		deps: map[string]OfficialDependency{
 			"base-devel": {Requirement: "base-devel", Satisfied: true},
@@ -447,12 +451,16 @@ func TestAURSplitOutputsAndDeclaredOfficialDependenciesKeepExplicitIntent(t *tes
 		},
 	}
 	for _, test := range []struct {
-		name         string
-		applications []config.Application
-		explicit     string
+		name             string
+		applications     []config.Application
+		explicitOutputs  string
+		officialExplicit bool
 	}{
-		{name: "target only", applications: []config.Application{{Source: "aur", Identifier: "suite-cli"}}, explicit: "suite-cli"},
-		{name: "declared sibling and official package", applications: []config.Application{{Source: "aur", Identifier: "suite-cli"}, {Source: "aur", Identifier: "suite-libs"}, {Source: "pacman", Identifier: "shared"}}, explicit: "suite-cli,suite-libs"},
+		{name: "target only", applications: []config.Application{{Source: "aur", Identifier: "suite-cli"}}, explicitOutputs: "suite-cli", officialExplicit: false},
+		{name: "declared AUR sibling", applications: []config.Application{{Source: "aur", Identifier: "suite-cli"}, {Source: "aur", Identifier: "foo"}}, explicitOutputs: "foo,suite-cli", officialExplicit: false},
+		{name: "declared pacman dependency", applications: []config.Application{{Source: "aur", Identifier: "suite-cli"}, {Source: "pacman", Identifier: "shared"}}, explicitOutputs: "suite-cli", officialExplicit: true},
+		{name: "AUR name does not make official dependency explicit", applications: []config.Application{{Source: "aur", Identifier: "suite-cli"}, {Source: "aur", Identifier: "shared"}}, explicitOutputs: "suite-cli", officialExplicit: false},
+		{name: "pacman name does not make AUR split output explicit", applications: []config.Application{{Source: "aur", Identifier: "suite-cli"}, {Source: "pacman", Identifier: "foo"}}, explicitOutputs: "suite-cli", officialExplicit: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			p, err := Build(context.Background(), config.Config{Version: 1, Applications: test.applications}, readyState(), resolver)
@@ -460,13 +468,78 @@ func TestAURSplitOutputsAndDeclaredOfficialDependenciesKeepExplicitIntent(t *tes
 				t.Fatal(err)
 			}
 			app := p.Applications[0]
-			if strings.Join(app.AURExplicitOutputs, ",") != test.explicit {
+			if strings.Join(app.AURExplicitOutputs, ",") != test.explicitOutputs {
 				t.Fatalf("explicit AUR outputs=%#v", app.AURExplicitOutputs)
 			}
-			if len(app.AURPackages) != 1 || app.AURPackages[0].Name != "shared" || app.AURPackages[0].AsExplicit != (test.explicit != "suite-cli") {
+			if len(app.AURPackages) != 1 || app.AURPackages[0].Name != "shared" || app.AURPackages[0].AsExplicit != test.officialExplicit {
 				t.Fatalf("official dependency intent=%#v", app.AURPackages)
 			}
 		})
+	}
+}
+
+func TestAURInstallReasonIntentDoesNotDependOnApplicationOrder(t *testing.T) {
+	source := AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
+		PackageBase: "suite", Version: "1-1", Depends: []string{"shared"}, Packages: []aurmeta.Package{
+			{Name: "suite-cli", Depends: []string{"foo=1-1"}}, {Name: "foo"},
+		},
+	}}
+	resolver := fakeResolver{
+		aur: map[string]Package{
+			"suite-cli": {Name: "suite-cli", PackageBase: "suite"},
+			"foo":       {Name: "foo", PackageBase: "other"},
+		},
+		source: &source,
+		deps: map[string]OfficialDependency{
+			"base-devel": {Requirement: "base-devel", Satisfied: true},
+			"shared":     {Requirement: "shared", Provider: "shared", Packages: []string{"shared"}},
+		},
+	}
+	configs := [][]config.Application{
+		{{Source: "aur", Identifier: "suite-cli"}, {Source: "pacman", Identifier: "shared"}, {Source: "aur", Identifier: "foo"}},
+		{{Source: "aur", Identifier: "foo"}, {Source: "pacman", Identifier: "shared"}, {Source: "aur", Identifier: "suite-cli"}},
+	}
+	for _, applications := range configs {
+		p, err := Build(context.Background(), config.Config{Version: 1, Applications: applications}, readyState(), resolver)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var app Application
+		for _, candidate := range p.Applications {
+			if candidate.Declaration.Identifier == "suite-cli" {
+				app = candidate
+			}
+		}
+		if strings.Join(app.AURExplicitOutputs, ",") != "foo,suite-cli" || len(app.AURPackages) != 1 || !app.AURPackages[0].AsExplicit {
+			t.Fatalf("application order changed install-reason intent: %#v", app)
+		}
+	}
+}
+
+func TestAURInstallReasonsPreserveExistingExplicitPackagesWithinTheirSource(t *testing.T) {
+	source := AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
+		PackageBase: "suite", Version: "1-1", Depends: []string{"shared"}, Packages: []aurmeta.Package{
+			{Name: "suite-cli", Depends: []string{"foo=1-1"}}, {Name: "foo"},
+		},
+	}}
+	resolver := fakeResolver{
+		aur:    map[string]Package{"suite-cli": {Name: "suite-cli", PackageBase: "suite"}},
+		source: &source,
+		deps: map[string]OfficialDependency{
+			"base-devel": {Requirement: "base-devel", Satisfied: true},
+			"shared":     {Requirement: "shared", Provider: "shared", Packages: []string{"shared"}},
+		},
+	}
+	state := readyState()
+	state.Installed["shared"], state.Explicit["shared"] = true, true
+	state.Installed["foo"], state.Explicit["foo"] = true, true
+	p, err := Build(context.Background(), config.Config{Version: 1, Applications: []config.Application{{Source: "aur", Identifier: "suite-cli"}}}, state, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := p.Applications[0]
+	if strings.Join(app.AURExplicitOutputs, ",") != "foo,suite-cli" || len(app.AURPackages) != 1 || !app.AURPackages[0].AsExplicit {
+		t.Fatalf("existing explicit install reasons were not preserved: %#v", app)
 	}
 }
 
