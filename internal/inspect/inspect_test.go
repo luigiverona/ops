@@ -32,6 +32,9 @@ func (f *stateRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) 
 		if len(spec.Args) > 0 && spec.Args[0] == "-Qq" {
 			return run.Result{Stdout: "git\nopenssh\ngithub-cli\nflatpak\nbase-devel\n"}, nil
 		}
+		if len(spec.Args) > 0 && spec.Args[0] == "-Qeq" {
+			return run.Result{Stdout: "git\nopenssh\ngithub-cli\nflatpak\nbase-devel\n"}, nil
+		}
 		return run.Result{}, nil
 	case "paru":
 		return run.Result{}, nil

@@ -31,6 +31,7 @@ const (
 // State is discovered from real package and user configuration state.
 type State struct {
 	Installed                     map[string]bool
+	Explicit                      map[string]bool
 	Foreign                       map[string]bool
 	Flatpaks                      map[string]bool
 	Paru                          bool
@@ -69,6 +70,7 @@ type Resolver interface {
 	AUR(context.Context, string) (Package, bool, error)
 	AURSource(context.Context, string) (AURSource, bool, error)
 	OfficialDependency(context.Context, string) (OfficialDependency, error)
+	UserPGPKey(context.Context, string) (bool, error)
 	CompareVersions(context.Context, string, string) (int, error)
 	Flatpak(context.Context, string) (bool, error)
 }
@@ -101,12 +103,14 @@ type BootstrapPackage struct {
 // Application records one requested application's planned outcome.
 type Application struct {
 	Declaration        config.Application
-	State              string // ready, install, unresolved, failed
+	State              string // ready, install, configure, unresolved, failed
 	Dependencies       []Dependency
 	AURSource          AURSource
 	AURDependencies    []OfficialDependency
 	AURPackages        []BootstrapPackage
 	AUROutputs         []string
+	AURExplicitOutputs []string
+	AURSigningKeys     []string // missing exact validpgpkeys planned for import
 	Services           []string
 	Cause              string
 	CoveredByBootstrap bool
@@ -153,6 +157,12 @@ type Plan struct {
 // Build resolves only missing declarations and produces a deterministic plan.
 func Build(ctx context.Context, cfg config.Config, state State, resolver Resolver) (Plan, error) {
 	p := Plan{Core: make(map[string]string)}
+	declaredPackages := make(map[string]bool)
+	for _, declaration := range cfg.Applications {
+		if declaration.Source == "pacman" || declaration.Source == "aur" {
+			declaredPackages[declaration.Identifier] = true
+		}
+	}
 	for _, component := range CoreOrder {
 		p.Core[component] = coreState(component, state)
 	}
@@ -173,7 +183,7 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 		if !found || source.Commit == "" || source.Metadata.PackageBase != "paru" {
 			return Plan{}, fmt.Errorf("resolve paru source metadata: exact AUR source is unavailable")
 		}
-		outputs, dependencies, packages, err := resolveAURBuild(ctx, resolver, source, "paru", nil)
+		outputs, dependencies, packages, err := resolveAURBuild(ctx, resolver, source, "paru", nil, nil, state.Installed, state.Explicit)
 		if err != nil {
 			return Plan{}, fmt.Errorf("resolve paru build: %w", err)
 		}
@@ -211,6 +221,9 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 		app := Application{Declaration: declaration}
 		if isReady(declaration, state) {
 			app.State = "ready"
+			if (declaration.Source == "pacman" || declaration.Source == "aur") && !state.Explicit[declaration.Identifier] {
+				app.State = "configure"
+			}
 			p.Applications = append(p.Applications, app)
 			continue
 		}
@@ -238,7 +251,7 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 			continue
 		}
 		app.State = "install"
-		if declaration.Source != "flatpak" {
+		if declaration.Source == "pacman" {
 			optional, multilib, err := optionalDependencies(ctx, metadata, state, resolver)
 			if err != nil {
 				app.State = "failed"
@@ -256,6 +269,38 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 			}
 		}
 		if declaration.Source == "aur" {
+			source, sourceFound, sourceErr := resolver.AURSource(ctx, metadata.PackageBase)
+			if sourceErr != nil || !sourceFound || source.Commit == "" || source.Metadata.PackageBase != metadata.PackageBase {
+				app.State = "failed"
+				if sourceErr != nil {
+					app.Cause = "pinned AUR source resolution failed: " + sourceErr.Error()
+				} else {
+					app.Cause = "pinned AUR source is unavailable"
+				}
+				p.Applications = append(p.Applications, app)
+				continue
+			}
+			compareVersions := func(left, right string) (int, error) { return resolver.CompareVersions(ctx, left, right) }
+			optionalRequirements, optionalErr := source.Metadata.OptionalRequirements(declaration.Identifier, compareVersions)
+			if optionalErr != nil {
+				app.State = "failed"
+				app.Cause = "pinned AUR optional dependency resolution failed: " + optionalErr.Error()
+				p.Applications = append(p.Applications, app)
+				continue
+			}
+			optionalPackage := Package{Optional: make([]string, 0, len(optionalRequirements))}
+			for _, requirement := range optionalRequirements {
+				optionalPackage.Optional = append(optionalPackage.Optional, requirement.Expression)
+			}
+			optional, multilib, optionalErr := optionalDependencies(ctx, optionalPackage, state, resolver)
+			if optionalErr != nil {
+				app.State = "failed"
+				app.Cause = "pinned AUR optional dependency resolution failed: " + optionalErr.Error()
+				p.Applications = append(p.Applications, app)
+				continue
+			}
+			app.Dependencies = optional
+			p.EnableMultilib = p.EnableMultilib || multilib
 			unsupportedOptional := ""
 			for _, dependency := range app.Dependencies {
 				if dependency.Source == "aur" {
@@ -269,40 +314,36 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 				p.Applications = append(p.Applications, app)
 				continue
 			}
-			source, sourceFound, sourceErr := resolver.AURSource(ctx, metadata.PackageBase)
-			if sourceErr != nil || !sourceFound || source.Commit == "" || source.Metadata.PackageBase != metadata.PackageBase {
-				app.State = "failed"
-				if sourceErr != nil {
-					app.Cause = "pinned AUR source resolution failed: " + sourceErr.Error()
-				} else {
-					app.Cause = "pinned AUR source is unavailable"
-				}
-				p.Applications = append(p.Applications, app)
-				continue
-			}
-			var optionalRequirements []aurmeta.Requirement
+			extraRequirements := make([]aurmeta.Requirement, 0, len(app.Dependencies))
 			for _, dependency := range app.Dependencies {
-				requirement := dependency.Requirement
-				if requirement == "" {
-					requirement = dependency.Identifier
-				}
-				if _, err := aurmeta.ParseDependency(requirement); err != nil {
-					app.State = "failed"
-					app.Cause = "AUR optional dependency is invalid: " + err.Error()
-					break
-				}
-				optionalRequirements = append(optionalRequirements, aurmeta.Requirement{Expression: requirement, Purpose: "optional"})
+				extraRequirements = append(extraRequirements, aurmeta.Requirement{Expression: dependency.Requirement, Purpose: "optional"})
 			}
-			if app.State == "failed" {
-				p.Applications = append(p.Applications, app)
-				continue
-			}
-			outputs, dependencies, packages, buildErr := resolveAURBuild(ctx, resolver, source, declaration.Identifier, optionalRequirements)
+			outputs, dependencies, packages, buildErr := resolveAURBuild(ctx, resolver, source, declaration.Identifier, extraRequirements, declaredPackages, state.Installed, state.Explicit)
 			if buildErr != nil {
 				app.State = "failed"
 				app.Cause = "AUR build dependency resolution failed: " + buildErr.Error()
 				p.Applications = append(p.Applications, app)
 				continue
+			}
+			for _, fingerprint := range source.Metadata.ValidPGPKeys {
+				present, keyErr := resolver.UserPGPKey(ctx, fingerprint)
+				if keyErr != nil {
+					app.State = "failed"
+					app.Cause = "AUR signing-key inspection failed: " + keyErr.Error()
+					break
+				}
+				if !present {
+					app.AURSigningKeys = append(app.AURSigningKeys, fingerprint)
+				}
+			}
+			if app.State == "failed" {
+				p.Applications = append(p.Applications, app)
+				continue
+			}
+			for _, output := range outputs {
+				if output == declaration.Identifier || declaredPackages[output] || (state.Installed[output] && state.Explicit[output]) {
+					app.AURExplicitOutputs = append(app.AURExplicitOutputs, output)
+				}
 			}
 			app.AURSource, app.AUROutputs, app.AURDependencies, app.AURPackages = source, outputs, dependencies, packages
 		}
@@ -320,7 +361,7 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 	return p, nil
 }
 
-func resolveAURBuild(ctx context.Context, resolver Resolver, source AURSource, target string, additional []aurmeta.Requirement) ([]string, []OfficialDependency, []BootstrapPackage, error) {
+func resolveAURBuild(ctx context.Context, resolver Resolver, source AURSource, target string, additional []aurmeta.Requirement, declared, installed, explicit map[string]bool) ([]string, []OfficialDependency, []BootstrapPackage, error) {
 	compareVersions := func(left, right string) (int, error) { return resolver.CompareVersions(ctx, left, right) }
 	outputs, err := source.Metadata.OutputClosure(target, compareVersions)
 	if err != nil {
@@ -364,7 +405,7 @@ func resolveAURBuild(ctx context.Context, resolver Resolver, source AURSource, t
 		for _, packageName := range binding.Packages {
 			pkg := packages[packageName]
 			if pkg == nil {
-				pkg = &BootstrapPackage{Name: packageName}
+				pkg = &BootstrapPackage{Name: packageName, AsExplicit: declared[packageName] || (installed[packageName] && explicit[packageName])}
 				packages[packageName] = pkg
 			}
 			pkg.Purposes = appendUnique(pkg.Purposes, requirement.Purpose)
@@ -590,18 +631,11 @@ func dependencyName(value string) string {
 }
 
 func dependencyExpression(value string) string {
-	value = strings.TrimSpace(value)
-	if index := strings.Index(value, ": "); index >= 0 {
-		return strings.TrimSpace(value[:index])
+	expression, err := aurmeta.OptionalDependencyExpression(value)
+	if err != nil {
+		return ""
 	}
-	if _, err := aurmeta.ParseDependency(value); err == nil {
-		return value
-	}
-	// optdepends descriptions conventionally follow a colon. Retain epoch
-	// colons when the complete value is a valid dependency expression, but
-	// retain compatibility with descriptions written without a following space.
-	value, _, _ = strings.Cut(value, ":")
-	return strings.TrimSpace(value)
+	return expression
 }
 
 func conflicts(a, b Package) bool {

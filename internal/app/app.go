@@ -19,6 +19,7 @@ import (
 	gitops "github.com/luigiverona/ops/internal/git"
 	githubops "github.com/luigiverona/ops/internal/github"
 	"github.com/luigiverona/ops/internal/inspect"
+	"github.com/luigiverona/ops/internal/pgp"
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/release"
 	"github.com/luigiverona/ops/internal/resolve"
@@ -254,7 +255,7 @@ func (a Runtime) preparePlan(ctx context.Context, p plan.Plan, terminal ui.UI) i
 		}
 		install := func(buildDir string, artifacts []string) error {
 			a.showProgress("paru", actionInstall, "local package")
-			return archManager.InstallArtifacts(ctx, buildDir, artifacts, p.ParuOutputs)
+			return archManager.InstallArtifacts(ctx, buildDir, artifacts, p.ParuOutputs, []string{"paru"})
 		}
 		if err := aurManager.BootstrapParu(ctx, p.ParuSource, p.ParuOutputs, afterReview, install); err != nil {
 			return a.coreFatal("paru", err, "AUR support is unavailable")
@@ -279,6 +280,14 @@ func (a Runtime) preparePlan(ctx context.Context, p plan.Plan, terminal ui.UI) i
 			continue
 		}
 		if application.State == "unresolved" || application.State == "failed" {
+			continue
+		}
+		if application.State == "configure" {
+			if err := a.markApplicationExplicit(ctx, archManager, application); err != nil {
+				problems = append(problems, issue{State: "Failed", Name: application.Declaration.Identifier, Source: application.Declaration.Source, Cause: err.Error(), Impact: "application install reason was not configured", Action: "resolve the package error and run ops again"})
+				continue
+			}
+			readyApps++
 			continue
 		}
 		if err := a.installApplication(ctx, archManager, aurManager, flatpakManager, application); err != nil {
@@ -505,7 +514,7 @@ func needsPrivilege(p plan.Plan) bool {
 		return true
 	}
 	for _, app := range p.Applications {
-		if app.State == "install" && (app.Declaration.Source == "pacman" || app.Declaration.Source == "aur" || len(app.Services) > 0 || len(app.Dependencies) > 0 || len(app.AURPackages) > 0) {
+		if (app.State == "install" || app.State == "configure") && (app.Declaration.Source == "pacman" || app.Declaration.Source == "aur" || len(app.Services) > 0 || len(app.Dependencies) > 0 || len(app.AURPackages) > 0) {
 			return true
 		}
 	}
@@ -563,8 +572,10 @@ func (a Runtime) installApplication(ctx context.Context, am arch.Manager, au aur
 	}
 	switch application.Declaration.Source {
 	case "pacman":
-		_, err := a.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qn", name}})
-		return err
+		if _, err := a.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qn", name}}); err != nil {
+			return err
+		}
+		return a.markApplicationExplicit(ctx, am, application)
 	case "aur":
 		_, err := a.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qm", name}})
 		return err
@@ -576,12 +587,53 @@ func (a Runtime) installApplication(ctx context.Context, am arch.Manager, au aur
 	return nil
 }
 
+func (a Runtime) markApplicationExplicit(ctx context.Context, am arch.Manager, application plan.Application) error {
+	if application.Declaration.Source != "pacman" && application.Declaration.Source != "aur" {
+		return nil
+	}
+	name := application.Declaration.Identifier
+	a.showProgress(name, actionConfigure, "pacman install reason")
+	if err := am.MarkExplicit(ctx, []string{name}); err != nil {
+		return fmt.Errorf("preserve explicit install reason: %w", err)
+	}
+	if _, err := a.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qe", name}}); err != nil {
+		return fmt.Errorf("verify explicit install reason: %w", err)
+	}
+	return nil
+}
+
 func (a Runtime) installAURApplication(ctx context.Context, am arch.Manager, au aur.Manager, application plan.Application) error {
 	if application.AURSource.Commit == "" || len(application.AUROutputs) == 0 {
 		return errors.New("AUR application was not resolved to a pinned build plan")
 	}
+	if !stringPresent(application.AURExplicitOutputs, application.Declaration.Identifier) {
+		return errors.New("AUR application target was not planned as explicit")
+	}
 	resolver := resolve.Resolver{Runner: a.Runner}
 	afterReview := func() error {
+		keys := pgp.Manager{Runner: a.Runner}
+		if len(application.AURSigningKeys) > 0 {
+			rows := make([]ui.TableRow, 0, len(application.AURSigningKeys))
+			for _, fingerprint := range application.AURSigningKeys {
+				rows = append(rows, ui.TableRow{Item: application.Declaration.Identifier + " -> " + fingerprint, Action: actionConfigure, Detail: "AUR signing key"})
+			}
+			a.showProgressRows(rows)
+			a.showExternal("gpg keyserver", "retrieve exact AUR signing keys")
+			for _, fingerprint := range application.AURSigningKeys {
+				if err := keys.Import(ctx, fingerprint); err != nil {
+					return fmt.Errorf("prepare AUR signing key %s: %w", fingerprint, err)
+				}
+			}
+		}
+		for _, fingerprint := range application.AURSource.Metadata.ValidPGPKeys {
+			present, err := keys.Has(ctx, fingerprint)
+			if err != nil {
+				return fmt.Errorf("verify AUR signing key %s: %w", fingerprint, err)
+			}
+			if !present {
+				return fmt.Errorf("AUR signing key %s is no longer available; rerun ops", fingerprint)
+			}
+		}
 		missing := make(map[string]bool)
 		installable := make(map[string]bool, len(application.AURPackages))
 		for _, pkg := range application.AURPackages {
@@ -605,13 +657,16 @@ func (a Runtime) installAURApplication(ctx context.Context, am arch.Manager, au 
 				missing[packageName] = true
 			}
 		}
-		var packages []string
+		var packages, explicitPackages []string
 		var progress []ui.TableRow
 		for _, pkg := range application.AURPackages {
 			if !missing[pkg.Name] {
 				continue
 			}
 			packages = append(packages, pkg.Name)
+			if pkg.AsExplicit {
+				explicitPackages = append(explicitPackages, pkg.Name)
+			}
 			progress = append(progress, ui.TableRow{Item: application.Declaration.Identifier + " -> " + pkg.Name, Action: actionInstall, Detail: bootstrapPackageDetail(pkg)})
 		}
 		transaction, err := resolver.OfficialTransaction(ctx, packages)
@@ -627,6 +682,16 @@ func (a Runtime) installAURApplication(ctx context.Context, am arch.Manager, au 
 		if err := am.Install(ctx, packages, true); err != nil {
 			return fmt.Errorf("install AUR build dependencies: %w", err)
 		}
+		if len(explicitPackages) > 0 {
+			if err := am.MarkExplicit(ctx, explicitPackages); err != nil {
+				return fmt.Errorf("preserve explicit AUR dependency install reason: %w", err)
+			}
+			for _, name := range explicitPackages {
+				if _, err := a.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qe", name}}); err != nil {
+					return fmt.Errorf("verify explicit AUR dependency install reason %q: %w", name, err)
+				}
+			}
+		}
 		for _, planned := range application.AURDependencies {
 			current, err := resolver.OfficialDependency(ctx, planned.Requirement)
 			if err != nil {
@@ -641,9 +706,18 @@ func (a Runtime) installAURApplication(ctx context.Context, am arch.Manager, au 
 	}
 	install := func(buildDir string, artifacts []string) error {
 		a.showProgress(application.Declaration.Identifier, actionInstall, "local package")
-		return am.InstallArtifacts(ctx, buildDir, artifacts, application.AUROutputs)
+		return am.InstallArtifacts(ctx, buildDir, artifacts, application.AUROutputs, application.AURExplicitOutputs)
 	}
 	return au.Build(ctx, application.AURSource, application.Declaration.Identifier, application.AUROutputs, afterReview, install)
+}
+
+func stringPresent(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (a Runtime) verifyCore(ctx context.Context) error {
@@ -978,6 +1052,10 @@ func planSections(p plan.Plan) []outputSection {
 		if application.State == "ready" || application.CoveredByBootstrap {
 			continue
 		}
+		if application.State == "configure" {
+			applicationRows = append(applicationRows, ui.TableRow{Item: application.Declaration.Identifier, Action: actionConfigure, Detail: "pacman install reason"})
+			continue
+		}
 		if application.State != "install" {
 			detail := application.Declaration.Source
 			if application.Cause != "" {
@@ -1000,6 +1078,9 @@ func planSections(p plan.Plan) []outputSection {
 		}
 		for _, pkg := range application.AURPackages {
 			applicationRows = append(applicationRows, ui.TableRow{Item: application.Declaration.Identifier + " -> " + pkg.Name, Action: actionInstall, Detail: bootstrapPackageDetail(pkg)})
+		}
+		for _, fingerprint := range application.AURSigningKeys {
+			applicationRows = append(applicationRows, ui.TableRow{Item: application.Declaration.Identifier + " -> " + fingerprint, Action: actionConfigure, Detail: "AUR signing key"})
 		}
 		detail := application.Declaration.Source
 		if application.Declaration.Source == "aur" {

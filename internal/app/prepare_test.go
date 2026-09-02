@@ -24,18 +24,19 @@ import (
 )
 
 type prepareRunner struct {
-	calls          []run.Spec
-	failUpgrade    bool
-	failFlatpak    string
-	sshFingerprint string
-	authenticated  bool
-	remoteKeys     string
-	failKeyAPI     bool
-	sshAddErr      error
-	home           string
-	sshPublicKey   string
-	gitName        string
-	gitEmail       string
+	calls            []run.Spec
+	failUpgrade      bool
+	failMarkExplicit bool
+	failFlatpak      string
+	sshFingerprint   string
+	authenticated    bool
+	remoteKeys       string
+	failKeyAPI       bool
+	sshAddErr        error
+	home             string
+	sshPublicKey     string
+	gitName          string
+	gitEmail         string
 }
 
 func (f *prepareRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
@@ -43,6 +44,9 @@ func (f *prepareRunner) Run(_ context.Context, spec run.Spec) (run.Result, error
 	joined := strings.Join(spec.Args, " ")
 	if f.failUpgrade && spec.Name == "sudo" && strings.Contains(joined, "pacman -Syu") {
 		return run.Result{}, errors.New("upgrade failed")
+	}
+	if f.failMarkExplicit && spec.Name == "sudo" && strings.Contains(joined, "pacman -D --asexplicit") {
+		return run.Result{}, errors.New("install reason update failed")
 	}
 	if f.failFlatpak != "" && spec.Name == "flatpak" && len(spec.Args) > 0 && spec.Args[0] == "install" && strings.Contains(joined, f.failFlatpak) {
 		return run.Result{}, errors.New("flatpak install failed")
@@ -158,6 +162,7 @@ func TestPreparePlanProgressMatchesMutationOrder(t *testing.T) {
 		"mullvad-vpn -> example-dependency|install|pacman",
 		"mullvad-vpn|install|pacman",
 		"mullvad-vpn -> mullvad-daemon.service|enable|systemd",
+		"mullvad-vpn|configure|pacman install reason",
 	}
 	if got := progressRecords(output.String()); strings.Join(got, "\n") != strings.Join(wantProgress, "\n") {
 		t.Fatalf("progress records=%v, want=%v\n%s", got, wantProgress, output.String())
@@ -181,6 +186,7 @@ func TestPreparePlanProgressMatchesMutationOrder(t *testing.T) {
 func readyExecutionState() plan.State {
 	return plan.State{
 		Installed: map[string]bool{"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true},
+		Explicit:  map[string]bool{"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true},
 		Foreign:   map[string]bool{}, Flatpaks: map[string]bool{}, Paru: true, Flathub: true, Multilib: true,
 		GitName: "User", GitEmail: "user@example.com", ManagedSSHIdentity: true, SSHConfigurationReady: true,
 		SSHHostKeyFreshness: plan.SSHHostKeyFreshnessCurrent,
@@ -213,6 +219,7 @@ func progressRecords(output string) []string {
 func TestPreparePlanAllReadyHasNoMutationOrProgress(t *testing.T) {
 	state := readyExecutionState()
 	state.Installed["bitwarden"] = true
+	state.Explicit["bitwarden"] = true
 	state.Flatpaks["com.tutanota.Tutanota"] = true
 	p, err := plan.Build(context.Background(), config.Config{Version: 1, Applications: []config.Application{
 		{Identifier: "bitwarden", Source: "pacman"},
@@ -237,6 +244,18 @@ func TestPreparePlanAllReadyHasNoMutationOrProgress(t *testing.T) {
 		if call.Name == "ssh-add" || call.Name == "ssh-keygen" || call.Name == "gh" || call.Name == "ssh" {
 			t.Fatalf("all-ready plan executed SSH/GitHub stage: %#v", call)
 		}
+	}
+}
+
+func TestPreparePlanReportsExplicitReasonFailureAsApplicationIssue(t *testing.T) {
+	p := plan.Plan{Core: readyCore(), Applications: []plan.Application{{
+		Declaration: config.Application{Identifier: "firefox", Source: "pacman"}, State: "configure",
+	}}, GitStatus: "ready", SSHStatus: "ready", GitHubStatus: "ready"}
+	var output bytes.Buffer
+	runner := &prepareRunner{failMarkExplicit: true}
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+	if code != Issues || !strings.Contains(output.String(), "application install reason was not configured") || !strings.Contains(output.String(), "apps    0/1") {
+		t.Fatalf("code=%d\n%s", code, output.String())
 	}
 }
 

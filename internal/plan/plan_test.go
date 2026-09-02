@@ -2,6 +2,7 @@ package plan
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -10,11 +11,14 @@ import (
 )
 
 type fakeResolver struct {
-	pacman map[string]Package
-	aur    map[string]Package
-	flat   map[string]bool
-	source *AURSource
-	deps   map[string]OfficialDependency
+	pacman   map[string]Package
+	aur      map[string]Package
+	flat     map[string]bool
+	source   *AURSource
+	deps     map[string]OfficialDependency
+	pgp      map[string]bool
+	pgpErr   error
+	pgpCalls *int
 }
 
 func (f fakeResolver) Pacman(_ context.Context, name string) (Package, bool, error) {
@@ -37,6 +41,12 @@ func (f fakeResolver) OfficialDependency(_ context.Context, requirement string) 
 	}
 	return OfficialDependency{Requirement: requirement, Satisfied: true}, nil
 }
+func (f fakeResolver) UserPGPKey(_ context.Context, fingerprint string) (bool, error) {
+	if f.pgpCalls != nil {
+		*f.pgpCalls = *f.pgpCalls + 1
+	}
+	return f.pgp[fingerprint], f.pgpErr
+}
 func (f fakeResolver) CompareVersions(_ context.Context, _, _ string) (int, error) { return 0, nil }
 func (f fakeResolver) Flatpak(_ context.Context, name string) (bool, error)        { return f.flat[name], nil }
 
@@ -47,13 +57,14 @@ func testParuSource() AURSource {
 }
 
 func emptyState() State {
-	return State{Installed: map[string]bool{}, Foreign: map[string]bool{}, Flatpaks: map[string]bool{}}
+	return State{Installed: map[string]bool{}, Explicit: map[string]bool{}, Foreign: map[string]bool{}, Flatpaks: map[string]bool{}}
 }
 
 func readyState() State {
 	s := emptyState()
 	for _, pkg := range []string{"git", "openssh", "github-cli", "flatpak", "base-devel"} {
 		s.Installed[pkg] = true
+		s.Explicit[pkg] = true
 	}
 	s.Paru, s.Flathub, s.Multilib = true, true, true
 	s.GitName, s.GitEmail = "n", "e"
@@ -250,6 +261,7 @@ func TestDuplicateApplicationActionsArePlannedOnce(t *testing.T) {
 func TestIdempotencyAndNoRemovalPlanning(t *testing.T) {
 	s := readyState()
 	s.Installed["firefox"], s.Installed["old-app"] = true, true
+	s.Explicit["firefox"] = true
 	cfg := config.Config{Version: 1, Applications: []config.Application{{Category: "browser", Source: "pacman", Identifier: "firefox"}}}
 	p, err := Build(context.Background(), cfg, s, fakeResolver{})
 	if err != nil || p.Applications[0].State != "ready" || len(p.CorePackages) != 0 {
@@ -275,6 +287,7 @@ func TestParuBootstrapPlansConcreteDependencyTransaction(t *testing.T) {
 	state := readyState()
 	state.Paru = false
 	state.Installed["base-devel"] = false
+	state.Explicit["base-devel"] = false
 	p, err := Build(context.Background(), config.Config{Version: 1}, state, resolver)
 	if err != nil {
 		t.Fatal(err)
@@ -327,13 +340,13 @@ func TestParuBootstrapDeduplicatesConcretePackagesAndApplicationInstall(t *testi
 
 func TestAURApplicationPinsSourceAndPlansOfficialBuildDependencies(t *testing.T) {
 	source := AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
-		PackageBase: "browser-bin", Version: "1-1", Depends: []string{"runtime"}, MakeDepends: []string{"builder"},
+		PackageBase: "browser-bin", Version: "1-1", Depends: []string{"runtime"}, MakeDepends: []string{"builder"}, Optional: []string{"feature>=1:2: optional integration"},
 		Packages: []aurmeta.Package{{Name: "browser-bin"}},
 	}}
 	state := readyState()
 	state.Installed["base-devel"] = true
 	resolver := fakeResolver{
-		aur:    map[string]Package{"browser-bin": {Name: "browser-bin", PackageBase: "browser-bin", Optional: []string{"feature>=1:2: optional integration"}}},
+		aur:    map[string]Package{"browser-bin": {Name: "browser-bin", PackageBase: "browser-bin", Optional: []string{"rpc-only: must not be planned"}}},
 		pacman: map[string]Package{"feature": {Name: "feature", Repository: "extra"}},
 		source: &source,
 		deps: map[string]OfficialDependency{
@@ -356,6 +369,104 @@ func TestAURApplicationPinsSourceAndPlansOfficialBuildDependencies(t *testing.T)
 	}
 	if app.AURDependencies[2].Requirement != "feature>=1:2" || strings.Join(app.AURPackages[1].Purposes, ",") != "optional" {
 		t.Fatalf("optional dependency was not bound into the planned transaction: %#v", app)
+	}
+	for _, dependency := range app.Dependencies {
+		if dependency.Identifier == "rpc-only" {
+			t.Fatalf("mutable RPC optional dependency escaped into plan: %#v", app)
+		}
+	}
+}
+
+func TestAURApplicationPlansOnlyMissingPinnedSigningKeys(t *testing.T) {
+	first := "0123456789ABCDEF0123456789ABCDEF01234567"
+	second := "FEDCBA9876543210FEDCBA9876543210FEDCBA98"
+	source := AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
+		PackageBase: "browser-bin", Version: "1-1", ValidPGPKeys: []string{first, second}, Packages: []aurmeta.Package{{Name: "browser-bin"}},
+	}}
+	state := readyState()
+	resolver := fakeResolver{
+		aur:    map[string]Package{"browser-bin": {Name: "browser-bin", PackageBase: "browser-bin"}},
+		source: &source,
+		pgp:    map[string]bool{first: true},
+		deps:   map[string]OfficialDependency{"base-devel": {Requirement: "base-devel", Satisfied: true}},
+	}
+	p, err := Build(context.Background(), config.Config{Version: 1, Applications: []config.Application{{Source: "aur", Identifier: "browser-bin"}}}, state, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(p.Applications[0].AURSigningKeys, ","); got != second {
+		t.Fatalf("planned signing keys=%q", got)
+	}
+}
+
+func TestAURApplicationWithoutPinnedSigningKeysPlansNoKeyWork(t *testing.T) {
+	calls := 0
+	source := AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
+		PackageBase: "browser-bin", Version: "1-1", Packages: []aurmeta.Package{{Name: "browser-bin"}},
+	}}
+	p, err := Build(context.Background(), config.Config{Version: 1, Applications: []config.Application{{Source: "aur", Identifier: "browser-bin"}}}, readyState(), fakeResolver{
+		aur: map[string]Package{"browser-bin": {Name: "browser-bin", PackageBase: "browser-bin"}}, source: &source,
+		deps: map[string]OfficialDependency{"base-devel": {Requirement: "base-devel", Satisfied: true}}, pgpCalls: &calls,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 || len(p.Applications[0].AURSigningKeys) != 0 {
+		t.Fatalf("empty signing-key metadata planned key work: calls=%d application=%#v", calls, p.Applications[0])
+	}
+}
+
+func TestAURApplicationSigningKeyInspectionFailureFailsClosed(t *testing.T) {
+	source := AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
+		PackageBase: "browser-bin", Version: "1-1", ValidPGPKeys: []string{"0123456789ABCDEF0123456789ABCDEF01234567"}, Packages: []aurmeta.Package{{Name: "browser-bin"}},
+	}}
+	p, err := Build(context.Background(), config.Config{Version: 1, Applications: []config.Application{{Source: "aur", Identifier: "browser-bin"}}}, readyState(), fakeResolver{
+		aur: map[string]Package{"browser-bin": {Name: "browser-bin", PackageBase: "browser-bin"}}, source: &source,
+		deps: map[string]OfficialDependency{"base-devel": {Requirement: "base-devel", Satisfied: true}}, pgpErr: errors.New("keyring unavailable"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Applications[0].State != "failed" || !strings.Contains(p.Applications[0].Cause, "signing-key inspection") {
+		t.Fatalf("keyring failure did not fail closed: %#v", p.Applications[0])
+	}
+}
+
+func TestAURSplitOutputsAndDeclaredOfficialDependenciesKeepExplicitIntent(t *testing.T) {
+	source := AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
+		PackageBase: "suite", Version: "1-1", Depends: []string{"shared"}, Packages: []aurmeta.Package{
+			{Name: "suite-cli", Depends: []string{"suite-libs=1-1"}}, {Name: "suite-libs"},
+		},
+	}}
+	resolver := fakeResolver{
+		aur:    map[string]Package{"suite-cli": {Name: "suite-cli", PackageBase: "suite"}, "suite-libs": {Name: "suite-libs", PackageBase: "suite"}},
+		source: &source,
+		deps: map[string]OfficialDependency{
+			"base-devel": {Requirement: "base-devel", Satisfied: true},
+			"shared":     {Requirement: "shared", Provider: "shared", Packages: []string{"shared"}},
+		},
+	}
+	for _, test := range []struct {
+		name         string
+		applications []config.Application
+		explicit     string
+	}{
+		{name: "target only", applications: []config.Application{{Source: "aur", Identifier: "suite-cli"}}, explicit: "suite-cli"},
+		{name: "declared sibling and official package", applications: []config.Application{{Source: "aur", Identifier: "suite-cli"}, {Source: "aur", Identifier: "suite-libs"}, {Source: "pacman", Identifier: "shared"}}, explicit: "suite-cli,suite-libs"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p, err := Build(context.Background(), config.Config{Version: 1, Applications: test.applications}, readyState(), resolver)
+			if err != nil {
+				t.Fatal(err)
+			}
+			app := p.Applications[0]
+			if strings.Join(app.AURExplicitOutputs, ",") != test.explicit {
+				t.Fatalf("explicit AUR outputs=%#v", app.AURExplicitOutputs)
+			}
+			if len(app.AURPackages) != 1 || app.AURPackages[0].Name != "shared" || app.AURPackages[0].AsExplicit != (test.explicit != "suite-cli") {
+				t.Fatalf("official dependency intent=%#v", app.AURPackages)
+			}
+		})
 	}
 }
 
@@ -384,11 +495,15 @@ func TestAURApplicationUnsupportedDependencyFailsClosed(t *testing.T) {
 
 func TestAURApplicationUnsupportedOptionalDependencyFailsClosed(t *testing.T) {
 	state := readyState()
+	source := AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
+		PackageBase: "browser-bin", Version: "1-1", Optional: []string{"aur-helper: optional integration"}, Packages: []aurmeta.Package{{Name: "browser-bin"}},
+	}}
 	resolver := fakeResolver{
 		aur: map[string]Package{
-			"browser-bin": {Name: "browser-bin", PackageBase: "browser-bin", Optional: []string{"aur-helper: optional integration"}},
+			"browser-bin": {Name: "browser-bin", PackageBase: "browser-bin"},
 			"aur-helper":  {Name: "aur-helper", PackageBase: "aur-helper"},
 		},
+		source: &source,
 	}
 	p, err := Build(context.Background(), config.Config{Version: 1, Applications: []config.Application{{Source: "aur", Identifier: "browser-bin"}}}, state, resolver)
 	if err != nil {
@@ -403,6 +518,7 @@ func TestInstalledAURApplicationConvergesWithoutAnotherBuildPlan(t *testing.T) {
 	state := readyState()
 	state.Installed["browser-bin"] = true
 	state.Foreign["browser-bin"] = true
+	state.Explicit["browser-bin"] = true
 	p, err := Build(context.Background(), config.Config{Version: 1, Applications: []config.Application{{Source: "aur", Identifier: "browser-bin"}}}, state, fakeResolver{})
 	if err != nil {
 		t.Fatal(err)

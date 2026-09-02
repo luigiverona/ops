@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/luigiverona/ops/internal/aurmeta"
+	"github.com/luigiverona/ops/internal/pgp"
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/run"
 )
@@ -24,6 +25,11 @@ import (
 type Resolver struct {
 	Runner run.Runner
 	Client *http.Client
+}
+
+// UserPGPKey reports whether the normal user's keyring has exactly fingerprint.
+func (r Resolver) UserPGPKey(ctx context.Context, fingerprint string) (bool, error) {
+	return (pgp.Manager{Runner: r.Runner}).Has(ctx, fingerprint)
 }
 
 var gitObject = regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$`)

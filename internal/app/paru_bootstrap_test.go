@@ -78,12 +78,14 @@ func (f *paruBootstrapRunner) Run(_ context.Context, spec run.Spec) (run.Result,
 		case strings.HasPrefix(args, "-n pacman -Qpq -- "):
 			name := string(f.staged[spec.Args[len(spec.Args)-1]])
 			return run.Result{Stdout: name + "\n"}, nil
-		case strings.HasPrefix(args, "-n pacman -U --needed --noconfirm -- "):
+		case strings.HasPrefix(args, "-n pacman -U --needed --noconfirm --asdeps -- "):
 			f.events = append(f.events, "artifact")
 			if strings.Contains(args, "paru-debug") || strings.Contains(args, f.buildDir) || !strings.Contains(args, f.stageDir+"/artifact-000.pkg.tar") || string(f.staged[spec.Args[len(spec.Args)-1]]) != "paru" {
 				return run.Result{}, errors.New("unplanned artifact installation")
 			}
 			f.artifactInstalled = true
+			return run.Result{}, nil
+		case strings.HasPrefix(args, "-n pacman -D --asexplicit -- "):
 			return run.Result{}, nil
 		case strings.HasPrefix(args, "-n rm -f -- "):
 			for _, path := range spec.Args[4:] {
@@ -97,6 +99,9 @@ func (f *paruBootstrapRunner) Run(_ context.Context, spec run.Spec) (run.Result,
 		}
 	}
 	if spec.Name == "pacman" {
+		if len(spec.Args) == 2 && spec.Args[0] == "-Qe" && spec.Args[1] == "paru" {
+			return run.Result{}, nil
+		}
 		if len(spec.Args) > 0 && spec.Args[0] == "-T" {
 			requirement := spec.Args[len(spec.Args)-1]
 			if f.dependenciesInstalled {
@@ -187,6 +192,7 @@ func paruBootstrapPlan(t *testing.T) plan.Plan {
 	state := readyExecutionState()
 	state.Paru = false
 	state.Installed["base-devel"] = false
+	state.Explicit["base-devel"] = false
 	p, err := plan.Build(context.Background(), config.Config{Version: 1}, state, outputResolver{
 		source: &source,
 		deps: map[string]plan.OfficialDependency{

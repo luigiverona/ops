@@ -181,7 +181,10 @@ declared AUR applications display sanitized tracked files and require explicit
 review of a pinned source revision. ops revalidates that source, builds with
 normal-user `makepkg`, and installs only exact staged package outputs; declared
 applications do not delegate dependency or installation decisions to interactive
-paru. Flatpak and Flathub are always user-scoped.
+paru. Source-declared full PGP fingerprints are read from that pinned metadata,
+planned when absent, fetched through a fixed HKPS endpoint in an isolated
+temporary keyring, and fingerprint-verified before import into the normal
+user's keyring. Flatpak and Flathub are always user-scoped.
 
 ## Idempotency and recovery
 

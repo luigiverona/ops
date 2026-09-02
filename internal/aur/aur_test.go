@@ -279,4 +279,22 @@ func TestBootstrapParuReviewDriftBuildAndInstallOrder(t *testing.T) {
 			t.Fatalf("err=%v mutated=%v", err, mutated)
 		}
 	})
+
+	t.Run("signing key drift stops before mutation", func(t *testing.T) {
+		planned := strings.Replace(srcinfo, "makedepends = cargo", "makedepends = cargo\n\tvalidpgpkeys = 0123456789ABCDEF0123456789ABCDEF01234567", 1)
+		changed := strings.Replace(planned, "0123456789ABCDEF0123456789ABCDEF01234567", "FEDCBA9876543210FEDCBA9876543210FEDCBA98", 1)
+		runner := &bootstrapRunner{commit: commit, srcinfo: changed}
+		mutated := false
+		manager := Manager{Runner: runner, Review: func(string, map[string]string) error { return nil }}
+		err := manager.BootstrapParu(context.Background(), plan.AURSource{Commit: commit, Metadata: paruMetadata(t, planned)}, []string{"paru"}, func() error {
+			mutated = true
+			return nil
+		}, func(string, []string) error {
+			mutated = true
+			return nil
+		})
+		if err == nil || !strings.Contains(err.Error(), "metadata changed") || mutated {
+			t.Fatalf("err=%v mutated=%v", err, mutated)
+		}
+	})
 }

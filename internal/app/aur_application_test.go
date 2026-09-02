@@ -43,6 +43,11 @@ func (r *applicationAURRunner) Run(_ context.Context, spec run.Spec) (run.Result
 		case strings.HasPrefix(args, "-n pacman -S --needed --noconfirm --asdeps -- "):
 			r.dependenciesInstalled = true
 			return run.Result{}, nil
+		case strings.HasPrefix(args, "-n pacman -S --needed --noconfirm -- "):
+			r.dependenciesInstalled = true
+			return run.Result{}, nil
+		case strings.HasPrefix(args, "-n pacman -D --asexplicit -- "):
+			return run.Result{}, nil
 		case strings.HasPrefix(args, "-n stat --format=%u\t%f\t%h -- "):
 			path := spec.Args[len(spec.Args)-1]
 			if path == "/var/tmp" {
@@ -65,8 +70,8 @@ func (r *applicationAURRunner) Run(_ context.Context, spec run.Spec) (run.Result
 			return run.Result{}, nil
 		case strings.HasPrefix(args, "-n pacman -Qpq -- "):
 			return run.Result{Stdout: string(r.staged[spec.Args[len(spec.Args)-1]]) + "\n"}, nil
-		case strings.HasPrefix(args, "-n pacman -U --needed --noconfirm -- "):
-			if len(spec.Args) != 7 || string(r.staged[spec.Args[6]]) != "browser-bin" {
+		case strings.HasPrefix(args, "-n pacman -U --needed --noconfirm --asdeps -- "):
+			if len(spec.Args) != 8 || string(r.staged[spec.Args[7]]) != "browser-bin" {
 				return run.Result{}, errors.New("unexpected AUR artifact transaction")
 			}
 			return run.Result{}, nil
@@ -77,6 +82,9 @@ func (r *applicationAURRunner) Run(_ context.Context, spec run.Spec) (run.Result
 		}
 	}
 	if spec.Name == "pacman" {
+		if len(spec.Args) == 2 && spec.Args[0] == "-Qe" {
+			return run.Result{}, nil
+		}
 		if len(spec.Args) > 0 && spec.Args[0] == "-T" {
 			requirement := spec.Args[len(spec.Args)-1]
 			if requirement == "base-devel" || r.dependenciesInstalled {
@@ -140,12 +148,13 @@ func TestAURApplicationBuildIsPinnedNoninteractiveAndInstallsOnlySelectedOutput(
 		t.Fatal(err)
 	}
 	app := plan.Application{
-		Declaration:     config.Application{Identifier: "browser-bin", Source: "aur"},
-		State:           "install",
-		AURSource:       plan.AURSource{Commit: applicationAURCommit, Metadata: metadata},
-		AUROutputs:      []string{"browser-bin"},
-		AURDependencies: []plan.OfficialDependency{{Requirement: "base-devel", Satisfied: true}, {Requirement: "builder", Provider: "builder", Packages: []string{"builder"}}, {Requirement: "runtime", Provider: "runtime", Packages: []string{"runtime"}}},
-		AURPackages:     []plan.BootstrapPackage{{Name: "builder", Purposes: []string{"build"}}, {Name: "runtime", Purposes: []string{"runtime"}}},
+		Declaration:        config.Application{Identifier: "browser-bin", Source: "aur"},
+		State:              "install",
+		AURSource:          plan.AURSource{Commit: applicationAURCommit, Metadata: metadata},
+		AUROutputs:         []string{"browser-bin"},
+		AURExplicitOutputs: []string{"browser-bin"},
+		AURDependencies:    []plan.OfficialDependency{{Requirement: "base-devel", Satisfied: true}, {Requirement: "builder", Provider: "builder", Packages: []string{"builder"}}, {Requirement: "runtime", Provider: "runtime", Packages: []string{"runtime"}}},
+		AURPackages:        []plan.BootstrapPackage{{Name: "builder", Purposes: []string{"build"}}, {Name: "runtime", Purposes: []string{"runtime"}}},
 	}
 	runner := &applicationAURRunner{}
 	var output bytes.Buffer
@@ -208,6 +217,52 @@ func TestAURApplicationPlanShowsOfficialDependenciesBeforeReviewInstall(t *testi
 		if !strings.Contains(got, row) {
 			t.Fatalf("missing planned AUR work %q:\n%s", row, got)
 		}
+	}
+}
+
+func TestAURApplicationPlanShowsMissingSigningKeyBeforeConfirmation(t *testing.T) {
+	p := plan.Plan{Applications: []plan.Application{{
+		Declaration: config.Application{Identifier: "browser-bin", Source: "aur"}, State: "install",
+		AURSigningKeys: []string{"0123456789ABCDEF0123456789ABCDEF01234567"},
+	}}}
+	var output bytes.Buffer
+	(Runtime{Out: &output}).showPlan(p)
+	if !strings.Contains(output.String(), "browser-bin -> 0123456789ABCDEF0123456789ABCDEF01234567  configure  AUR signing key") {
+		t.Fatalf("missing signing-key action was not in plan:\n%s", output.String())
+	}
+}
+
+func TestAURDeclaredOfficialDependencyIsInstalledExplicitly(t *testing.T) {
+	metadata, err := aurmeta.Parse([]byte(applicationAURSRCINFO))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := plan.Application{
+		Declaration:        config.Application{Identifier: "browser-bin", Source: "aur"},
+		State:              "install",
+		AURSource:          plan.AURSource{Commit: applicationAURCommit, Metadata: metadata},
+		AUROutputs:         []string{"browser-bin"},
+		AURExplicitOutputs: []string{"browser-bin"},
+		AURDependencies:    []plan.OfficialDependency{{Requirement: "shared", Provider: "shared", Packages: []string{"shared"}}},
+		AURPackages:        []plan.BootstrapPackage{{Name: "shared", Purposes: []string{"runtime"}, AsExplicit: true}},
+	}
+	runner := &applicationAURRunner{}
+	manager := aur.Manager{Runner: runner, Review: func(string, map[string]string) error { return nil }}
+	var output bytes.Buffer
+	if err := (Runtime{Runner: runner, Out: &output}).installAURApplication(context.Background(), arch.Manager{Runner: runner}, manager, app); err != nil {
+		t.Fatal(err)
+	}
+	var markedExplicit, installedAsDependency bool
+	for _, call := range runner.calls {
+		if call.Name != "sudo" {
+			continue
+		}
+		args := strings.Join(call.Args, " ")
+		markedExplicit = markedExplicit || args == "-n pacman -D --asexplicit -- shared"
+		installedAsDependency = installedAsDependency || strings.Contains(args, "--asdeps") && strings.Contains(args, " shared")
+	}
+	if !markedExplicit || !installedAsDependency {
+		t.Fatalf("declared dependency install reason was order-dependent: %#v", runner.calls)
 	}
 }
 

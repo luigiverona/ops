@@ -114,6 +114,7 @@ func TestShowPlanParuBootstrapConcreteDependencies(t *testing.T) {
 	state := readyExecutionState()
 	state.Paru = false
 	state.Installed["base-devel"] = false
+	state.Explicit["base-devel"] = false
 	p, err := plan.Build(context.Background(), config.Config{Version: 1}, state, outputResolver{
 		source: &source,
 		deps: map[string]plan.OfficialDependency{
@@ -156,6 +157,7 @@ func TestShowPlanDefersRemoteKeyComparisonUntilIdentityExists(t *testing.T) {
 func TestShowPlanRendersDependenciesAndServicesWithOwners(t *testing.T) {
 	state := plan.State{
 		Installed: map[string]bool{"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true},
+		Explicit:  map[string]bool{"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true, "mullvad-vpn": true},
 		Foreign:   map[string]bool{}, Flatpaks: map[string]bool{}, Paru: true, Flathub: true, Multilib: true,
 		GitName: "User", GitEmail: "user@example.com", ManagedSSHIdentity: true, SSHConfigurationReady: true,
 		SSHHostKeyFreshness: plan.SSHHostKeyFreshnessCurrent,
@@ -315,6 +317,11 @@ func realWorkstationPlan(t *testing.T) plan.Plan {
 			"librewolf-bin": true, "mullvad-browser-bin": true, "mullvad-vpn": true,
 			"discord": true, "spotify-launcher": true, "steam": true,
 		},
+		Explicit: map[string]bool{
+			"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true,
+			"librewolf-bin": true, "mullvad-browser-bin": true, "mullvad-vpn": true,
+			"discord": true, "spotify-launcher": true, "steam": true,
+		},
 		Foreign:  map[string]bool{"librewolf-bin": true, "mullvad-browser-bin": true},
 		Flatpaks: map[string]bool{}, Flathub: true, Multilib: true,
 		GitName: "User", GitEmail: "user@example.com",
@@ -364,6 +371,7 @@ func (r outputResolver) OfficialDependency(_ context.Context, requirement string
 	}
 	return plan.OfficialDependency{Requirement: requirement, Satisfied: true}, nil
 }
+func (r outputResolver) UserPGPKey(_ context.Context, _ string) (bool, error) { return true, nil }
 
 func (r outputResolver) CompareVersions(_ context.Context, _, _ string) (int, error) { return 0, nil }
 
