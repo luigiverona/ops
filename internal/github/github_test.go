@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,9 +60,61 @@ func TestAuthenticationStatesAndLoginFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := strings.Join(f.calls[1].spec.Args, " ")
-	if !strings.Contains(args, "--git-protocol ssh") || !strings.Contains(args, "--skip-ssh-key") {
+	if !strings.Contains(args, "--git-protocol ssh") || !strings.Contains(args, "--skip-ssh-key") || !strings.Contains(args, "--scopes admin:public_key") {
 		t.Fatalf("unsafe login args: %s", args)
 	}
+	if !f.calls[1].spec.Interactive || f.calls[1].spec.Interaction == "" {
+		t.Fatalf("login terminal ownership was not declared: %#v", f.calls[1].spec)
+	}
+}
+
+func TestRefreshSSHKeyScopeUsesSupportedGHCommand(t *testing.T) {
+	f := &fakeRunner{fn: func(spec run.Spec) (run.Result, error) {
+		if len(spec.Args) > 1 && spec.Args[0] == "auth" && spec.Args[1] == "refresh" {
+			return run.Result{}, nil
+		}
+		if len(spec.Args) > 1 && spec.Args[0] == "auth" && spec.Args[1] == "status" {
+			return run.Result{}, nil
+		}
+		return run.Result{}, errors.New("unexpected command")
+	}}
+	if err := (Manager{Runner: f}).RefreshSSHKeyScope(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(f.calls[0].spec.Args, " ")
+	if args != "auth refresh --hostname github.com --scopes admin:public_key" || !f.calls[0].spec.Interactive || f.calls[0].spec.Interaction == "" {
+		t.Fatalf("refresh=%#v", f.calls[0].spec)
+	}
+}
+
+func TestIsSSHKeyScopeError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "known user keys scope diagnostic", err: ghKeyAPIError(`gh: This API operation needs the "admin:public_key" scope`), want: true},
+		{name: "ordinary 401", err: ghKeyAPIError("gh: Bad credentials (HTTP 401)"), want: false},
+		{name: "ordinary 403", err: ghKeyAPIError("gh: Resource not accessible by integration (HTTP 403)"), want: false},
+		{name: "unrelated 404", err: ghKeyAPIError("gh: Not Found (HTTP 404)"), want: false},
+		{name: "rate limit", err: ghKeyAPIError("gh: API rate limit exceeded (HTTP 403)"), want: false},
+		{name: "network", err: ghKeyAPIError("dial tcp: network unavailable"), want: false},
+		{name: "malformed JSON", err: errors.New("parse GitHub SSH keys: invalid character '<' looking for beginning of value"), want: false},
+		{name: "unrelated scope text", err: ghKeyAPIError(`admin:public_key is mentioned by an unrelated scope error`), want: false},
+		{name: "wrong gh operation", err: &run.Error{Name: "gh", Args: []string{"api", "user/repos"}, Stderr: `This API operation needs the "admin:public_key" scope`, Err: errors.New("exit status 1")}, want: false},
+		{name: "unstructured wrapped text", err: errors.New(`gh: This API operation needs the "admin:public_key" scope`), want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := IsSSHKeyScopeError(test.err); got != test.want {
+				t.Fatalf("IsSSHKeyScopeError(%v)=%v, want %v", test.err, got, test.want)
+			}
+		})
+	}
+}
+
+func ghKeyAPIError(stderr string) error {
+	return &run.Error{Name: "gh", Args: []string{"api", "--paginate", "user/keys"}, Stderr: stderr, Err: errors.New("exit status 1")}
 }
 
 func TestKeysAndDeleteFailure(t *testing.T) {
@@ -118,4 +171,59 @@ func TestAuthFailureAndSSHVerification(t *testing.T) {
 	if err := m.VerifySSH(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestVerifySSHIsStrictlyNoninteractive(t *testing.T) {
+	f := &fakeRunner{fn: func(spec run.Spec) (run.Result, error) {
+		if spec.Name != "ssh" {
+			t.Fatalf("command = %#v, want ssh", spec)
+		}
+		if got, want := spec.Args, []string{"-o", "BatchMode=yes", "-T", "git@github.com"}; !equalStrings(got, want) {
+			t.Fatalf("args = %#v, want %#v", got, want)
+		}
+		if spec.Interactive || spec.Interaction != "" {
+			t.Fatalf("verification unexpectedly owns terminal: %#v", spec)
+		}
+		if spec.Stdin == nil {
+			t.Fatal("verification inherited stdin")
+		}
+		data, err := io.ReadAll(spec.Stdin)
+		if err != nil {
+			t.Fatalf("read verification stdin: %v", err)
+		}
+		if len(data) != 0 {
+			t.Fatalf("verification stdin = %q, want EOF", data)
+		}
+		return run.Result{Stderr: "Hi! You've successfully authenticated, but GitHub does not provide shell access."}, errors.New("exit status 1")
+	}}
+	if err := (Manager{Runner: f}).VerifySSH(context.Background()); err != nil {
+		t.Fatalf("VerifySSH() error = %v, want successful authentication", err)
+	}
+}
+
+func TestVerifySSHReturnsActionableAuthenticationFailure(t *testing.T) {
+	f := &fakeRunner{fn: func(spec run.Spec) (run.Result, error) {
+		return run.Result{Stderr: "git@github.com: Permission denied (publickey)."}, &run.Error{
+			Name:   spec.Name,
+			Args:   spec.Args,
+			Stderr: "git@github.com: Permission denied (publickey).",
+			Err:    errors.New("exit status 255"),
+		}
+	}}
+	err := (Manager{Runner: f}).VerifySSH(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Permission denied (publickey)") {
+		t.Fatalf("VerifySSH() error = %v, want actionable authentication failure", err)
+	}
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }

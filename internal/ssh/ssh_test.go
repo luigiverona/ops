@@ -3,6 +3,7 @@ package ssh
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -33,6 +34,41 @@ func generate(t *testing.T, m Manager, name string) {
 	cmd := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", filepath.Join(m.dir(), name), "-C", "test")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("ssh-keygen: %v: %s", err, output)
+	}
+}
+
+type recordingRunner struct{ calls []run.Spec }
+
+func (r *recordingRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
+	r.calls = append(r.calls, spec)
+	return run.Result{}, errors.New("stop after command inspection")
+}
+
+func TestEnsureIdentityUsesQuietInteractiveKeygen(t *testing.T) {
+	home := t.TempDir()
+	if err := os.Mkdir(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingRunner{}
+	_, _ = (Manager{Home: home, Runner: runner}).EnsureIdentity(context.Background())
+	if len(runner.calls) != 1 {
+		t.Fatalf("calls=%#v", runner.calls)
+	}
+	call := runner.calls[0]
+	if call.Name != "ssh-keygen" || !call.Interactive || call.Interaction == "" || strings.Join(call.Args, " ") != "-q -t ed25519 -f "+filepath.Join(home, ".ssh", "ops")+" -C ops-managed" {
+		t.Fatalf("keygen invocation=%#v", call)
+	}
+}
+
+func TestSSHKeygenQuietModeSuppressesStatusOutput(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("ssh-keygen unavailable")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ops")
+	output, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", path, "-C", "test").CombinedOutput()
+	if err != nil || len(output) != 0 {
+		t.Fatalf("quiet ssh-keygen err=%v output=%q", err, output)
 	}
 }
 

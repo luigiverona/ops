@@ -105,7 +105,7 @@ func (m Manager) EnableMultilib(ctx context.Context) error {
 }
 
 func (m Manager) FullUpgrade(ctx context.Context) error {
-	_, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "pacman", "-Syu"}, Interactive: true})
+	_, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "pacman", "-Syu"}, Interactive: true, Interaction: "pacman transaction decisions"})
 	return err
 }
 
@@ -124,8 +124,9 @@ func (m Manager) Install(ctx context.Context, packages []string, asDeps bool) er
 }
 
 // InstallArtifacts copies already-open normal-user artifacts into a protected
-// root-owned directory, validates those copies, and installs only exact planned outputs.
-func (m Manager) InstallArtifacts(ctx context.Context, buildDir string, artifacts, targets []string) (returnErr error) {
+// root-owned directory, validates those copies, and installs only exact planned
+// outputs with their intended explicit/dependency install reasons.
+func (m Manager) InstallArtifacts(ctx context.Context, buildDir string, artifacts, targets, explicit []string) (returnErr error) {
 	sources, err := openArtifactSources(buildDir, artifacts)
 	if err != nil {
 		return err
@@ -144,6 +145,13 @@ func (m Manager) InstallArtifacts(ctx context.Context, buildDir string, artifact
 			return errors.New("invalid or duplicate planned package artifact identity")
 		}
 		wanted[target] = true
+	}
+	explicitSet := make(map[string]bool, len(explicit))
+	for _, target := range explicit {
+		if !wanted[target] || explicitSet[target] {
+			return errors.New("invalid or duplicate explicit package artifact identity")
+		}
+		explicitSet[target] = true
 	}
 
 	if err := m.validateStageParent(ctx); err != nil {
@@ -212,8 +220,32 @@ func (m Manager) InstallArtifacts(ctx context.Context, buildDir string, artifact
 		}
 		selected = append(selected, path)
 	}
-	args := []string{"-n", "pacman", "-U", "--needed", "--noconfirm", "--"}
-	args = append(args, selected...)
+	if err := m.installArtifacts(ctx, selected, true); err != nil {
+		return err
+	}
+	if err := m.MarkExplicit(ctx, explicit); err != nil {
+		return err
+	}
+	for _, target := range explicit {
+		if _, err := m.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qe", target}}); err != nil {
+			return fmt.Errorf("verify explicit package artifact %q: %w", target, err)
+		}
+	}
+	return nil
+}
+
+func (m Manager) installArtifacts(ctx context.Context, paths []string, asDeps bool) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	args := []string{"-n", "pacman", "-U", "--needed", "--noconfirm"}
+	if asDeps {
+		args = append(args, "--asdeps")
+	} else {
+		args = append(args, "--asexplicit")
+	}
+	args = append(args, "--")
+	args = append(args, paths...)
 	if _, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: args}); err != nil {
 		return err
 	}

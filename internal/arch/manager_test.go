@@ -104,22 +104,30 @@ func TestBootstrapPackageCommandsAreExactNoninteractiveSudoTransactions(t *testi
 }
 
 type artifactStageRunner struct {
-	calls          []run.Spec
-	stageDir       string
-	staged         map[string][]byte
-	copyNumber     int
-	failCopy       bool
-	failValidation bool
-	failInstall    bool
-	onCopy         func()
-	onValidation   func()
-	cleaned        bool
-	installed      []string
-	installedBytes [][]byte
+	calls              []run.Spec
+	stageDir           string
+	staged             map[string][]byte
+	copyNumber         int
+	failCopy           bool
+	failValidation     bool
+	failInstall        bool
+	failExplicitVerify bool
+	onCopy             func()
+	onValidation       func()
+	cleaned            bool
+	installed          []string
+	installedBytes     [][]byte
+	installReasons     []string
 }
 
 func (f *artifactStageRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
 	f.calls = append(f.calls, spec)
+	if spec.Name == "pacman" && len(spec.Args) == 2 && spec.Args[0] == "-Qe" {
+		if f.failExplicitVerify {
+			return run.Result{}, errors.New("package is not explicit")
+		}
+		return run.Result{}, nil
+	}
 	if spec.Name != "sudo" || len(spec.Args) < 2 || spec.Args[0] != "-n" {
 		return run.Result{}, errors.New("unexpected non-privileged staging command")
 	}
@@ -172,13 +180,38 @@ func (f *artifactStageRunner) Run(_ context.Context, spec run.Spec) (run.Result,
 			return run.Result{Stdout: string(name) + "\n"}, nil
 		}
 		if len(args) >= 2 && args[1] == "-U" {
-			f.installed = append([]string(nil), args[5:]...)
-			for _, path := range f.installed {
+			separator := -1
+			for i, arg := range args {
+				if arg == "--" {
+					separator = i
+					break
+				}
+			}
+			if separator < 0 {
+				return run.Result{}, errors.New("missing artifact transaction separator")
+			}
+			paths := args[separator+1:]
+			reason := ""
+			if strings.Contains(strings.Join(args, " "), "--asdeps") {
+				reason = "dependency"
+			}
+			if strings.Contains(strings.Join(args, " "), "--asexplicit") {
+				reason = "explicit"
+			}
+			if reason == "" {
+				return run.Result{}, errors.New("artifact transaction did not declare an install reason")
+			}
+			f.installed = append(f.installed, paths...)
+			for _, path := range paths {
 				f.installedBytes = append(f.installedBytes, append([]byte(nil), f.staged[path]...))
+				f.installReasons = append(f.installReasons, reason)
 			}
 			if f.failInstall {
 				return run.Result{}, errors.New("pacman failed")
 			}
+			return run.Result{}, nil
+		}
+		if len(args) >= 2 && args[1] == "-D" {
 			return run.Result{}, nil
 		}
 	case "rm":
@@ -219,7 +252,7 @@ func TestInstallArtifactsBindsStagedBytesAndExcludesDebug(t *testing.T) {
 	}
 	runner.onCopy = replace       // replacement after source descriptors were opened
 	runner.onValidation = replace // replacement after staged identity inspection
-	err := (Manager{Runner: runner}).InstallArtifacts(context.Background(), dir, []string{paru, debug}, []string{"paru"})
+	err := (Manager{Runner: runner}).InstallArtifacts(context.Background(), dir, []string{paru, debug}, []string{"paru"}, []string{"paru"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,6 +266,49 @@ func TestInstallArtifactsBindsStagedBytesAndExcludesDebug(t *testing.T) {
 		if call.Name == "sudo" && (len(call.Args) == 0 || call.Args[0] != "-n") {
 			t.Fatalf("interactive sudo: %#v", call)
 		}
+	}
+}
+
+func TestInstallArtifactsSelectsOnlyExactSplitOutputs(t *testing.T) {
+	dir := t.TempDir()
+	cli := filepath.Join(dir, "suite-cli.pkg.tar.zst")
+	libs := filepath.Join(dir, "suite-libs.pkg.tar.zst")
+	docs := filepath.Join(dir, "suite-docs.pkg.tar.zst")
+	for path, identity := range map[string]string{cli: "suite-cli", libs: "suite-libs", docs: "suite-docs"} {
+		if err := os.WriteFile(path, []byte(identity), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner := newArtifactStageRunner()
+	if err := (Manager{Runner: runner}).InstallArtifacts(context.Background(), dir, []string{docs, libs, cli}, []string{"suite-cli", "suite-libs"}, []string{"suite-cli"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.installed) != 2 {
+		t.Fatalf("installed=%v bytes=%q", runner.installed, runner.installedBytes)
+	}
+	if strings.Join(runner.installReasons, ",") != "dependency,dependency" || string(runner.installedBytes[0]) != "suite-cli" || string(runner.installedBytes[1]) != "suite-libs" {
+		t.Fatalf("split output reasons=%v bytes=%q", runner.installReasons, runner.installedBytes)
+	}
+	markedExplicit := false
+	for _, call := range runner.calls {
+		markedExplicit = markedExplicit || call.Name == "sudo" && strings.Join(call.Args, " ") == "-n pacman -D --asexplicit -- suite-cli"
+	}
+	if !markedExplicit {
+		t.Fatalf("declared split output was not made explicit: %#v", runner.calls)
+	}
+}
+
+func TestInstallArtifactsFailsWhenExplicitReasonCannotBeVerified(t *testing.T) {
+	dir := t.TempDir()
+	artifact := filepath.Join(dir, "suite.pkg.tar.zst")
+	if err := os.WriteFile(artifact, []byte("suite"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := newArtifactStageRunner()
+	runner.failExplicitVerify = true
+	err := (Manager{Runner: runner}).InstallArtifacts(context.Background(), dir, []string{artifact}, []string{"suite"}, []string{"suite"})
+	if err == nil || !strings.Contains(err.Error(), "verify explicit package artifact") || !runner.cleaned {
+		t.Fatalf("err=%v cleaned=%v", err, runner.cleaned)
 	}
 }
 
@@ -264,7 +340,7 @@ func TestInstallArtifactsRejectsUnsafeSourcesBeforePrivilege(t *testing.T) {
 				}
 			}
 			runner := newArtifactStageRunner()
-			if err := (Manager{Runner: runner}).InstallArtifacts(context.Background(), dir, []string{path}, []string{"paru"}); err == nil || len(runner.calls) != 0 {
+			if err := (Manager{Runner: runner}).InstallArtifacts(context.Background(), dir, []string{path}, []string{"paru"}, []string{"paru"}); err == nil || len(runner.calls) != 0 {
 				t.Fatalf("unsafe source accepted or privileged staging started: err=%v calls=%#v", err, runner.calls)
 			}
 		})
@@ -288,7 +364,7 @@ func TestInstallArtifactsCopiesHardlinksAndCleansFailures(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if err := (Manager{Runner: runner}).InstallArtifacts(context.Background(), dir, []string{linked}, []string{"paru"}); err != nil {
+		if err := (Manager{Runner: runner}).InstallArtifacts(context.Background(), dir, []string{linked}, []string{"paru"}, []string{"paru"}); err != nil {
 			t.Fatal(err)
 		}
 		if len(runner.installedBytes) != 1 || string(runner.installedBytes[0]) != "paru" {
@@ -304,7 +380,7 @@ func TestInstallArtifactsCopiesHardlinksAndCleansFailures(t *testing.T) {
 			runner.failCopy = failure == "copy"
 			runner.failValidation = failure == "validation"
 			runner.failInstall = failure == "install"
-			err := (Manager{Runner: runner}).InstallArtifacts(context.Background(), dir, []string{linked}, []string{"paru"})
+			err := (Manager{Runner: runner}).InstallArtifacts(context.Background(), dir, []string{linked}, []string{"paru"}, []string{"paru"})
 			if err == nil || !runner.cleaned || len(runner.staged) != 0 {
 				t.Fatalf("err=%v cleaned=%v staged=%#v", err, runner.cleaned, runner.staged)
 			}

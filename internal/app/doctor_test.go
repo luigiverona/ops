@@ -34,6 +34,9 @@ func (f *doctorRunner) Run(_ context.Context, spec run.Spec) (run.Result, error)
 	if spec.Name == "pacman" && len(spec.Args) > 0 && spec.Args[0] == "-Qqm" {
 		return run.Result{}, nil
 	}
+	if spec.Name == "pacman" && len(spec.Args) > 0 && spec.Args[0] == "-Qeq" {
+		return run.Result{Stdout: "git\nopenssh\ngithub-cli\nflatpak\nbase-devel\n"}, nil
+	}
 	if spec.Name == "paru" {
 		return run.Result{Stdout: "paru v2\n"}, nil
 	}

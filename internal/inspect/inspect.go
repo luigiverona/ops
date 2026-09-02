@@ -29,7 +29,7 @@ type Workstation struct {
 // State returns the observable state. Optional tools being absent is state, not an inspection failure.
 func (w Workstation) State(ctx context.Context) (plan.State, error) {
 	state := plan.State{
-		Installed: map[string]bool{}, Foreign: map[string]bool{}, Flatpaks: map[string]bool{},
+		Installed: map[string]bool{}, Explicit: map[string]bool{}, Foreign: map[string]bool{}, Flatpaks: map[string]bool{},
 		SSHHostKeyFreshness: plan.SSHHostKeyFreshnessUnknown,
 	}
 	if result, err := w.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qq"}}); err == nil {
@@ -39,6 +39,11 @@ func (w Workstation) State(ctx context.Context) (plan.State, error) {
 	}
 	if result, err := w.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qqm"}}); err == nil {
 		addLines(state.Foreign, result.Stdout)
+	}
+	if result, err := w.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qeq"}}); err == nil {
+		addLines(state.Explicit, result.Stdout)
+	} else {
+		return state, err
 	}
 	if _, err := w.Runner.Run(ctx, run.Spec{Name: "paru", Args: []string{"--version"}}); err == nil {
 		state.Paru = true
@@ -128,6 +133,10 @@ func (w Workstation) State(ctx context.Context) (plan.State, error) {
 	if state.GitHubAuth {
 		keys, err := githubManager.Keys(ctx)
 		if err != nil {
+			if githubops.IsSSHKeyScopeError(err) {
+				state.GitHubSSHKeyScopeInsufficient = true
+				return state, nil
+			}
 			return state, fmt.Errorf("inspect GitHub SSH keys: %w", err)
 		}
 		state.GitHubKeysKnown = true

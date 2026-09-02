@@ -19,7 +19,7 @@ type Keeper struct {
 }
 
 func Acquire(ctx context.Context, runner run.Runner) (*Keeper, error) {
-	if _, err := runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-v"}, Interactive: true}); err != nil {
+	if _, err := runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-v"}, Interactive: true, Interaction: "sudo password prompt"}); err != nil {
 		return nil, err
 	}
 	keepCtx, cancel := context.WithCancel(ctx)

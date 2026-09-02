@@ -54,7 +54,8 @@ ops --help      show command help
 ops --version   show the installed version
 ```
 
-Preparation is interactive and requires a TTY. `doctor`, `--help`, and
+Actionable preparation requires a TTY. A fully converged or diagnostic-only
+invocation can inspect and report without one. `doctor`, `--help`, and
 `--version` remain line-oriented when redirected. There is no dry-run flag and
 there are no other public commands.
 
@@ -80,7 +81,7 @@ Identity and access
   SSH identities                review        unrelated local keys
   github.com SSH configuration  configure     managed identity and host trust
   github                        authenticate  CLI login
-  GitHub SSH keys               review        existing keys after login, if present
+  GitHub SSH keys               inspect       reconcile after login
   GitHub SSH key                configure     register after login, if missing
 
 Unchanged
@@ -92,6 +93,12 @@ Prepare this workstation? [Y/n]
 
 Preparation generally follows inspect -> plan -> confirm -> mutate -> verify.
 After confirmation, `Progress` records identify each operation owned by ops.
+One `Progress` block covers an uninterrupted sequence of operations; a later
+block starts only after `Review` content deliberately interrupts that sequence.
+`Issues` groups unresolved and failed work, and `Final` is emitted once with the
+observed outcome. A plan containing only diagnostics or unavailable checks is a
+true no-op: ops does not request confirmation or sudo and reports `Final`
+directly.
 That single plan confirmation authorizes deterministic listed actions; AUR package
 review remains intentionally separate, as do prompts that collect required values,
 drive external authentication/passphrase flows, or make explicit security review
@@ -105,7 +112,12 @@ that ops cannot yet represent safely before confirmation.
 Noninteractive subprocess output is captured and included in actionable errors.
 Programs that require package review, upstream decisions, passwords,
 passphrases, or account authentication retain their interactive terminal
-streams.
+streams. ops marks those streams in `Progress` with an `external` row before the
+program runs. In v1.0.2, GitHub login requests `admin:public_key`, the minimum
+scope needed for ops-managed account SSH-key reconciliation; an existing session
+without it is explicitly planned for `gh auth refresh`. Deferred key
+reconciliation is `inspect`; `Review` appears only when keys are actually
+available for review.
 
 Application dependencies and maintained services are separate planned actions,
 with their owning application retained in the item name:
@@ -164,11 +176,15 @@ changes are minimal, staged, checked for concurrent edits, validated by
 `pacman-conf`, and atomically replaced. Package mutations get exactly one full
 `pacman -Syu` before installs. `ops` never uses standalone `pacman -Sy`.
 
-AUR instructions are untrusted community content. The paru bootstrap displays
-sanitized tracked files and requires explicit review. Declared AUR applications
-use paru's interactive review and are forced to the AUR source. `makepkg` and
-paru run as the normal user, never through sudo. Flatpak and Flathub are always
-user-scoped.
+AUR instructions are untrusted community content. The paru bootstrap and
+declared AUR applications display sanitized tracked files and require explicit
+review of a pinned source revision. ops revalidates that source, builds with
+normal-user `makepkg`, and installs only exact staged package outputs; declared
+applications do not delegate dependency or installation decisions to interactive
+paru. Source-declared full PGP fingerprints are read from that pinned metadata,
+planned when absent, fetched through a fixed HKPS endpoint in an isolated
+temporary keyring, and fingerprint-verified before import into the normal
+user's keyring. Flatpak and Flathub are always user-scoped.
 
 ## Idempotency and recovery
 

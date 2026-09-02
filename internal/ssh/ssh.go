@@ -147,7 +147,7 @@ func (m Manager) EnsureIdentity(ctx context.Context) (Identity, error) {
 	}
 	path := filepath.Join(m.dir(), "ops")
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-		if _, err := m.Runner.Run(ctx, run.Spec{Name: "ssh-keygen", Args: []string{"-t", "ed25519", "-f", path, "-C", "ops-managed"}, Interactive: true}); err != nil {
+		if _, err := m.Runner.Run(ctx, run.Spec{Name: "ssh-keygen", Args: []string{"-q", "-t", "ed25519", "-f", path, "-C", "ops-managed"}, Interactive: true, Interaction: "SSH key passphrase prompt"}); err != nil {
 			return Identity{}, err
 		}
 	}
@@ -199,7 +199,7 @@ func (m Manager) Unload(ctx context.Context, identity AgentIdentity) error {
 }
 
 func (m Manager) Load(ctx context.Context, path string) error {
-	_, err := m.Runner.Run(ctx, run.Spec{Name: "ssh-add", Args: []string{path}, Interactive: true})
+	_, err := m.Runner.Run(ctx, run.Spec{Name: "ssh-add", Args: []string{path}, Interactive: true, Interaction: "SSH key passphrase prompt"})
 	return err
 }
 

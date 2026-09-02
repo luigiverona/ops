@@ -47,3 +47,16 @@ func TestRenderTableAlignsDetailWhenActionIsEmpty(t *testing.T) {
 		t.Fatalf("table mismatch\n--- got ---\n%s--- want ---\n%s", got, want)
 	}
 }
+
+func TestRenderFieldsEscapesControlsAndAlignsMultilineValues(t *testing.T) {
+	got := RenderFields([]Field{{Name: "cause", Value: "first\nsecond\x1b[31m\u2603"}, {Name: "impact", Value: "safe"}})
+	want := "  cause   first\n          second\\x1b[31m\\u2603\n  impact  safe\n"
+	if got != want {
+		t.Fatalf("fields\n--- got ---\n%s--- want ---\n%s", got, want)
+	}
+	for _, value := range []byte(got) {
+		if value > 0x7f || value == 0x1b {
+			t.Fatalf("unsafe structured output: %q", got)
+		}
+	}
+}

@@ -23,6 +23,13 @@ type TableRow struct {
 	Detail string
 }
 
+// Field is a labeled, plain-text value. RenderFields keeps every continuation
+// aligned under its value so command errors cannot take over the terminal.
+type Field struct {
+	Name  string
+	Value string
+}
+
 // RenderTable aligns rows from their actual content and never emits terminal controls.
 func RenderTable(rows []TableRow) string {
 	rows = append([]TableRow(nil), rows...)
@@ -65,6 +72,53 @@ func printableASCII(value string) string {
 		b.WriteString(strings.Trim(strconv.QuoteToASCII(string(r)), `"`))
 	}
 	return b.String()
+}
+
+// PrintableASCII returns a terminal-safe ASCII representation of value.
+func PrintableASCII(value string) string { return printableASCII(value) }
+
+// RenderFields renders stable key/value fields. Newlines are preserved as
+// aligned continuations; every other control or non-ASCII rune is escaped.
+func RenderFields(fields []Field) string {
+	width := 0
+	for _, field := range fields {
+		width = max(width, len(printableASCII(field.Name)))
+	}
+	var b strings.Builder
+	for _, field := range fields {
+		name := printableASCII(field.Name)
+		lines := strings.Split(fieldValue(field.Value), "\n")
+		for i, line := range lines {
+			if i == 0 {
+				fmt.Fprintf(&b, "  %-*s  %s\n", width, name, line)
+				continue
+			}
+			b.WriteString("  ")
+			b.WriteString(strings.Repeat(" ", width))
+			b.WriteString("  ")
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+func fieldValue(value string) string {
+	var b strings.Builder
+	for _, r := range value {
+		if r == '\n' {
+			b.WriteByte('\n')
+			continue
+		}
+		b.WriteString(printableASCII(string(r)))
+	}
+	return b.String()
+}
+
+// RenderReviewFile deliberately exposes reviewed source while escaping every
+// terminal control character. Newlines remain structural content boundaries.
+func RenderReviewFile(name, contents string) string {
+	return "File " + printableASCII(name) + "\n" + fieldValue(contents) + "\n"
 }
 
 // OpenTTY opens the controlling terminal for interactive preparation.

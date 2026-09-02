@@ -27,8 +27,8 @@ func TestShowPlanRealV100Workstation(t *testing.T) {
 		"\nIdentity and access\n" +
 		"  SSH identities                review        unrelated local keys\n" +
 		"  github.com SSH configuration  configure     managed identity and host trust\n" +
-		"  github                        authenticate  CLI login\n" +
-		"  GitHub SSH keys               review        existing keys after login, if present\n" +
+		"  github                        authenticate  CLI login; SSH-key permission\n" +
+		"  GitHub SSH keys               inspect       reconcile after login\n" +
 		"  GitHub SSH key                configure     register after login, if missing\n" +
 		"\nUnchanged\n" +
 		"  5 core components\n" +
@@ -60,6 +60,53 @@ func TestShowPlanApplicationSourcesAndLongIdentifiers(t *testing.T) {
 	}
 }
 
+func TestShowPlanSeparatesApplicationDiagnosticsFromReviewActions(t *testing.T) {
+	p := plan.Plan{Applications: []plan.Application{
+		{Declaration: config.Application{Identifier: "librewolf-bin", Source: "aur"}, State: "unresolved", Cause: "exact identifier was not found in the declared source"},
+		{Declaration: config.Application{Identifier: "mullvad-browser-bin", Source: "aur"}, State: "failed", Cause: "optional dependency resolution failed: source unavailable"},
+		{Declaration: config.Application{Identifier: "bitwarden", Source: "pacman"}, State: "install"},
+	}, ReviewSSHIdentities: true}
+	var output bytes.Buffer
+	Runtime{Out: &output}.showPlan(p)
+	got := output.String()
+	if !strings.Contains(got, "Application diagnostics\n  librewolf-bin        unresolved") || !strings.Contains(got, "mullvad-browser-bin  failed") {
+		t.Fatalf("diagnostics were not distinct:\n%s", got)
+	}
+	if strings.Contains(got, "librewolf-bin        review") || !strings.Contains(got, "SSH identities  review") {
+		t.Fatalf("review vocabulary was not reserved for real review:\n%s", got)
+	}
+}
+
+func TestShowPlanIncludesScopeRefreshOnlyWhenNeeded(t *testing.T) {
+	state := readyExecutionState()
+	state.GitHubSSHKeyScopeInsufficient = true
+	p, err := plan.Build(context.Background(), config.Config{Version: 1}, state, outputResolver{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.AuthenticateGitHub || !p.RefreshGitHubSSHKeyScope {
+		t.Fatalf("scope refresh plan=%#v", p)
+	}
+	var output bytes.Buffer
+	Runtime{Out: &output}.showPlan(p)
+	if !strings.Contains(output.String(), "github           authenticate  add SSH-key management permission") {
+		t.Fatalf("scope refresh was not planned:\n%s", output.String())
+	}
+}
+
+func TestReportGroupsIssuesAndPreservesMultilineAlignment(t *testing.T) {
+	p := plan.Plan{Applications: []plan.Application{{Declaration: config.Application{Identifier: "one", Source: "aur"}}, {Declaration: config.Application{Identifier: "two", Source: "flatpak"}}}}
+	var output bytes.Buffer
+	Runtime{Out: &output}.report(p, 0, "ready", "ready", "failed", []issue{
+		{State: "Unresolved", Name: "one", Source: "aur", Cause: "missing\nnext\x1b[31m", Impact: "not installed", Action: "fix declaration"},
+		{State: "Failed", Name: "two", Stage: "setup", Cause: "broken", Impact: "not installed", Action: "retry"},
+	})
+	want := "\nIssues\n\nUnresolved\n\none\n  source  aur\n  cause   missing\n          next\\x1b[31m\n  impact  not installed\n  action  fix declaration\n\nFailed\n\ntwo\n  stage   setup\n  cause   broken\n  impact  not installed\n  action  retry\n\nFinal\n  system  ready\n  core    7/7\n  apps    0/2\n  git     ready\n  ssh     ready\n  github  failed\n\nWorkstation completed with issues.\n"
+	if output.String() != want {
+		t.Fatalf("report mismatch\n--- got ---\n%s--- want ---\n%s", output.String(), want)
+	}
+}
+
 func TestShowPlanParuBootstrapConcreteDependencies(t *testing.T) {
 	source := plan.AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
 		PackageBase: "paru", Version: "2.1.0-2", MakeDepends: []string{"cargo"}, Packages: []aurmeta.Package{{Name: "paru"}},
@@ -67,6 +114,7 @@ func TestShowPlanParuBootstrapConcreteDependencies(t *testing.T) {
 	state := readyExecutionState()
 	state.Paru = false
 	state.Installed["base-devel"] = false
+	state.Explicit["base-devel"] = false
 	p, err := plan.Build(context.Background(), config.Config{Version: 1}, state, outputResolver{
 		source: &source,
 		deps: map[string]plan.OfficialDependency{
@@ -109,6 +157,7 @@ func TestShowPlanDefersRemoteKeyComparisonUntilIdentityExists(t *testing.T) {
 func TestShowPlanRendersDependenciesAndServicesWithOwners(t *testing.T) {
 	state := plan.State{
 		Installed: map[string]bool{"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true},
+		Explicit:  map[string]bool{"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true, "mullvad-vpn": true},
 		Foreign:   map[string]bool{}, Flatpaks: map[string]bool{}, Paru: true, Flathub: true, Multilib: true,
 		GitName: "User", GitEmail: "user@example.com", ManagedSSHIdentity: true, SSHConfigurationReady: true,
 		SSHHostKeyFreshness: plan.SSHHostKeyFreshnessCurrent,
@@ -208,7 +257,7 @@ func TestProgressAndFailureRenderingRemainStructured(t *testing.T) {
 
 	var failure bytes.Buffer
 	code := (Runtime{Err: &failure}).fatal(errors.New("example failure"))
-	want := "Failed\n\nops\n  cause           example failure\n  impact          workstation preparation could not safely continue\n  action          resolve the error and run ops again\n\nWorkstation preparation stopped.\n"
+	want := "Issues\n\nFailed\n\nops\n  cause   example failure\n  impact  workstation preparation could not safely continue\n  action  resolve the error and run ops again\n\nFinal\n  system  stopped\nWorkstation preparation stopped.\n"
 	if code != Fatal || failure.String() != want {
 		t.Fatalf("failure code=%d\n--- got ---\n%s--- want ---\n%s", code, failure.String(), want)
 	}
@@ -222,10 +271,11 @@ func TestPlanActionVocabularyIsCompleteAndClosed(t *testing.T) {
 			Services: []string{"example.service"},
 		}},
 		ConfigureGit: true, ReviewSSHIdentities: true, AuthenticateGitHub: true,
+		ReviewGitHubKeys: true, GitHubKeyStateUnknown: true,
 	}
 	want := map[string]bool{
 		actionInstall: true, actionConfigure: true, actionUpgrade: true,
-		actionEnable: true, actionAuthenticate: true, actionReview: true,
+		actionEnable: true, actionAuthenticate: true, actionReview: true, actionInspect: true,
 	}
 	got := make(map[string]bool)
 	for _, section := range planSections(p) {
@@ -263,6 +313,11 @@ func realWorkstationPlan(t *testing.T) plan.Plan {
 	}
 	state := plan.State{
 		Installed: map[string]bool{
+			"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true,
+			"librewolf-bin": true, "mullvad-browser-bin": true, "mullvad-vpn": true,
+			"discord": true, "spotify-launcher": true, "steam": true,
+		},
+		Explicit: map[string]bool{
 			"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true,
 			"librewolf-bin": true, "mullvad-browser-bin": true, "mullvad-vpn": true,
 			"discord": true, "spotify-launcher": true, "steam": true,
@@ -316,6 +371,7 @@ func (r outputResolver) OfficialDependency(_ context.Context, requirement string
 	}
 	return plan.OfficialDependency{Requirement: requirement, Satisfied: true}, nil
 }
+func (r outputResolver) UserPGPKey(_ context.Context, _ string) (bool, error) { return true, nil }
 
 func (r outputResolver) CompareVersions(_ context.Context, _, _ string) (int, error) { return 0, nil }
 

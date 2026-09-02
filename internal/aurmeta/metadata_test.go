@@ -56,6 +56,17 @@ pkgname = example
 	}
 }
 
+func TestParseRejectsUnsafePackageIdentityPaths(t *testing.T) {
+	for _, source := range []string{
+		"pkgbase = ../escape\npkgver = 1\npkgrel = 1\npkgname = example\n",
+		"pkgbase = example\npkgver = 1\npkgrel = 1\npkgname = ../escape\n",
+	} {
+		if _, err := Parse([]byte(source)); err == nil {
+			t.Fatalf("unsafe package identity was accepted: %q", source)
+		}
+	}
+}
+
 func TestParseRetainsAllX8664PlanningFieldsAndSplitPackageValues(t *testing.T) {
 	metadata, err := Parse([]byte(`pkgbase = suite
 	epoch = 2
@@ -67,12 +78,17 @@ func TestParseRetainsAllX8664PlanningFieldsAndSplitPackageValues(t *testing.T) {
 	makedepends_x86_64 = global-arch-build
 	checkdepends = global-check
 	checkdepends_x86_64 = global-arch-check
+	optdepends = global-optional>=1: global integration
+	optdepends_x86_64 = global-arch-optional: architecture integration
 	provides = global-virtual=2
 	provides_x86_64 = global-arch-virtual=3
+	validpgpkeys = 0123456789ABCDEF0123456789ABCDEF01234567
 
 pkgname = suite-cli
 	depends = cli-runtime
 	depends_x86_64 = cli-arch-runtime
+	optdepends = cli-optional: cli integration
+	optdepends_x86_64 = cli-arch-optional>=1: cli architecture integration
 	provides = suite-cli-virtual
 	provides_x86_64 = suite-cli-arch-virtual=1
 
@@ -92,8 +108,55 @@ pkgname = suite-lib
 	}
 	if strings.Join(metadata.Packages[0].Depends, ",") != "cli-arch-runtime,cli-runtime" ||
 		strings.Join(metadata.Packages[0].Provides, ",") != "suite-cli-arch-virtual=1,suite-cli-virtual" ||
+		strings.Join(metadata.Packages[0].Optional, ",") != "cli-arch-optional>=1: cli architecture integration,cli-optional: cli integration" ||
 		strings.Join(metadata.Packages[1].Provides, ",") != "suite-library=1.4" {
 		t.Fatalf("split metadata=%#v", metadata.Packages)
+	}
+	if strings.Join(metadata.Optional, ",") != "global-arch-optional: architecture integration,global-optional>=1: global integration" ||
+		strings.Join(metadata.ValidPGPKeys, ",") != "0123456789ABCDEF0123456789ABCDEF01234567" {
+		t.Fatalf("signing/optional metadata=%#v", metadata)
+	}
+}
+
+func TestParseRejectsNonCanonicalValidPGPKeys(t *testing.T) {
+	for _, fingerprint := range []string{"0123456789ABCDEF", "0123456789abcdef0123456789abcdef01234567", "0123456789ABCDEF0123456789ABCDEF0123456G"} {
+		data := "pkgbase = example\npkgver = 1\npkgrel = 1\nvalidpgpkeys = " + fingerprint + "\npkgname = example\n"
+		if _, err := Parse([]byte(data)); err == nil {
+			t.Fatalf("accepted invalid validpgpkeys value %q", fingerprint)
+		}
+	}
+}
+
+func TestOptionalRequirementsUseOnlySelectedOutputClosure(t *testing.T) {
+	metadata, err := Parse([]byte(`pkgbase = suite
+	pkgver = 1
+	pkgrel = 1
+	optdepends = global>=1: all outputs
+
+pkgname = suite-cli
+	depends = suite-libs=1-1
+	optdepends = cli>=1:2: preserves epoch colon
+	optdepends = suite-libs: already selected sibling
+
+pkgname = suite-libs
+	optdepends = libs: selected sibling
+
+pkgname = suite-docs
+	optdepends = docs: unselected output
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirements, err := metadata.OptionalRequirements("suite-cli", testCompare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, requirement := range requirements {
+		got = append(got, requirement.Expression+":"+requirement.Purpose)
+	}
+	if strings.Join(got, ",") != "cli>=1:2:optional,global>=1:optional,libs:optional" {
+		t.Fatalf("optional requirements=%v", got)
 	}
 }
 
@@ -189,6 +252,24 @@ func TestPlanningEqualRejectsDependencyAndOutputDrift(t *testing.T) {
 	}
 	if PlanningEqual(base, drift) {
 		t.Fatal("planning-relevant drift was accepted")
+	}
+}
+
+func TestPlanningEqualRejectsOptionalAndSigningKeyDrift(t *testing.T) {
+	base, err := Parse([]byte("pkgbase = x\n\tpkgver = 1\n\tpkgrel = 1\n\toptdepends = feature: integration\n\tvalidpgpkeys = 0123456789ABCDEF0123456789ABCDEF01234567\n\npkgname = x\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedOptional, err := Parse([]byte("pkgbase = x\n\tpkgver = 1\n\tpkgrel = 1\n\toptdepends = other: integration\n\tvalidpgpkeys = 0123456789ABCDEF0123456789ABCDEF01234567\n\npkgname = x\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedKey, err := Parse([]byte("pkgbase = x\n\tpkgver = 1\n\tpkgrel = 1\n\toptdepends = feature: integration\n\tvalidpgpkeys = FEDCBA9876543210FEDCBA9876543210FEDCBA98\n\npkgname = x\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if PlanningEqual(base, changedOptional) || PlanningEqual(base, changedKey) {
+		t.Fatal("optional dependency or signing-key drift was accepted")
 	}
 }
 

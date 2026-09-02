@@ -10,12 +10,21 @@ import (
 )
 
 var dependencyNamePattern = regexp.MustCompile(`^[A-Za-z0-9@._+][A-Za-z0-9@._+-]*$`)
+var fingerprintPattern = regexp.MustCompile(`^(?:[A-F0-9]{40}|[A-F0-9]{64})$`)
+
+// ValidPackageName reports whether value is safe as an Arch package or package
+// base identity. Callers use it before treating AUR metadata as a path or URL
+// component.
+func ValidPackageName(value string) bool {
+	return dependencyNamePattern.MatchString(value)
+}
 
 // Package is one output declared by an AUR package base.
 type Package struct {
 	Name     string
 	Depends  []string
 	Provides []string
+	Optional []string
 }
 
 // Metadata contains the planning-relevant fields from .SRCINFO.
@@ -26,6 +35,8 @@ type Metadata struct {
 	Provides     []string
 	MakeDepends  []string
 	CheckDepends []string
+	Optional     []string
+	ValidPGPKeys []string
 	Packages     []Package
 }
 
@@ -94,10 +105,24 @@ func Parse(data []byte) (Metadata, error) {
 				return Metadata{}, errors.New("package-specific checkdepends is not valid planning metadata")
 			}
 			metadata.CheckDepends = append(metadata.CheckDepends, value)
+		case "optdepends", "optdepends_x86_64":
+			if current == nil {
+				metadata.Optional = append(metadata.Optional, value)
+			} else {
+				current.Optional = append(current.Optional, value)
+			}
+		case "validpgpkeys":
+			if current != nil {
+				return Metadata{}, errors.New("package-specific validpgpkeys is not valid planning metadata")
+			}
+			metadata.ValidPGPKeys = append(metadata.ValidPGPKeys, value)
 		}
 	}
 	if metadata.PackageBase == "" || pkgver == "" || pkgrel == "" || len(metadata.Packages) == 0 {
 		return Metadata{}, errors.New(".SRCINFO is missing required package identity fields")
+	}
+	if !ValidPackageName(metadata.PackageBase) {
+		return Metadata{}, errors.New(".SRCINFO contains an invalid package base")
 	}
 	metadata.Version = pkgver + "-" + pkgrel
 	if epoch != "" && epoch != "0" {
@@ -107,20 +132,33 @@ func Parse(data []byte) (Metadata, error) {
 	metadata.Provides = normalized(metadata.Provides)
 	metadata.MakeDepends = normalized(metadata.MakeDepends)
 	metadata.CheckDepends = normalized(metadata.CheckDepends)
+	metadata.Optional = normalized(metadata.Optional)
+	metadata.ValidPGPKeys = normalized(metadata.ValidPGPKeys)
 	seen := make(map[string]bool)
 	for i := range metadata.Packages {
-		if metadata.Packages[i].Name == "" || seen[metadata.Packages[i].Name] {
+		if !ValidPackageName(metadata.Packages[i].Name) || seen[metadata.Packages[i].Name] {
 			return Metadata{}, errors.New(".SRCINFO contains an invalid or duplicate output package")
 		}
 		seen[metadata.Packages[i].Name] = true
 		metadata.Packages[i].Depends = normalized(metadata.Packages[i].Depends)
 		metadata.Packages[i].Provides = normalized(metadata.Packages[i].Provides)
+		metadata.Packages[i].Optional = normalized(metadata.Packages[i].Optional)
 	}
 	for _, values := range [][]string{metadata.Depends, metadata.MakeDepends, metadata.CheckDepends} {
 		for _, value := range values {
 			if _, err := ParseDependency(value); err != nil {
 				return Metadata{}, err
 			}
+		}
+	}
+	for _, value := range metadata.Optional {
+		if _, err := ParseOptionalDependency(value); err != nil {
+			return Metadata{}, err
+		}
+	}
+	for _, fingerprint := range metadata.ValidPGPKeys {
+		if !ValidFingerprint(fingerprint) {
+			return Metadata{}, fmt.Errorf("invalid validpgpkeys fingerprint %q", fingerprint)
 		}
 	}
 	for _, value := range metadata.Provides {
@@ -139,6 +177,11 @@ func Parse(data []byte) (Metadata, error) {
 				return Metadata{}, err
 			}
 		}
+		for _, value := range pkg.Optional {
+			if _, err := ParseOptionalDependency(value); err != nil {
+				return Metadata{}, err
+			}
+		}
 	}
 	sort.Slice(metadata.Packages, func(i, j int) bool { return metadata.Packages[i].Name < metadata.Packages[j].Name })
 	return metadata, nil
@@ -151,6 +194,8 @@ func PlanningEqual(a, b Metadata) bool {
 		strings.Join(a.Provides, "\x00") == strings.Join(b.Provides, "\x00") &&
 		strings.Join(a.MakeDepends, "\x00") == strings.Join(b.MakeDepends, "\x00") &&
 		strings.Join(a.CheckDepends, "\x00") == strings.Join(b.CheckDepends, "\x00") &&
+		strings.Join(a.Optional, "\x00") == strings.Join(b.Optional, "\x00") &&
+		strings.Join(a.ValidPGPKeys, "\x00") == strings.Join(b.ValidPGPKeys, "\x00") &&
 		packagesEqual(a.Packages, b.Packages)
 }
 
@@ -160,11 +205,48 @@ func packagesEqual(a, b []Package) bool {
 	}
 	for i := range a {
 		if a[i].Name != b[i].Name || strings.Join(a[i].Depends, "\x00") != strings.Join(b[i].Depends, "\x00") ||
-			strings.Join(a[i].Provides, "\x00") != strings.Join(b[i].Provides, "\x00") {
+			strings.Join(a[i].Provides, "\x00") != strings.Join(b[i].Provides, "\x00") ||
+			strings.Join(a[i].Optional, "\x00") != strings.Join(b[i].Optional, "\x00") {
 			return false
 		}
 	}
 	return true
+}
+
+// OptionalRequirements returns the global and selected-output optdepends from
+// this exact .SRCINFO revision. Their descriptions are intentionally excluded
+// from the package-manager dependency expression.
+func (m Metadata) OptionalRequirements(target string, compare VersionComparator) ([]Requirement, error) {
+	outputs, err := m.OutputClosure(target, compare)
+	if err != nil {
+		return nil, err
+	}
+	selected := make(map[string]bool, len(outputs))
+	for _, output := range outputs {
+		selected[output] = true
+	}
+	values := append([]string(nil), m.Optional...)
+	for _, pkg := range m.Packages {
+		if selected[pkg.Name] {
+			values = append(values, pkg.Optional...)
+		}
+	}
+	requirements := make([]Requirement, 0, len(values))
+	for _, value := range values {
+		expression, err := OptionalDependencyExpression(value)
+		if err != nil {
+			return nil, err
+		}
+		provided, err := m.selectedOutputProvider(expression, selected, compare)
+		if err != nil {
+			return nil, err
+		}
+		if provided {
+			continue
+		}
+		requirements = append(requirements, Requirement{Expression: expression, Purpose: "optional"})
+	}
+	return uniqueRequirements(requirements), nil
 }
 
 // BuildRequirements returns the official-package dependencies needed to build
@@ -319,6 +401,36 @@ func DependencyName(value string) string {
 func ParseDependency(value string) (Dependency, error) {
 	return parseExpression(value, false)
 }
+
+// OptionalDependencyExpression separates an optdepends expression from its
+// human-readable description without treating an epoch colon as a separator.
+func OptionalDependencyExpression(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if index := strings.Index(value, ": "); index >= 0 {
+		value = strings.TrimSpace(value[:index])
+	} else if _, err := ParseDependency(value); err != nil {
+		value, _, _ = strings.Cut(value, ":")
+		value = strings.TrimSpace(value)
+	}
+	if _, err := ParseDependency(value); err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+// ParseOptionalDependency validates an optdepends value and returns only its
+// package dependency expression.
+func ParseOptionalDependency(value string) (Dependency, error) {
+	expression, err := OptionalDependencyExpression(value)
+	if err != nil {
+		return Dependency{}, err
+	}
+	return ParseDependency(expression)
+}
+
+// ValidFingerprint accepts only canonical full OpenPGP fingerprints used by
+// makepkg validpgpkeys: uppercase hexadecimal with no whitespace or key IDs.
+func ValidFingerprint(value string) bool { return fingerprintPattern.MatchString(value) }
 
 // ParseProvide parses an unversioned or exactly-versioned provides entry.
 func ParseProvide(value string) (Dependency, error) {

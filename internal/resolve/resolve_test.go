@@ -45,6 +45,13 @@ func (f aurSourceRunner) Run(_ context.Context, spec run.Spec) (run.Result, erro
 	return run.Result{}, errors.New("unexpected command")
 }
 
+type countingRunner struct{ calls int }
+
+func (f *countingRunner) Run(_ context.Context, _ run.Spec) (run.Result, error) {
+	f.calls++
+	return run.Result{}, errors.New("unexpected command")
+}
+
 func TestAURSourcePinsMetadataToExactGitCommit(t *testing.T) {
 	const commit = "0123456789012345678901234567890123456789"
 	client := &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
@@ -57,6 +64,14 @@ func TestAURSourcePinsMetadataToExactGitCommit(t *testing.T) {
 	source, found, err := (Resolver{Runner: aurSourceRunner{commit: commit}, Client: client}).AURSource(context.Background(), "paru")
 	if err != nil || !found || source.Commit != commit || source.Metadata.PackageBase != "paru" || strings.Join(source.Metadata.MakeDepends, ",") != "cargo" {
 		t.Fatalf("source=%#v found=%v err=%v", source, found, err)
+	}
+}
+
+func TestAURSourceRejectsUnsafePackageBaseBeforeNetworkResolution(t *testing.T) {
+	runner := &countingRunner{}
+	_, _, err := (Resolver{Runner: runner}).AURSource(context.Background(), "paru?redirect=example")
+	if err == nil || runner.calls != 0 {
+		t.Fatalf("unsafe package base reached source resolution: err=%v calls=%d", err, runner.calls)
 	}
 }
 

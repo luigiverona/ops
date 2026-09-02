@@ -26,13 +26,15 @@ type Key struct {
 // Manager invokes gh without handling tokens itself.
 type Manager struct{ Runner run.Runner }
 
+const sshKeyScope = "admin:public_key"
+
 func (m Manager) Authenticated(ctx context.Context) bool {
 	_, err := m.Runner.Run(ctx, run.Spec{Name: "gh", Args: []string{"auth", "status", "--hostname", "github.com", "--active"}})
 	return err == nil
 }
 
 func (m Manager) Login(ctx context.Context) error {
-	_, err := m.Runner.Run(ctx, run.Spec{Name: "gh", Args: []string{"auth", "login", "--hostname", "github.com", "--git-protocol", "ssh", "--skip-ssh-key", "--web"}, Interactive: true})
+	_, err := m.Runner.Run(ctx, run.Spec{Name: "gh", Args: []string{"auth", "login", "--hostname", "github.com", "--git-protocol", "ssh", "--skip-ssh-key", "--web", "--scopes", sshKeyScope}, Interactive: true, Interaction: "GitHub device authentication"})
 	if err != nil {
 		return err
 	}
@@ -40,6 +42,33 @@ func (m Manager) Login(ctx context.Context) error {
 		return errors.New("GitHub authentication verification failed")
 	}
 	return nil
+}
+
+// RefreshSSHKeyScope adds only the authorization needed to enumerate and
+// manage account SSH keys. gh continues to own all credential storage.
+func (m Manager) RefreshSSHKeyScope(ctx context.Context) error {
+	_, err := m.Runner.Run(ctx, run.Spec{Name: "gh", Args: []string{"auth", "refresh", "--hostname", "github.com", "--scopes", sshKeyScope}, Interactive: true, Interaction: "GitHub SSH-key authorization"})
+	if err != nil {
+		return err
+	}
+	if !m.Authenticated(ctx) {
+		return errors.New("GitHub authentication verification failed")
+	}
+	return nil
+}
+
+// IsSSHKeyScopeError identifies GitHub's documented insufficient-scope API
+// response without inspecting a token or credential store.
+func IsSSHKeyScopeError(err error) bool {
+	var commandErr *run.Error
+	if !errors.As(err, &commandErr) || commandErr.Name != "gh" || !sshKeyAPI(commandErr.Args) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(commandErr.Stderr), `this api operation needs the "admin:public_key" scope`)
+}
+
+func sshKeyAPI(args []string) bool {
+	return len(args) == 3 && args[0] == "api" && args[1] == "--paginate" && args[2] == "user/keys"
 }
 
 func (m Manager) Keys(ctx context.Context) ([]Key, error) {
@@ -113,7 +142,11 @@ func (m Manager) AddManaged(ctx context.Context, path string) (bool, error) {
 
 // VerifySSH accepts GitHub's intentional exit 1 when its success message proves authentication.
 func (m Manager) VerifySSH(ctx context.Context) error {
-	result, err := m.Runner.Run(ctx, run.Spec{Name: "ssh", Args: []string{"-T", "git@github.com"}})
+	result, err := m.Runner.Run(ctx, run.Spec{
+		Name:  "ssh",
+		Args:  []string{"-o", "BatchMode=yes", "-T", "git@github.com"},
+		Stdin: strings.NewReader(""),
+	})
 	combined := strings.ToLower(result.Stdout + "\n" + result.Stderr)
 	if strings.Contains(combined, "successfully authenticated") {
 		return nil
