@@ -592,6 +592,16 @@ func (a Runtime) markApplicationExplicit(ctx context.Context, am arch.Manager, a
 		return nil
 	}
 	name := application.Declaration.Identifier
+	var query string
+	switch application.Declaration.Source {
+	case "pacman":
+		query = "-Qn"
+	case "aur":
+		query = "-Qm"
+	}
+	if _, err := a.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{query, name}}); err != nil {
+		return fmt.Errorf("application source changed after planning; rerun ops: expected %s package: %w", application.Declaration.Source, err)
+	}
 	a.showProgress(name, actionConfigure, "pacman install reason")
 	if err := am.MarkExplicit(ctx, []string{name}); err != nil {
 		return fmt.Errorf("preserve explicit install reason: %w", err)

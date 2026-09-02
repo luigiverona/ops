@@ -187,7 +187,7 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 		if !found || source.Commit == "" || source.Metadata.PackageBase != "paru" {
 			return Plan{}, fmt.Errorf("resolve paru source metadata: exact AUR source is unavailable")
 		}
-		outputs, dependencies, packages, err := resolveAURBuild(ctx, resolver, source, "paru", nil, nil, state.Installed, state.Explicit)
+		outputs, dependencies, packages, err := resolveAURBuild(ctx, resolver, source, "paru", nil, nil, state.Installed, state.Explicit, state.Foreign)
 		if err != nil {
 			return Plan{}, fmt.Errorf("resolve paru build: %w", err)
 		}
@@ -322,7 +322,7 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 			for _, dependency := range app.Dependencies {
 				extraRequirements = append(extraRequirements, aurmeta.Requirement{Expression: dependency.Requirement, Purpose: "optional"})
 			}
-			outputs, dependencies, packages, buildErr := resolveAURBuild(ctx, resolver, source, declaration.Identifier, extraRequirements, declaredPacman, state.Installed, state.Explicit)
+			outputs, dependencies, packages, buildErr := resolveAURBuild(ctx, resolver, source, declaration.Identifier, extraRequirements, declaredPacman, state.Installed, state.Explicit, state.Foreign)
 			if buildErr != nil {
 				app.State = "failed"
 				app.Cause = "AUR build dependency resolution failed: " + buildErr.Error()
@@ -345,7 +345,7 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 				continue
 			}
 			for _, output := range outputs {
-				if output == declaration.Identifier || declaredAUR[output] || (state.Installed[output] && state.Explicit[output]) {
+				if output == declaration.Identifier || declaredAUR[output] || (state.Installed[output] && state.Explicit[output] && state.Foreign[output]) {
 					app.AURExplicitOutputs = append(app.AURExplicitOutputs, output)
 				}
 			}
@@ -365,7 +365,7 @@ func Build(ctx context.Context, cfg config.Config, state State, resolver Resolve
 	return p, nil
 }
 
-func resolveAURBuild(ctx context.Context, resolver Resolver, source AURSource, target string, additional []aurmeta.Requirement, declared, installed, explicit map[string]bool) ([]string, []OfficialDependency, []BootstrapPackage, error) {
+func resolveAURBuild(ctx context.Context, resolver Resolver, source AURSource, target string, additional []aurmeta.Requirement, declared, installed, explicit, foreign map[string]bool) ([]string, []OfficialDependency, []BootstrapPackage, error) {
 	compareVersions := func(left, right string) (int, error) { return resolver.CompareVersions(ctx, left, right) }
 	outputs, err := source.Metadata.OutputClosure(target, compareVersions)
 	if err != nil {
@@ -409,7 +409,7 @@ func resolveAURBuild(ctx context.Context, resolver Resolver, source AURSource, t
 		for _, packageName := range binding.Packages {
 			pkg := packages[packageName]
 			if pkg == nil {
-				pkg = &BootstrapPackage{Name: packageName, AsExplicit: declared[packageName] || (installed[packageName] && explicit[packageName])}
+				pkg = &BootstrapPackage{Name: packageName, AsExplicit: declared[packageName] || (installed[packageName] && explicit[packageName] && !foreign[packageName])}
 				packages[packageName] = pkg
 			}
 			pkg.Purposes = appendUnique(pkg.Purposes, requirement.Purpose)

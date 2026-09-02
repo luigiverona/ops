@@ -37,6 +37,7 @@ type prepareRunner struct {
 	sshPublicKey     string
 	gitName          string
 	gitEmail         string
+	sourceDrift      map[string]bool
 }
 
 func (f *prepareRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
@@ -50,6 +51,9 @@ func (f *prepareRunner) Run(_ context.Context, spec run.Spec) (run.Result, error
 	}
 	if f.failFlatpak != "" && spec.Name == "flatpak" && len(spec.Args) > 0 && spec.Args[0] == "install" && strings.Contains(joined, f.failFlatpak) {
 		return run.Result{}, errors.New("flatpak install failed")
+	}
+	if spec.Name == "pacman" && len(spec.Args) == 2 && (spec.Args[0] == "-Qn" || spec.Args[0] == "-Qm") && f.sourceDrift[spec.Args[0]+":"+spec.Args[1]] {
+		return run.Result{}, errors.New("package source changed")
 	}
 	if spec.Name == "flatpak" && len(spec.Args) > 0 && spec.Args[0] == "remotes" {
 		return run.Result{Stdout: "flathub\n"}, nil
@@ -256,6 +260,65 @@ func TestPreparePlanReportsExplicitReasonFailureAsApplicationIssue(t *testing.T)
 	code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 	if code != Issues || !strings.Contains(output.String(), "application install reason was not configured") || !strings.Contains(output.String(), "apps    0/1") {
 		t.Fatalf("code=%d\n%s", code, output.String())
+	}
+}
+
+func TestConfigureApplicationsRevalidateTheirDeclaredSourceBeforeMarkingExplicit(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		source string
+		query  string
+	}{
+		{name: "official", source: "pacman", query: "-Qn"},
+		{name: "foreign", source: "aur", query: "-Qm"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := plan.Plan{Core: readyCore(), Applications: []plan.Application{{
+				Declaration: config.Application{Identifier: "example", Source: test.source}, State: "configure",
+			}}, GitStatus: "ready", SSHStatus: "ready", GitHubStatus: "ready"}
+			var output bytes.Buffer
+			runner := &prepareRunner{}
+			code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+			if code != Success {
+				t.Fatalf("code=%d\n%s", code, output.String())
+			}
+			queryAt, markAt := -1, -1
+			for index, call := range runner.calls {
+				if call.Name == "pacman" && strings.Join(call.Args, " ") == test.query+" example" {
+					queryAt = index
+				}
+				if call.Name == "sudo" && strings.Join(call.Args, " ") == "-n pacman -D --asexplicit -- example" {
+					markAt = index
+				}
+			}
+			if queryAt < 0 || markAt < 0 || queryAt >= markAt {
+				t.Fatalf("source verification did not precede install-reason mutation: %#v", runner.calls)
+			}
+		})
+	}
+}
+
+func TestConfigureSourceDriftIsAnApplicationIssueAndDoesNotBlockOtherApplications(t *testing.T) {
+	p := plan.Plan{Core: readyCore(), Applications: []plan.Application{
+		{Declaration: config.Application{Identifier: "stale", Source: "pacman"}, State: "configure"},
+		{Declaration: config.Application{Identifier: "working", Source: "aur"}, State: "configure"},
+	}, GitStatus: "ready", SSHStatus: "ready", GitHubStatus: "ready"}
+	var output bytes.Buffer
+	runner := &prepareRunner{sourceDrift: map[string]bool{"-Qn:stale": true}}
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+	if code != Issues || !strings.Contains(output.String(), "application source changed after planning; rerun ops") || !strings.Contains(output.String(), "apps    1/2") {
+		t.Fatalf("code=%d\n%s", code, output.String())
+	}
+	markedStale, markedWorking := false, false
+	for _, call := range runner.calls {
+		if call.Name != "sudo" || !strings.Contains(strings.Join(call.Args, " "), "pacman -D --asexplicit") {
+			continue
+		}
+		markedStale = markedStale || strings.HasSuffix(strings.Join(call.Args, " "), "-- stale")
+		markedWorking = markedWorking || strings.HasSuffix(strings.Join(call.Args, " "), "-- working")
+	}
+	if markedStale || !markedWorking {
+		t.Fatalf("source drift incorrectly changed install reasons or stopped continuation: %#v", runner.calls)
 	}
 }
 

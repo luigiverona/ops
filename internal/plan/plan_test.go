@@ -516,7 +516,7 @@ func TestAURInstallReasonIntentDoesNotDependOnApplicationOrder(t *testing.T) {
 	}
 }
 
-func TestAURInstallReasonsPreserveExistingExplicitPackagesWithinTheirSource(t *testing.T) {
+func TestAURInstallReasonsPreserveExistingExplicitStateOnlyWithinItsSource(t *testing.T) {
 	source := AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
 		PackageBase: "suite", Version: "1-1", Depends: []string{"shared"}, Packages: []aurmeta.Package{
 			{Name: "suite-cli", Depends: []string{"foo=1-1"}}, {Name: "foo"},
@@ -530,16 +530,33 @@ func TestAURInstallReasonsPreserveExistingExplicitPackagesWithinTheirSource(t *t
 			"shared":     {Requirement: "shared", Provider: "shared", Packages: []string{"shared"}},
 		},
 	}
-	state := readyState()
-	state.Installed["shared"], state.Explicit["shared"] = true, true
-	state.Installed["foo"], state.Explicit["foo"] = true, true
-	p, err := Build(context.Background(), config.Config{Version: 1, Applications: []config.Application{{Source: "aur", Identifier: "suite-cli"}}}, state, resolver)
-	if err != nil {
-		t.Fatal(err)
-	}
-	app := p.Applications[0]
-	if strings.Join(app.AURExplicitOutputs, ",") != "foo,suite-cli" || len(app.AURPackages) != 1 || !app.AURPackages[0].AsExplicit {
-		t.Fatalf("existing explicit install reasons were not preserved: %#v", app)
+	for _, test := range []struct {
+		name             string
+		foreign          map[string]bool
+		explicitOutputs  string
+		officialExplicit bool
+	}{
+		{name: "official explicit does not transfer to AUR output", foreign: map[string]bool{}, explicitOutputs: "suite-cli", officialExplicit: true},
+		{name: "foreign explicit does not transfer to official dependency", foreign: map[string]bool{"shared": true, "foo": true}, explicitOutputs: "foo,suite-cli", officialExplicit: false},
+		{name: "official explicit dependency is preserved", foreign: map[string]bool{"foo": true}, explicitOutputs: "foo,suite-cli", officialExplicit: true},
+		{name: "foreign explicit AUR output is preserved", foreign: map[string]bool{"shared": true, "foo": true}, explicitOutputs: "foo,suite-cli", officialExplicit: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := readyState()
+			state.Installed["shared"], state.Explicit["shared"] = true, true
+			state.Installed["foo"], state.Explicit["foo"] = true, true
+			for name := range test.foreign {
+				state.Foreign[name] = true
+			}
+			p, err := Build(context.Background(), config.Config{Version: 1, Applications: []config.Application{{Source: "aur", Identifier: "suite-cli"}}}, state, resolver)
+			if err != nil {
+				t.Fatal(err)
+			}
+			app := p.Applications[0]
+			if strings.Join(app.AURExplicitOutputs, ",") != test.explicitOutputs || len(app.AURPackages) != 1 || app.AURPackages[0].AsExplicit != test.officialExplicit {
+				t.Fatalf("source-qualified explicit state was not preserved: %#v", app)
+			}
+		})
 	}
 }
 
