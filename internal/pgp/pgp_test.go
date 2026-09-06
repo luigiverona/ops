@@ -18,12 +18,15 @@ import (
 const testFingerprint = "0123456789ABCDEF0123456789ABCDEF01234567"
 
 type keyRunner struct {
-	calls      []run.Spec
-	listOutput string
-	listErr    error
-	recvErr    error
-	onRecv     func()
-	onImport   func()
+	calls        []run.Spec
+	listOutput   string
+	listErr      error
+	exportOutput string
+	exportSet    bool
+	importErr    error
+	recvErr      error
+	onRecv       func()
+	onImport     func()
 }
 
 func (r *keyRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
@@ -41,9 +44,15 @@ func (r *keyRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
 		return run.Result{}, r.recvErr
 	}
 	if strings.Contains(strings.Join(spec.Args, " "), "--export") {
+		if r.exportSet {
+			return run.Result{Stdout: r.exportOutput}, nil
+		}
 		return run.Result{Stdout: "verified-keyblock"}, nil
 	}
 	if strings.Contains(strings.Join(spec.Args, " "), "--import") {
+		if r.importErr != nil {
+			return run.Result{}, r.importErr
+		}
 		if input, err := io.ReadAll(spec.Stdin); err != nil || string(input) != "verified-keyblock" {
 			return run.Result{}, errors.New("unexpected imported keyblock")
 		}
@@ -135,6 +144,18 @@ func initializedHome(t *testing.T) string {
 	return home
 }
 
+func initializedKeyboxdHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	if err := os.Chmod(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(home, "public-keys.d"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
 func primaryFingerprint(fingerprint string) string {
 	return "pub:-:2048:1:0000000000000000:0::::::\n" +
 		"fpr:::::::::" + fingerprint + ":\n"
@@ -197,6 +218,58 @@ func TestHasRecognizesOnlyKnownMissingKeyError(t *testing.T) {
 				t.Fatalf("present=%v err=%v", present, err)
 			}
 		})
+	}
+}
+
+func TestHasInspectsKeyboxdExportsInAnIsolatedHome(t *testing.T) {
+	t.Run("existing exact key", func(t *testing.T) {
+		home := initializedKeyboxdHome(t)
+		runner := &keyRunner{listOutput: primaryFingerprint(testFingerprint)}
+		present, err := (Manager{Runner: runner, Home: home}).Has(context.Background(), testFingerprint)
+		if err != nil || !present {
+			t.Fatalf("present=%v err=%v", present, err)
+		}
+		if len(runner.calls) != 3 || !strings.Contains(strings.Join(runner.calls[0].Args, " "), "--export-options export-minimal --export -- "+testFingerprint) || gpgHome(runner.calls[0]) != home {
+			t.Fatalf("keyboxd export=%#v", runner.calls)
+		}
+		if !strings.Contains(strings.Join(runner.calls[1].Args, " "), "--import") || gpgHome(runner.calls[1]) == home || !strings.Contains(strings.Join(runner.calls[2].Args, " "), "--fingerprint --list-keys") {
+			t.Fatalf("keyboxd isolated validation=%#v", runner.calls)
+		}
+		assertHasNeverUsesNetwork(t, runner.calls)
+	})
+
+	t.Run("missing key", func(t *testing.T) {
+		runner := &keyRunner{exportSet: true}
+		present, err := (Manager{Runner: runner, Home: initializedKeyboxdHome(t)}).Has(context.Background(), testFingerprint)
+		if err != nil || present || len(runner.calls) != 1 {
+			t.Fatalf("present=%v err=%v calls=%#v", present, err, runner.calls)
+		}
+		assertHasNeverUsesNetwork(t, runner.calls)
+	})
+
+	for _, test := range []struct {
+		name   string
+		runner *keyRunner
+	}{
+		{name: "malformed exported material", runner: &keyRunner{importErr: errors.New("invalid OpenPGP data")}},
+		{name: "ambiguous exported material", runner: &keyRunner{listOutput: primaryFingerprint(testFingerprint) + primaryFingerprint("FEDCBA9876543210FEDCBA9876543210FEDCBA98")}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			present, err := (Manager{Runner: test.runner, Home: initializedKeyboxdHome(t)}).Has(context.Background(), testFingerprint)
+			if present || err == nil {
+				t.Fatalf("present=%v err=%v", present, err)
+			}
+		})
+	}
+}
+
+func assertHasNeverUsesNetwork(t *testing.T, calls []run.Spec) {
+	t.Helper()
+	for _, call := range calls {
+		args := strings.Join(call.Args, " ")
+		if strings.Contains(args, "--keyserver") || strings.Contains(args, "--recv-keys") || strings.Contains(args, "--auto-key-retrieve") || !strings.Contains(args, "--no-auto-key-retrieve") {
+			t.Fatalf("Has may have used network-capable GnuPG options: %#v", call)
+		}
 	}
 }
 
@@ -348,14 +421,62 @@ func TestHasInspectsInitializedPublicKeyringWithoutModifyingIt(t *testing.T) {
 	}
 }
 
+func TestHasInspectsKeyboxdPublicKeysWithoutModifyingThem(t *testing.T) {
+	home := t.TempDir()
+	if err := os.Chmod(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "common.conf"), []byte("use-keyboxd\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	testGPG(t, home, "--quick-generate-key", "ops keyboxd test <ops@example.invalid>", "ed25519", "sign", "1d")
+	metadata := testGPG(t, home, "--with-colons", "--fingerprint", "--list-keys")
+	fingerprint := firstPrimaryFingerprint(metadata)
+	if !aurmeta.ValidFingerprint(fingerprint) {
+		t.Fatalf("generated fingerprint=%q", fingerprint)
+	}
+	if _, err := os.Stat(filepath.Join(home, "public-keys.d")); err != nil {
+		t.Fatalf("keyboxd storage was not created: %v", err)
+	}
+	before := directorySnapshot(t, home)
+	present, err := (Manager{Runner: run.Exec{}, Home: home}).Has(context.Background(), fingerprint)
+	if err != nil || !present {
+		t.Fatalf("present=%v err=%v", present, err)
+	}
+	if after := directorySnapshot(t, home); !reflect.DeepEqual(after, before) {
+		t.Fatalf("read-only keyboxd inspection changed GnuPG home: before=%#v after=%#v", before, after)
+	}
+}
+
+func firstPrimaryFingerprint(metadata string) string {
+	for _, line := range strings.Split(metadata, "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) > 9 && fields[0] == "fpr" {
+			return fields[9]
+		}
+	}
+	return ""
+}
+
 func TestHasFailsClosedForUnsupportedOrUnsafeGnuPGHomes(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		setup func(t *testing.T) string
 	}{
-		{name: "keyboxd storage", setup: func(t *testing.T) string {
+		{name: "keyboxd storage symlink", setup: func(t *testing.T) string {
 			home := initializedHome(t)
-			if err := os.Mkdir(filepath.Join(home, "public-keys.d"), 0o700); err != nil {
+			storage := filepath.Join(t.TempDir(), "public-keys.d")
+			if err := os.Mkdir(storage, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(storage, filepath.Join(home, "public-keys.d")); err != nil {
+				t.Fatal(err)
+			}
+			return home
+		}},
+		{name: "world-readable home", setup: func(t *testing.T) string {
+			home := initializedHome(t)
+			if err := os.Chmod(home, 0o755); err != nil {
 				t.Fatal(err)
 			}
 			return home

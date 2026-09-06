@@ -184,7 +184,9 @@ applications do not delegate dependency or installation decisions to interactive
 paru. Source-declared full PGP fingerprints are read from that pinned metadata,
 planned when absent, fetched through a fixed HKPS endpoint in an isolated
 temporary keyring, and fingerprint-verified before import into the normal
-user's keyring. Flatpak and Flathub are always user-scoped.
+user's keyring. Existing signing keys are checked by exact primary fingerprint
+in both classic keyrings and GnuPG keyboxd-backed public-key storage. Flatpak
+and Flathub are always user-scoped.
 
 ## Idempotency and recovery
 

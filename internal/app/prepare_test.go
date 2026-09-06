@@ -24,20 +24,24 @@ import (
 )
 
 type prepareRunner struct {
-	calls            []run.Spec
-	failUpgrade      bool
-	failMarkExplicit bool
-	failFlatpak      string
-	sshFingerprint   string
-	authenticated    bool
-	remoteKeys       string
-	failKeyAPI       bool
-	sshAddErr        error
-	home             string
-	sshPublicKey     string
-	gitName          string
-	gitEmail         string
-	sourceDrift      map[string]bool
+	calls                     []run.Spec
+	failUpgrade               bool
+	failMarkExplicit          bool
+	failFlatpak               string
+	sshFingerprint            string
+	authenticated             bool
+	remoteKeys                string
+	failKeyAPI                bool
+	scopeErrorsLeft           int
+	githubAPICalls            int
+	githubRefreshes           int
+	githubSessionAfterInstall bool
+	sshAddErr                 error
+	home                      string
+	sshPublicKey              string
+	gitName                   string
+	gitEmail                  string
+	sourceDrift               map[string]bool
 }
 
 func (f *prepareRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
@@ -48,6 +52,9 @@ func (f *prepareRunner) Run(_ context.Context, spec run.Spec) (run.Result, error
 	}
 	if f.failMarkExplicit && spec.Name == "sudo" && strings.Contains(joined, "pacman -D --asexplicit") {
 		return run.Result{}, errors.New("install reason update failed")
+	}
+	if f.githubSessionAfterInstall && spec.Name == "sudo" && strings.Contains(joined, "pacman -S") && strings.Contains(joined, "github-cli") {
+		f.authenticated = true
 	}
 	if f.failFlatpak != "" && spec.Name == "flatpak" && len(spec.Args) > 0 && spec.Args[0] == "install" && strings.Contains(joined, f.failFlatpak) {
 		return run.Result{}, errors.New("flatpak install failed")
@@ -105,10 +112,16 @@ func (f *prepareRunner) Run(_ context.Context, spec run.Spec) (run.Result, error
 		return run.Result{}, nil
 	}
 	if spec.Name == "gh" && len(spec.Args) > 1 && spec.Args[0] == "auth" && spec.Args[1] == "refresh" {
+		f.githubRefreshes++
 		f.authenticated = true
 		return run.Result{}, nil
 	}
 	if spec.Name == "gh" && len(spec.Args) > 0 && spec.Args[0] == "api" {
+		f.githubAPICalls++
+		if f.scopeErrorsLeft > 0 {
+			f.scopeErrorsLeft--
+			return run.Result{}, &run.Error{Name: "gh", Args: spec.Args, Stderr: `gh: This API operation needs the "admin:public_key" scope`, Err: errors.New("exit status 1")}
+		}
 		if f.failKeyAPI {
 			return run.Result{}, errors.New("GitHub key API unavailable")
 		}
@@ -647,6 +660,83 @@ func TestPreparePlanRefreshesExistingGitHubAuthorizationBeforeKeyAPI(t *testing.
 	if !refresh || !strings.Contains(output.String(), "gh auth refresh  external  GitHub SSH-key authorization") {
 		t.Fatalf("scope refresh had no declared boundary:\n%s", output.String())
 	}
+}
+
+func TestPreparePlanRecoversLateGitHubSessionMissingSSHKeyScope(t *testing.T) {
+	home, fingerprint, _ := unauthenticatedGitHubFixture(t)
+	state := readyExecutionState()
+	delete(state.Installed, "github-cli")
+	delete(state.Explicit, "github-cli")
+	state.GitHubAuth, state.GitHubKeysKnown, state.ManagedGitHubKeyKnown, state.ManagedGitHubKey = false, false, false, false
+	p, err := plan.Build(context.Background(), config.Config{Version: 1}, state, outputResolver{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.AuthenticateGitHub || p.RefreshGitHubSSHKeyScope {
+		t.Fatalf("initial unavailable-gh plan=%#v", p)
+	}
+	if len(p.CorePackages) != 1 || p.CorePackages[0] != "github-cli" {
+		t.Fatalf("github-cli availability was not planned: %#v", p.CorePackages)
+	}
+	publicKey, err := os.ReadFile(filepath.Join(home, ".ssh", "ops.pub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := `[{"id":1,"title":"managed","key":` + strconv.Quote(strings.TrimSpace(string(publicKey))) + `}]`
+
+	t.Run("refreshes and retries the late session", func(t *testing.T) {
+		var output bytes.Buffer
+		runner := &prepareRunner{sshFingerprint: fingerprint, githubSessionAfterInstall: true, scopeErrorsLeft: 1, remoteKeys: remote}
+		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+		if code != Success {
+			t.Fatalf("code=%d\n%s", code, output.String())
+		}
+		if runner.githubRefreshes != 1 || runner.githubAPICalls != 2 {
+			t.Fatalf("refreshes=%d key API calls=%d", runner.githubRefreshes, runner.githubAPICalls)
+		}
+		for _, call := range runner.calls {
+			if call.Name == "gh" && len(call.Args) > 1 && call.Args[0] == "auth" && call.Args[1] == "login" {
+				t.Fatalf("existing late session triggered unnecessary login: %#v", call)
+			}
+		}
+		if !strings.Contains(output.String(), "gh auth refresh  external  GitHub SSH-key authorization") {
+			t.Fatalf("scope refresh had no declared external boundary:\n%s", output.String())
+		}
+		verified := false
+		for _, call := range runner.calls {
+			verified = verified || call.Name == "ssh" && strings.Join(call.Args, " ") == "-o BatchMode=yes -T git@github.com"
+		}
+		if !verified {
+			t.Fatalf("normal GitHub SSH reconciliation did not continue: %#v", runner.calls)
+		}
+	})
+
+	t.Run("does not refresh arbitrary key API failures", func(t *testing.T) {
+		var output bytes.Buffer
+		runner := &prepareRunner{sshFingerprint: fingerprint, githubSessionAfterInstall: true, failKeyAPI: true}
+		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+		if code != Issues || runner.githubRefreshes != 0 || runner.githubAPICalls != 1 {
+			t.Fatalf("code=%d refreshes=%d key API calls=%d\n%s", code, runner.githubRefreshes, runner.githubAPICalls, output.String())
+		}
+	})
+
+	t.Run("does not duplicate an explicitly planned refresh", func(t *testing.T) {
+		state := readyExecutionState()
+		state.GitHubSSHKeyScopeInsufficient = true
+		explicit, err := plan.Build(context.Background(), config.Config{Version: 1}, state, outputResolver{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if explicit.AuthenticateGitHub || !explicit.RefreshGitHubSSHKeyScope {
+			t.Fatalf("explicit scope-refresh plan=%#v", explicit)
+		}
+		var output bytes.Buffer
+		runner := &prepareRunner{sshFingerprint: fingerprint, authenticated: true, scopeErrorsLeft: 2}
+		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), explicit, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+		if code != Issues || runner.githubRefreshes != 1 || runner.githubAPICalls != 1 {
+			t.Fatalf("code=%d refreshes=%d key API calls=%d\n%s", code, runner.githubRefreshes, runner.githubAPICalls, output.String())
+		}
+	})
 }
 
 func TestPreparePlanPostLoginKeyInspectionFailsClosed(t *testing.T) {
