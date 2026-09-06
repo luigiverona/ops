@@ -915,24 +915,40 @@ func (a Runtime) configureGitHub(ctx context.Context, terminal ui.UI, managed *s
 		return "skipped", nil
 	}
 	m := githubops.Manager{Runner: a.Runner}
-	if p.AuthenticateGitHub && !m.Authenticated(ctx) {
-		a.showProgress("github", actionAuthenticate, "CLI login; SSH-key permission")
-		a.showExternal("gh auth login", "GitHub device authentication")
-		if err := m.Login(ctx); err != nil {
-			return "failed", []issue{*setupIssue("GitHub authentication", err)}
+	lateAuthenticated := false
+	if p.AuthenticateGitHub {
+		lateAuthenticated = m.Authenticated(ctx)
+		if !lateAuthenticated {
+			a.showProgress("github", actionAuthenticate, "CLI login; SSH-key permission")
+			a.showExternal("gh auth login", "GitHub device authentication")
+			if err := m.Login(ctx); err != nil {
+				return "failed", []issue{*setupIssue("GitHub authentication", err)}
+			}
 		}
 	}
-	if p.RefreshGitHubSSHKeyScope {
+	refreshedSSHKeyScope := false
+	refreshSSHKeyScope := func() error {
 		a.showProgress("github", actionAuthenticate, "add SSH-key management permission")
 		a.showExternal("gh auth refresh", "GitHub SSH-key authorization")
-		if err := m.RefreshSSHKeyScope(ctx); err != nil {
+		return m.RefreshSSHKeyScope(ctx)
+	}
+	if p.RefreshGitHubSSHKeyScope {
+		if err := refreshSSHKeyScope(); err != nil {
 			return "failed", []issue{*setupIssue("GitHub authorization", err)}
 		}
+		refreshedSSHKeyScope = true
 	}
 	if p.GitHubKeyStateUnknown {
 		a.showProgress("GitHub SSH keys", actionInspect, "reconcile account keys")
 	}
 	keys, err := m.Keys(ctx)
+	if err != nil && lateAuthenticated && !refreshedSSHKeyScope && githubops.IsSSHKeyScopeError(err) {
+		if refreshErr := refreshSSHKeyScope(); refreshErr != nil {
+			return "failed", []issue{*setupIssue("GitHub authorization", refreshErr)}
+		}
+		refreshedSSHKeyScope = true
+		keys, err = m.Keys(ctx)
+	}
 	if err != nil {
 		return "failed", []issue{*setupIssue("GitHub SSH keys", err)}
 	}

@@ -42,6 +42,20 @@ func (m Manager) Has(ctx context.Context, fingerprint string) (present bool, ret
 	} else if err := validateGnuPGHome(info); err != nil {
 		return false, fmt.Errorf("inspect GnuPG home: %w", err)
 	}
+	keyboxd, err := effectiveKeyboxd(ctx, m.Runner, home)
+	if err != nil {
+		return false, err
+	}
+	if keyboxd {
+		storage, err := keyboxdStorage(home)
+		if err != nil {
+			return false, err
+		}
+		if !storage {
+			return false, nil
+		}
+		return hasInKeyboxdHome(ctx, m.Runner, home, fingerprint)
+	}
 	inspection, keyrings, err := copyPublicKeyrings(home)
 	if err != nil {
 		return false, err
@@ -148,13 +162,62 @@ func (m Manager) keyringHome() (string, error) {
 }
 
 func gpgSpec(home string, args []string, stdin ...io.Reader) run.Spec {
-	base := []string{"--no-options", "--batch", "--no-tty", "--homedir", home}
+	base := []string{"--no-options", "--batch", "--no-tty", "--no-auto-key-retrieve", "--homedir", home}
 	base = append(base, args...)
 	input := io.Reader(strings.NewReader(""))
 	if len(stdin) == 1 {
 		input = stdin[0]
 	}
 	return run.Spec{Name: "gpg", Args: base, Env: []string{"LC_ALL=C"}, Stdin: input}
+}
+
+func gpgConfigSpec(home string) run.Spec {
+	return run.Spec{
+		Name:  "gpg",
+		Args:  []string{"--batch", "--no-tty", "--no-auto-key-retrieve", "--homedir", home, "--gpgconf-list"},
+		Env:   []string{"LC_ALL=C"},
+		Stdin: strings.NewReader(""),
+	}
+}
+
+// effectiveKeyboxd queries GnuPG's effective configuration without opening a
+// keyring. --gpgconf-list is GnuPG's machine-readable configuration report.
+func effectiveKeyboxd(ctx context.Context, runner run.Runner, home string) (bool, error) {
+	result, err := runner.Run(ctx, gpgConfigSpec(home))
+	if err != nil {
+		return false, fmt.Errorf("inspect effective GnuPG keyboxd configuration: %w", err)
+	}
+	return parseKeyboxdMode(result.Stdout)
+}
+
+func parseKeyboxdMode(output string) (bool, error) {
+	found := false
+	value := false
+	for _, line := range strings.Split(output, "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.Split(line, ":")
+		if fields[0] != "use_keyboxd" {
+			continue
+		}
+		if found || len(fields) != 4 || fields[1] != "16" || fields[3] != "" {
+			return false, errors.New("gpg returned malformed or ambiguous keyboxd configuration")
+		}
+		found = true
+		switch fields[2] {
+		case "0":
+			value = false
+		case "1":
+			value = true
+		default:
+			return false, errors.New("gpg returned invalid keyboxd configuration")
+		}
+	}
+	if !found {
+		return false, errors.New("gpg did not report effective keyboxd configuration")
+	}
+	return value, nil
 }
 
 func hasInHome(ctx context.Context, runner run.Runner, home, fingerprint string, keyrings ...string) (bool, error) {
@@ -180,15 +243,53 @@ func hasInHome(ctx context.Context, runner run.Runner, home, fingerprint string,
 	return present, nil
 }
 
+// hasInKeyboxdHome exports only the requested public key from a validated
+// keyboxd home, then verifies the exported material in a fresh isolated home.
+// GnuPG owns the keyboxd format; this code never reads its database directly.
+func hasInKeyboxdHome(ctx context.Context, runner run.Runner, home, fingerprint string) (present bool, returnErr error) {
+	exported, err := runner.Run(ctx, gpgSpec(home, []string{"--export-options", "export-minimal", "--export", "--", fingerprint}))
+	if err != nil {
+		return false, fmt.Errorf("export signing key from keyboxd: %w", err)
+	}
+	if strings.TrimSpace(exported.Stdout) == "" {
+		return false, nil
+	}
+	inspection, err := os.MkdirTemp("", "ops-gpg-inspect-*")
+	if err != nil {
+		return false, fmt.Errorf("create isolated GnuPG inspection home: %w", err)
+	}
+	defer func() {
+		if err := os.RemoveAll(inspection); err != nil {
+			present = false
+			returnErr = errors.Join(returnErr, fmt.Errorf("clean isolated GnuPG inspection home: %w", err))
+		}
+	}()
+	if _, err := runner.Run(ctx, gpgSpec(inspection, []string{"--import"}, strings.NewReader(exported.Stdout))); err != nil {
+		return false, fmt.Errorf("import exported keyboxd signing key: %w", err)
+	}
+	return hasOnlyInHome(ctx, runner, inspection, fingerprint)
+}
+
+func hasOnlyInHome(ctx context.Context, runner run.Runner, home, fingerprint string) (bool, error) {
+	result, err := runner.Run(ctx, gpgSpec(home, []string{"--with-colons", "--fingerprint", "--list-keys"}))
+	if err != nil {
+		return false, fmt.Errorf("inspect exported signing key: %w", err)
+	}
+	return primaryFingerprintPresent(result.Stdout, fingerprint)
+}
+
 // copyPublicKeyrings creates an isolated, public-key-only view of an existing
-// GnuPG home. GnuPG is never invoked with the real home during inspection:
-// --list-keys can initialize an otherwise empty home.
+// GnuPG home for classic keyring inspection. It still validates stale keyboxd
+// storage so unsafe paths fail closed even when keyboxd is inactive.
 func copyPublicKeyrings(home string) (string, []string, error) {
 	fd, err := syscall.Open(home, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return "", nil, fmt.Errorf("open GnuPG home without following links: %w", err)
 	}
 	defer syscall.Close(fd)
+	if _, err := keyboxdStoragePresent(fd); err != nil {
+		return "", nil, err
+	}
 	inspection, err := os.MkdirTemp("", "ops-gpg-inspect-*")
 	if err != nil {
 		return "", nil, fmt.Errorf("create isolated GnuPG inspection home: %w", err)
@@ -204,12 +305,38 @@ func copyPublicKeyrings(home string) (string, []string, error) {
 		}
 		keyrings = append(keyrings, keyring)
 	}
-	if _, err := os.Lstat(filepath.Join(home, "public-keys.d")); err == nil {
-		return "", nil, discardInspection(inspection, errors.New("GnuPG keyboxd public-key storage cannot be inspected safely"))
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", nil, discardInspection(inspection, fmt.Errorf("inspect GnuPG public-key storage: %w", err))
-	}
 	return inspection, keyrings, nil
+}
+
+func keyboxdStorage(home string) (bool, error) {
+	fd, err := syscall.Open(home, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return false, fmt.Errorf("open GnuPG home without following links: %w", err)
+	}
+	defer syscall.Close(fd)
+	return keyboxdStoragePresent(fd)
+}
+
+func keyboxdStoragePresent(homeFD int) (bool, error) {
+	fd, err := syscall.Openat(homeFD, "public-keys.d", syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if errors.Is(err, syscall.ENOENT) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("open GnuPG keyboxd public-key storage without following links: %w", err)
+	}
+	defer syscall.Close(fd)
+	var stat syscall.Stat_t
+	if err := syscall.Fstat(fd, &stat); err != nil {
+		return false, fmt.Errorf("inspect GnuPG keyboxd public-key storage: %w", err)
+	}
+	if stat.Mode&syscall.S_IFMT != syscall.S_IFDIR {
+		return false, errors.New("GnuPG keyboxd public-key storage is not a directory")
+	}
+	if int(stat.Uid) != os.Geteuid() {
+		return false, errors.New("GnuPG keyboxd public-key storage is not owned by the normal user")
+	}
+	return true, nil
 }
 
 func discardInspection(path string, cause error) error {
