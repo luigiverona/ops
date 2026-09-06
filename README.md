@@ -137,7 +137,7 @@ Configuration lives at `~/.config/ops/apps.toml`:
 version = 1
 
 [apps]
-browser = ["aur:librewolf-bin"]
+browser = ["pacman:librewolf"]
 vpn = ["pacman:mullvad-vpn"]
 vault = []
 mail = ["flatpak:com.tutanota.Tutanota"]
