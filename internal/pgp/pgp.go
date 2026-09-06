@@ -42,7 +42,7 @@ func (m Manager) Has(ctx context.Context, fingerprint string) (present bool, ret
 	} else if err := validateGnuPGHome(info); err != nil {
 		return false, fmt.Errorf("inspect GnuPG home: %w", err)
 	}
-	inspection, keyrings, keyboxd, err := copyPublicKeyrings(home)
+	inspection, keyrings, keyboxdStorage, err := copyPublicKeyrings(home)
 	if err != nil {
 		return false, err
 	}
@@ -54,8 +54,14 @@ func (m Manager) Has(ctx context.Context, fingerprint string) (present bool, ret
 			}
 		}()
 	}
-	if keyboxd {
-		return hasInKeyboxdHome(ctx, m.Runner, home, fingerprint)
+	if keyboxdStorage {
+		keyboxd, err := effectiveKeyboxd(ctx, m.Runner, home)
+		if err != nil {
+			return false, err
+		}
+		if keyboxd {
+			return hasInKeyboxdHome(ctx, m.Runner, home, fingerprint)
+		}
 	}
 	if len(keyrings) == 0 {
 		return false, nil
@@ -162,6 +168,55 @@ func gpgSpec(home string, args []string, stdin ...io.Reader) run.Spec {
 	return run.Spec{Name: "gpg", Args: base, Env: []string{"LC_ALL=C"}, Stdin: input}
 }
 
+func gpgConfigSpec(home string) run.Spec {
+	return run.Spec{
+		Name:  "gpg",
+		Args:  []string{"--batch", "--no-tty", "--no-auto-key-retrieve", "--homedir", home, "--gpgconf-list"},
+		Env:   []string{"LC_ALL=C"},
+		Stdin: strings.NewReader(""),
+	}
+}
+
+// effectiveKeyboxd queries GnuPG's effective configuration without opening a
+// keyring. --gpgconf-list is GnuPG's machine-readable configuration report.
+func effectiveKeyboxd(ctx context.Context, runner run.Runner, home string) (bool, error) {
+	result, err := runner.Run(ctx, gpgConfigSpec(home))
+	if err != nil {
+		return false, fmt.Errorf("inspect effective GnuPG keyboxd configuration: %w", err)
+	}
+	return parseKeyboxdMode(result.Stdout)
+}
+
+func parseKeyboxdMode(output string) (bool, error) {
+	found := false
+	value := false
+	for _, line := range strings.Split(output, "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.Split(line, ":")
+		if fields[0] != "use_keyboxd" {
+			continue
+		}
+		if found || len(fields) != 4 || fields[1] != "16" || fields[3] != "" {
+			return false, errors.New("gpg returned malformed or ambiguous keyboxd configuration")
+		}
+		found = true
+		switch fields[2] {
+		case "0":
+			value = false
+		case "1":
+			value = true
+		default:
+			return false, errors.New("gpg returned invalid keyboxd configuration")
+		}
+	}
+	if !found {
+		return false, errors.New("gpg did not report effective keyboxd configuration")
+	}
+	return value, nil
+}
+
 func hasInHome(ctx context.Context, runner run.Runner, home, fingerprint string, keyrings ...string) (bool, error) {
 	args := make([]string, 0, 4+len(keyrings)*2)
 	if len(keyrings) > 0 {
@@ -221,8 +276,8 @@ func hasOnlyInHome(ctx context.Context, runner run.Runner, home, fingerprint str
 }
 
 // copyPublicKeyrings creates an isolated, public-key-only view of an existing
-// GnuPG home. GnuPG is never invoked with the real home during inspection:
-// --list-keys can initialize an otherwise empty home.
+// GnuPG home for classic keyring inspection. Keyboxd homes are queried through
+// GnuPG only after their effective mode and storage have been validated.
 func copyPublicKeyrings(home string) (string, []string, bool, error) {
 	fd, err := syscall.Open(home, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 	if err != nil {
@@ -232,9 +287,6 @@ func copyPublicKeyrings(home string) (string, []string, bool, error) {
 	keyboxd, err := keyboxdStoragePresent(fd)
 	if err != nil {
 		return "", nil, false, err
-	}
-	if keyboxd {
-		return "", nil, true, nil
 	}
 	inspection, err := os.MkdirTemp("", "ops-gpg-inspect-*")
 	if err != nil {
@@ -251,7 +303,7 @@ func copyPublicKeyrings(home string) (string, []string, bool, error) {
 		}
 		keyrings = append(keyrings, keyring)
 	}
-	return inspection, keyrings, false, nil
+	return inspection, keyrings, keyboxd, nil
 }
 
 func keyboxdStoragePresent(homeFD int) (bool, error) {

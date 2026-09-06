@@ -21,6 +21,8 @@ type keyRunner struct {
 	calls        []run.Spec
 	listOutput   string
 	listErr      error
+	configOutput string
+	configErr    error
 	exportOutput string
 	exportSet    bool
 	importErr    error
@@ -33,6 +35,13 @@ func (r *keyRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
 	r.calls = append(r.calls, spec)
 	if spec.Name != "gpg" {
 		return run.Result{}, errors.New("unexpected command")
+	}
+	if strings.Contains(strings.Join(spec.Args, " "), "--gpgconf-list") {
+		output := r.configOutput
+		if output == "" {
+			output = "use_keyboxd:16:1:\n"
+		}
+		return run.Result{Stdout: output}, r.configErr
 	}
 	if strings.Contains(strings.Join(spec.Args, " "), "--list-keys") {
 		return run.Result{Stdout: r.listOutput}, r.listErr
@@ -229,10 +238,10 @@ func TestHasInspectsKeyboxdExportsInAnIsolatedHome(t *testing.T) {
 		if err != nil || !present {
 			t.Fatalf("present=%v err=%v", present, err)
 		}
-		if len(runner.calls) != 3 || !strings.Contains(strings.Join(runner.calls[0].Args, " "), "--export-options export-minimal --export -- "+testFingerprint) || gpgHome(runner.calls[0]) != home {
+		if len(runner.calls) != 4 || !strings.Contains(strings.Join(runner.calls[0].Args, " "), "--gpgconf-list") || gpgHome(runner.calls[0]) != home || !strings.Contains(strings.Join(runner.calls[1].Args, " "), "--export-options export-minimal --export -- "+testFingerprint) || gpgHome(runner.calls[1]) != home {
 			t.Fatalf("keyboxd export=%#v", runner.calls)
 		}
-		if !strings.Contains(strings.Join(runner.calls[1].Args, " "), "--import") || gpgHome(runner.calls[1]) == home || !strings.Contains(strings.Join(runner.calls[2].Args, " "), "--fingerprint --list-keys") {
+		if !strings.Contains(strings.Join(runner.calls[2].Args, " "), "--import") || gpgHome(runner.calls[2]) == home || !strings.Contains(strings.Join(runner.calls[3].Args, " "), "--fingerprint --list-keys") {
 			t.Fatalf("keyboxd isolated validation=%#v", runner.calls)
 		}
 		assertHasNeverUsesNetwork(t, runner.calls)
@@ -241,7 +250,7 @@ func TestHasInspectsKeyboxdExportsInAnIsolatedHome(t *testing.T) {
 	t.Run("missing key", func(t *testing.T) {
 		runner := &keyRunner{exportSet: true}
 		present, err := (Manager{Runner: runner, Home: initializedKeyboxdHome(t)}).Has(context.Background(), testFingerprint)
-		if err != nil || present || len(runner.calls) != 1 {
+		if err != nil || present || len(runner.calls) != 2 {
 			t.Fatalf("present=%v err=%v calls=%#v", present, err, runner.calls)
 		}
 		assertHasNeverUsesNetwork(t, runner.calls)
@@ -270,6 +279,30 @@ func assertHasNeverUsesNetwork(t *testing.T, calls []run.Spec) {
 		if strings.Contains(args, "--keyserver") || strings.Contains(args, "--recv-keys") || strings.Contains(args, "--auto-key-retrieve") || !strings.Contains(args, "--no-auto-key-retrieve") {
 			t.Fatalf("Has may have used network-capable GnuPG options: %#v", call)
 		}
+	}
+}
+
+func TestParseKeyboxdModeFailsClosed(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		output  string
+		want    bool
+		wantErr bool
+	}{
+		{name: "active", output: "debug-level:16:\"none:\nuse_keyboxd:16:1:\n", want: true},
+		{name: "inactive", output: "use_keyboxd:16:0:\n", want: false},
+		{name: "missing", output: "debug-level:16:\"none:\n", wantErr: true},
+		{name: "malformed fields", output: "use_keyboxd:16:1\n", wantErr: true},
+		{name: "unexpected flags", output: "use_keyboxd:0:1:\n", wantErr: true},
+		{name: "invalid value", output: "use_keyboxd:16:2:\n", wantErr: true},
+		{name: "ambiguous", output: "use_keyboxd:16:0:\nuse_keyboxd:16:1:\n", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseKeyboxdMode(test.output)
+			if got != test.want || (err != nil) != test.wantErr {
+				t.Fatalf("mode=%v err=%v", got, err)
+			}
+		})
 	}
 }
 
@@ -445,6 +478,39 @@ func TestHasInspectsKeyboxdPublicKeysWithoutModifyingThem(t *testing.T) {
 	}
 	if after := directorySnapshot(t, home); !reflect.DeepEqual(after, before) {
 		t.Fatalf("read-only keyboxd inspection changed GnuPG home: before=%#v after=%#v", before, after)
+	}
+}
+
+func TestHasDoesNotTreatInactiveKeyboxdStorageAsActive(t *testing.T) {
+	home := initializedKeyboxdHome(t)
+	before := directorySnapshot(t, home)
+	present, err := (Manager{Runner: run.Exec{}, Home: home}).Has(context.Background(), testFingerprint)
+	if err != nil || present {
+		t.Fatalf("present=%v err=%v", present, err)
+	}
+	if after := directorySnapshot(t, home); !reflect.DeepEqual(after, before) {
+		t.Fatalf("inactive keyboxd storage changed GnuPG home: before=%#v after=%#v", before, after)
+	}
+	if _, err := os.Stat(filepath.Join(home, "pubring.kbx")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("inactive keyboxd storage initialized a classic keyring: %v", err)
+	}
+}
+
+func TestHasTreatsActiveKeyboxdWithoutStorageAsAbsentWithoutMutation(t *testing.T) {
+	home := t.TempDir()
+	if err := os.Chmod(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "common.conf"), []byte("use-keyboxd\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := directorySnapshot(t, home)
+	present, err := (Manager{Runner: run.Exec{}, Home: home}).Has(context.Background(), testFingerprint)
+	if err != nil || present {
+		t.Fatalf("present=%v err=%v", present, err)
+	}
+	if after := directorySnapshot(t, home); !reflect.DeepEqual(after, before) {
+		t.Fatalf("missing keyboxd storage changed GnuPG home: before=%#v after=%#v", before, after)
 	}
 }
 
