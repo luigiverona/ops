@@ -39,7 +39,7 @@ func (r *keyRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
 	if strings.Contains(strings.Join(spec.Args, " "), "--gpgconf-list") {
 		output := r.configOutput
 		if output == "" {
-			output = "use_keyboxd:16:1:\n"
+			output = "use_keyboxd:16:0:\n"
 		}
 		return run.Result{Stdout: output}, r.configErr
 	}
@@ -200,10 +200,10 @@ func TestHasRequiresExactPrimaryFingerprint(t *testing.T) {
 			if present != test.want || (err != nil) != test.wantErr {
 				t.Fatalf("present=%v err=%v", present, err)
 			}
-			if len(runner.calls) != 1 || runner.calls[0].Interactive || runner.calls[0].Stdin == nil || gpgHome(runner.calls[0]) == home || !strings.Contains(strings.Join(runner.calls[0].Args, " "), "--no-default-keyring --keyring") {
+			if len(runner.calls) != 2 || !strings.Contains(strings.Join(runner.calls[0].Args, " "), "--gpgconf-list") || runner.calls[1].Interactive || runner.calls[1].Stdin == nil || gpgHome(runner.calls[1]) == home || !strings.Contains(strings.Join(runner.calls[1].Args, " "), "--no-default-keyring --keyring") {
 				t.Fatalf("unsafe key inspection spec=%#v", runner.calls)
 			}
-			if input, err := io.ReadAll(runner.calls[0].Stdin); err != nil || len(input) != 0 {
+			if input, err := io.ReadAll(runner.calls[1].Stdin); err != nil || len(input) != 0 {
 				t.Fatalf("gpg inherited input=%q err=%v", input, err)
 			}
 		})
@@ -233,7 +233,7 @@ func TestHasRecognizesOnlyKnownMissingKeyError(t *testing.T) {
 func TestHasInspectsKeyboxdExportsInAnIsolatedHome(t *testing.T) {
 	t.Run("existing exact key", func(t *testing.T) {
 		home := initializedKeyboxdHome(t)
-		runner := &keyRunner{listOutput: primaryFingerprint(testFingerprint)}
+		runner := &keyRunner{configOutput: "use_keyboxd:16:1:\n", listOutput: primaryFingerprint(testFingerprint)}
 		present, err := (Manager{Runner: runner, Home: home}).Has(context.Background(), testFingerprint)
 		if err != nil || !present {
 			t.Fatalf("present=%v err=%v", present, err)
@@ -248,7 +248,7 @@ func TestHasInspectsKeyboxdExportsInAnIsolatedHome(t *testing.T) {
 	})
 
 	t.Run("missing key", func(t *testing.T) {
-		runner := &keyRunner{exportSet: true}
+		runner := &keyRunner{configOutput: "use_keyboxd:16:1:\n", exportSet: true}
 		present, err := (Manager{Runner: runner, Home: initializedKeyboxdHome(t)}).Has(context.Background(), testFingerprint)
 		if err != nil || present || len(runner.calls) != 2 {
 			t.Fatalf("present=%v err=%v calls=%#v", present, err, runner.calls)
@@ -260,8 +260,8 @@ func TestHasInspectsKeyboxdExportsInAnIsolatedHome(t *testing.T) {
 		name   string
 		runner *keyRunner
 	}{
-		{name: "malformed exported material", runner: &keyRunner{importErr: errors.New("invalid OpenPGP data")}},
-		{name: "ambiguous exported material", runner: &keyRunner{listOutput: primaryFingerprint(testFingerprint) + primaryFingerprint("FEDCBA9876543210FEDCBA9876543210FEDCBA98")}},
+		{name: "malformed exported material", runner: &keyRunner{configOutput: "use_keyboxd:16:1:\n", importErr: errors.New("invalid OpenPGP data")}},
+		{name: "ambiguous exported material", runner: &keyRunner{configOutput: "use_keyboxd:16:1:\n", listOutput: primaryFingerprint(testFingerprint) + primaryFingerprint("FEDCBA9876543210FEDCBA9876543210FEDCBA98")}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			present, err := (Manager{Runner: test.runner, Home: initializedKeyboxdHome(t)}).Has(context.Background(), testFingerprint)
@@ -324,14 +324,14 @@ func TestImportRetrievesOnlyExactFingerprintAndRevalidates(t *testing.T) {
 	if err != nil || !os.SameFile(before, after) || after.Mode().Perm() != 0o700 {
 		t.Fatalf("existing GnuPG home was not preserved: after=%v err=%v", after, err)
 	}
-	if len(runner.calls) != 6 {
+	if len(runner.calls) != 8 {
 		t.Fatalf("calls=%#v", runner.calls)
 	}
-	recv := runner.calls[1]
+	recv := runner.calls[2]
 	if recv.Interactive || recv.Stdin == nil || !strings.Contains(strings.Join(recv.Args, " "), "--keyserver "+keyserver+" --recv-keys "+testFingerprint) || strings.Contains(strings.Join(recv.Args, " "), "--homedir "+home+" ") {
 		t.Fatalf("unsafe key retrieval spec=%#v", recv)
 	}
-	if imported := runner.calls[4]; imported.Interactive || !strings.Contains(strings.Join(imported.Args, " "), "--homedir "+home+" --import") {
+	if imported := runner.calls[5]; imported.Interactive || !strings.Contains(strings.Join(imported.Args, " "), "--homedir "+home+" --import") {
 		t.Fatalf("verified key was not imported into the user keyring: %#v", imported)
 	}
 }
@@ -514,6 +514,38 @@ func TestHasTreatsActiveKeyboxdWithoutStorageAsAbsentWithoutMutation(t *testing.
 	}
 }
 
+func TestHasDoesNotConsultClassicKeyringsWhenKeyboxdIsActiveWithoutStorage(t *testing.T) {
+	home := t.TempDir()
+	if err := os.Chmod(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	testGPG(t, home, "--quick-generate-key", "ops stale classic test <ops@example.invalid>", "ed25519", "sign", "1d")
+	fingerprint := firstPrimaryFingerprint(testGPG(t, home, "--with-colons", "--fingerprint", "--list-keys"))
+	if !aurmeta.ValidFingerprint(fingerprint) {
+		t.Fatalf("generated fingerprint=%q", fingerprint)
+	}
+	if _, err := os.Stat(filepath.Join(home, "pubring.kbx")); err != nil {
+		t.Fatalf("classic keyring was not created: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "common.conf"), []byte("use-keyboxd\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "public-keys.d")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("keyboxd storage unexpectedly exists: %v", err)
+	}
+	before := directorySnapshot(t, home)
+	present, err := (Manager{Runner: run.Exec{}, Home: home}).Has(context.Background(), fingerprint)
+	if err != nil || present {
+		t.Fatalf("present=%v err=%v", present, err)
+	}
+	if after := directorySnapshot(t, home); !reflect.DeepEqual(after, before) {
+		t.Fatalf("active keyboxd inspection consulted or changed stale classic state: before=%#v after=%#v", before, after)
+	}
+	if _, err := os.Stat(filepath.Join(home, "public-keys.d")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("active keyboxd inspection created storage: %v", err)
+	}
+}
+
 func firstPrimaryFingerprint(metadata string) string {
 	for _, line := range strings.Split(metadata, "\n") {
 		fields := strings.Split(line, ":")
@@ -589,7 +621,7 @@ func TestImportCreatesMissingGnuPGHomeOnlyAfterApprovedKeyWasVerified(t *testing
 	if !info.IsDir() || info.Mode().Perm() != 0o700 {
 		t.Fatalf("created GnuPG home mode=%#o directory=%v", info.Mode().Perm(), info.IsDir())
 	}
-	if len(runner.calls) != 5 || !strings.Contains(strings.Join(runner.calls[3].Args, " "), "--homedir "+home+" --import") {
+	if len(runner.calls) != 6 || !strings.Contains(strings.Join(runner.calls[3].Args, " "), "--homedir "+home+" --import") {
 		t.Fatalf("unexpected missing-home import sequence: %#v", runner.calls)
 	}
 }
