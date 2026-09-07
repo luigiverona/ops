@@ -59,6 +59,33 @@ func TestInstallerDefaultMatches(t *testing.T) {
 	}
 }
 
+func TestDocumentedConfigurationExamples(t *testing.T) {
+	for _, path := range []string{"../../README.md", "../../docs/configuration.md"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		blocks := strings.Split(string(data), "```toml\n")[1:]
+		if len(blocks) == 0 {
+			t.Fatalf("no configuration example in %s", path)
+		}
+		for _, block := range blocks {
+			body, _, ok := strings.Cut(block, "```")
+			if !ok {
+				t.Fatalf("unclosed TOML example in %s", path)
+			}
+			_, err := Parse([]byte(body))
+			if strings.HasPrefix(body, "version = 1\n") && strings.Contains(path, "configuration.md") {
+				if err == nil || !strings.Contains(err.Error(), "migrate") {
+					t.Fatal("legacy migration behavior drifted")
+				}
+			} else if err != nil {
+				t.Fatalf("invalid current example in %s: %v", path, err)
+			}
+		}
+	}
+}
+
 func TestDefaultConfig(t *testing.T) {
 	cfg, err := Parse([]byte(Default))
 	if err != nil {

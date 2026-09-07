@@ -3,16 +3,13 @@
 Edit `~/.config/ops/apps.toml`. The installer creates a minimal version 2
 configuration only when the file is absent. Ops never rewrites it.
 
-```toml
-version = 2
-pacman = ["librewolf", "mullvad-vpn", "bitwarden", "discord", "spotify-launcher", "steam"]
-aur = ["mullvad-browser-bin"]
-flatpak = ["com.tutanota.Tutanota"]
-```
+The generated default has no applications. See the small current example in
+[README](../README.md#configuration); a file containing only `version = 2`
+is also valid.
 
 Lists may be omitted or empty. Each identifier is exact and case-sensitive.
 Ops orders declarations by source (pacman, AUR, Flatpak), then identifier.
-Duplicates within a source, unknown fields, options, paths, version expressions,
+Duplicates within a source, a package declared as both pacman and AUR, unknown fields, options, paths, version expressions,
 and malformed identifiers are rejected. A missing exact package is an actionable
 issue; ops does not search other sources. Removing a declaration never uninstalls
 anything. Optional dependencies must be declared explicitly if wanted.
