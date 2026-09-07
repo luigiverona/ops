@@ -502,7 +502,7 @@ func deduplicateApplicationActions(p *Plan) {
 	}
 	for _, application := range p.Applications {
 		if application.State == "install" && !application.CoveredByBootstrap {
-			representedInstalls[application.Declaration.Source+"\x00"+application.Declaration.Identifier] = true
+			representedInstalls[string(application.Declaration.Source)+"\x00"+application.Declaration.Identifier] = true
 		}
 	}
 	for _, pkg := range p.ParuPackages {

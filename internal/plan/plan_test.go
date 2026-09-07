@@ -213,9 +213,9 @@ func TestReadyManagedAccessDoesNotForceRepeatedIdentityReview(t *testing.T) {
 
 func TestAppPrerequisitesSourcesAndMultilib(t *testing.T) {
 	cfg := config.Config{Version: 1, Applications: []config.Application{
-		{Category: "game", Source: "pacman", Identifier: "steam"},
-		{Category: "browser", Source: "aur", Identifier: "browser-bin"},
-		{Category: "mail", Source: "flatpak", Identifier: "org.example.Mail"},
+		{Source: "pacman", Identifier: "steam"},
+		{Source: "aur", Identifier: "browser-bin"},
+		{Source: "flatpak", Identifier: "org.example.Mail"},
 	}}
 	r := fakeResolver{pacman: map[string]Package{
 		"steam":     {Name: "steam", Repository: "multilib", Optional: []string{"gamescope: optional compositor", "choice-a: alternative", "choice-b: alternative"}},
@@ -262,7 +262,7 @@ func TestIdempotencyAndNoRemovalPlanning(t *testing.T) {
 	s := readyState()
 	s.Installed["firefox"], s.Installed["old-app"] = true, true
 	s.Explicit["firefox"] = true
-	cfg := config.Config{Version: 1, Applications: []config.Application{{Category: "browser", Source: "pacman", Identifier: "firefox"}}}
+	cfg := config.Config{Version: 1, Applications: []config.Application{{Source: "pacman", Identifier: "firefox"}}}
 	p, err := Build(context.Background(), cfg, s, fakeResolver{})
 	if err != nil || p.Applications[0].State != "ready" || len(p.CorePackages) != 0 {
 		t.Fatalf("second run not idempotent: %#v, %v", p, err)
@@ -629,7 +629,7 @@ func contains(values []string, want string) bool {
 }
 
 func TestUnresolved(t *testing.T) {
-	cfg := config.Config{Version: 1, Applications: []config.Application{{Category: "browser", Source: "pacman", Identifier: "missing"}}}
+	cfg := config.Config{Version: 1, Applications: []config.Application{{Source: "pacman", Identifier: "missing"}}}
 	p, err := Build(context.Background(), cfg, readyState(), fakeResolver{})
 	if err != nil || p.Applications[0].State != "unresolved" {
 		t.Fatalf("plan = %#v, %v", p, err)

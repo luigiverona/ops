@@ -284,14 +284,14 @@ func (a Runtime) preparePlan(ctx context.Context, p plan.Plan, terminal ui.UI) i
 		}
 		if application.State == "configure" {
 			if err := a.markApplicationExplicit(ctx, archManager, application); err != nil {
-				problems = append(problems, issue{State: "Failed", Name: application.Declaration.Identifier, Source: application.Declaration.Source, Cause: err.Error(), Impact: "application install reason was not configured", Action: "resolve the package error and run ops again"})
+				problems = append(problems, issue{State: "Failed", Name: application.Declaration.Identifier, Source: string(application.Declaration.Source), Cause: err.Error(), Impact: "application install reason was not configured", Action: "resolve the package error and run ops again"})
 				continue
 			}
 			readyApps++
 			continue
 		}
 		if err := a.installApplication(ctx, archManager, aurManager, flatpakManager, application); err != nil {
-			problems = append(problems, issue{State: "Failed", Name: application.Declaration.Identifier, Source: application.Declaration.Source, Cause: err.Error(), Impact: "application was not installed or configured", Action: "resolve the source error and run ops again"})
+			problems = append(problems, issue{State: "Failed", Name: application.Declaration.Identifier, Source: string(application.Declaration.Source), Cause: err.Error(), Impact: "application was not installed or configured", Action: "resolve the source error and run ops again"})
 			continue
 		}
 		readyApps++
@@ -375,7 +375,7 @@ func planIssues(p plan.Plan) []issue {
 		if application.State != "unresolved" && application.State != "failed" {
 			continue
 		}
-		problems = append(problems, issue{State: titleState(application.State), Name: application.Declaration.Identifier, Source: application.Declaration.Source, Cause: application.Cause, Impact: "application was not installed", Action: "check the declared identifier and source, then run ops again"})
+		problems = append(problems, issue{State: titleState(application.State), Name: application.Declaration.Identifier, Source: string(application.Declaration.Source), Cause: application.Cause, Impact: "application was not installed", Action: "check the declared identifier and source, then run ops again"})
 	}
 	return problems
 }
@@ -549,7 +549,7 @@ func (a Runtime) installApplication(ctx context.Context, am arch.Manager, au aur
 		}
 	}
 	name := application.Declaration.Identifier
-	a.showProgress(name, actionInstall, application.Declaration.Source)
+	a.showProgress(name, actionInstall, string(application.Declaration.Source))
 	switch application.Declaration.Source {
 	case "pacman":
 		if err := am.Install(ctx, []string{name}, false); err != nil {
@@ -1083,7 +1083,7 @@ func planSections(p plan.Plan) []outputSection {
 			continue
 		}
 		if application.State != "install" {
-			detail := application.Declaration.Source
+			detail := string(application.Declaration.Source)
 			if application.Cause != "" {
 				detail += "; " + application.Cause
 			}
@@ -1108,7 +1108,7 @@ func planSections(p plan.Plan) []outputSection {
 		for _, fingerprint := range application.AURSigningKeys {
 			applicationRows = append(applicationRows, ui.TableRow{Item: application.Declaration.Identifier + " -> " + fingerprint, Action: actionConfigure, Detail: "AUR signing key"})
 		}
-		detail := application.Declaration.Source
+		detail := string(application.Declaration.Source)
 		if application.Declaration.Source == "aur" {
 			detail += "; review required"
 		}

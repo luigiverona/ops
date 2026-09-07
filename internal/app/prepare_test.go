@@ -287,7 +287,7 @@ func TestConfigureApplicationsRevalidateTheirDeclaredSourceBeforeMarkingExplicit
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			p := plan.Plan{Core: readyCore(), Applications: []plan.Application{{
-				Declaration: config.Application{Identifier: "example", Source: test.source}, State: "configure",
+				Declaration: config.Application{Identifier: "example", Source: config.Source(test.source)}, State: "configure",
 			}}, GitStatus: "ready", SSHStatus: "ready", GitHubStatus: "ready"}
 			var output bytes.Buffer
 			runner := &prepareRunner{}
