@@ -26,6 +26,27 @@ type stateRunner struct {
 	home              string
 }
 
+func TestLocalInspectionDoesNotContactRemoteServices(t *testing.T) {
+	runner := &stateRunner{authenticated: true}
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
+	defer server.Close()
+	_, err := (Workstation{Home: t.TempDir(), Runner: runner, PacmanConf: testPacmanConf(t), SSHHTTP: server.Client(), SSHMetadataURL: server.URL}).Local(context.Background())
+	if err != nil || requests != 0 || runner.apiCalls != 0 {
+		t.Fatalf("local inspection performed remote work: %v %d %d", err, requests, runner.apiCalls)
+	}
+}
+
+func TestMalformedPacmanConfigurationFailsClosed(t *testing.T) {
+	path := testPacmanConf(t)
+	if err := os.WriteFile(path, []byte("[broken\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Workstation{Home: t.TempDir(), Runner: &stateRunner{}, PacmanConf: path}).Local(context.Background()); err == nil {
+		t.Fatal("accepted malformed pacman state")
+	}
+}
+
 func (f *stateRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
 	switch spec.Name {
 	case "pacman":
@@ -82,7 +103,7 @@ func (f *stateRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) 
 
 func TestStatePlansScopeRefreshInsteadOfFailingInspection(t *testing.T) {
 	runner := &stateRunner{managedKey: statePublicKey(1), otherKey: statePublicKey(2), authenticated: true, insufficientScope: true}
-	state, err := (Workstation{Home: t.TempDir(), Runner: runner, PacmanConf: filepath.Join(t.TempDir(), "missing")}).State(context.Background())
+	state, err := (Workstation{Home: t.TempDir(), Runner: runner, PacmanConf: testPacmanConf(t)}).State(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +128,7 @@ func TestStateInspectsManagedLocalAgentAndGitHubKeysReadOnly(t *testing.T) {
 		}
 	}
 	runner := &stateRunner{managedKey: managedKey, otherKey: otherKey, authenticated: true}
-	state, err := (Workstation{Home: home, Runner: runner, PacmanConf: filepath.Join(t.TempDir(), "missing")}).State(context.Background())
+	state, err := (Workstation{Home: home, Runner: runner, PacmanConf: testPacmanConf(t)}).State(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +145,7 @@ func TestStateInspectsManagedLocalAgentAndGitHubKeysReadOnly(t *testing.T) {
 
 func TestStateDoesNotQueryGitHubKeysBeforeAuthentication(t *testing.T) {
 	runner := &stateRunner{managedKey: statePublicKey(1), otherKey: statePublicKey(2)}
-	state, err := (Workstation{Home: t.TempDir(), Runner: runner, PacmanConf: filepath.Join(t.TempDir(), "missing")}).State(context.Background())
+	state, err := (Workstation{Home: t.TempDir(), Runner: runner, PacmanConf: testPacmanConf(t)}).State(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +156,7 @@ func TestStateDoesNotQueryGitHubKeysBeforeAuthentication(t *testing.T) {
 
 func TestStateKeepsManagedGitHubKeyComparisonUnknownWithoutLocalIdentity(t *testing.T) {
 	runner := &stateRunner{managedKey: statePublicKey(1), otherKey: statePublicKey(2), authenticated: true}
-	state, err := (Workstation{Home: t.TempDir(), Runner: runner, PacmanConf: filepath.Join(t.TempDir(), "missing")}).State(context.Background())
+	state, err := (Workstation{Home: t.TempDir(), Runner: runner, PacmanConf: testPacmanConf(t)}).State(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +195,7 @@ func TestStateKeepsRecognizedSSHConfigurationReadyWhenFreshnessUnavailable(t *te
 		t.Fatal(err)
 	}
 	state, err := (Workstation{
-		Home: home, Runner: runner, PacmanConf: filepath.Join(t.TempDir(), "missing"),
+		Home: home, Runner: runner, PacmanConf: testPacmanConf(t),
 		SSHHTTP: metadata.Client(), SSHMetadataURL: metadata.URL,
 	}).State(context.Background())
 	if err != nil {
@@ -205,4 +226,13 @@ func statePublicKey(fill byte) string {
 func stateHostKey(fill byte) string {
 	fields := strings.Fields(statePublicKey(fill))
 	return fields[0] + " " + fields[1]
+}
+
+func testPacmanConf(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pacman.conf")
+	if err := os.WriteFile(path, []byte("[options]\nArchitecture = auto\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

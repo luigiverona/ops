@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/luigiverona/ops/internal/arch"
+	"github.com/luigiverona/ops/internal/config"
 	gitops "github.com/luigiverona/ops/internal/git"
 	githubops "github.com/luigiverona/ops/internal/github"
 	"github.com/luigiverona/ops/internal/plan"
@@ -19,6 +20,7 @@ import (
 
 // Workstation performs read-only command and file inspection.
 type Workstation struct {
+	Applications   []config.Application
 	Runner         run.Runner
 	PacmanConf     string
 	Home           string
@@ -26,9 +28,11 @@ type Workstation struct {
 	SSHMetadataURL string
 }
 
-// State returns the observable state. Optional tools being absent is state, not an inspection failure.
-func (w Workstation) State(ctx context.Context) (plan.State, error) {
+// Local inspects package and user state without network calls or mutations.
+// Optional tools being absent is state, not an inspection failure.
+func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 	state := plan.State{
+		Services:  map[string]bool{},
 		Installed: map[string]bool{}, Explicit: map[string]bool{}, Foreign: map[string]bool{}, Flatpaks: map[string]bool{},
 		SSHHostKeyFreshness: plan.SSHHostKeyFreshnessUnknown,
 	}
@@ -45,9 +49,6 @@ func (w Workstation) State(ctx context.Context) (plan.State, error) {
 	} else {
 		return state, err
 	}
-	if _, err := w.Runner.Run(ctx, run.Spec{Name: "paru", Args: []string{"--version"}}); err == nil {
-		state.Paru = true
-	}
 	if state.Installed["flatpak"] {
 		if result, err := w.Runner.Run(ctx, run.Spec{Name: "flatpak", Args: []string{"list", "--user", "--app", "--columns=application"}}); err == nil {
 			addLines(state.Flatpaks, result.Stdout)
@@ -63,21 +64,27 @@ func (w Workstation) State(ctx context.Context) (plan.State, error) {
 		path = "/etc/pacman.conf"
 	}
 	if data, err := os.ReadFile(path); err == nil {
+		if err := arch.ValidatePacmanConf(data); err != nil {
+			return state, err
+		}
 		state.Multilib, _ = arch.MultilibEnabled(data)
+	} else {
+		return state, fmt.Errorf("read pacman configuration: %w", err)
 	}
-	if result, err := w.Runner.Run(ctx, run.Spec{Name: "git", Args: []string{"config", "--global", "--get", "user.name"}}); err == nil {
-		state.GitName = strings.TrimSpace(result.Stdout)
+	if state.Installed["git"] {
+		if result, err := w.Runner.Run(ctx, run.Spec{Name: "git", Args: []string{"config", "--global", "--get", "user.name"}}); err == nil {
+			state.GitName = strings.TrimSpace(result.Stdout)
+		}
+		if result, err := w.Runner.Run(ctx, run.Spec{Name: "git", Args: []string{"config", "--global", "--get", "user.email"}}); err == nil {
+			state.GitEmail = strings.TrimSpace(result.Stdout)
+		}
+		if !gitops.ValidName(state.GitName) {
+			state.GitName = ""
+		}
+		if !gitops.ValidEmail(state.GitEmail) {
+			state.GitEmail = ""
+		}
 	}
-	if result, err := w.Runner.Run(ctx, run.Spec{Name: "git", Args: []string{"config", "--global", "--get", "user.email"}}); err == nil {
-		state.GitEmail = strings.TrimSpace(result.Stdout)
-	}
-	if !gitops.ValidName(state.GitName) {
-		state.GitName = ""
-	}
-	if !gitops.ValidEmail(state.GitEmail) {
-		state.GitEmail = ""
-	}
-	var managedFingerprint string
 	sshManager := sshops.Manager{Home: w.Home, Runner: w.Runner, HTTP: w.SSHHTTP, MetadataURL: w.SSHMetadataURL}
 	identities, err := sshManager.Discover(ctx)
 	if err != nil {
@@ -89,12 +96,45 @@ func (w Workstation) State(ctx context.Context) (plan.State, error) {
 		if identity.PrivatePath == managedPrivate {
 			if identity.PublicPath == managedPublic {
 				state.ManagedSSHIdentity = true
-				managedFingerprint = identity.Fingerprint
+				state.ManagedSSHFingerprint = identity.Fingerprint
 			}
 			continue
 		}
 		state.UnrelatedSSHIdentities++
 	}
+	state.SSHConfigurationReady = state.ManagedSSHIdentity && sshManager.GitHubConfigured(ctx)
+	if state.Installed["openssh"] && (!state.ManagedSSHIdentity || !state.SSHConfigurationReady) {
+		agentIdentities, available, err := sshManager.AgentIdentities(ctx)
+		if err != nil {
+			return state, fmt.Errorf("inspect ssh-agent identities: %w", err)
+		}
+		state.SSHAgentAvailable = available
+		for _, identity := range agentIdentities {
+			if state.ManagedSSHFingerprint != "" && identity.Fingerprint == state.ManagedSSHFingerprint {
+				state.ManagedSSHAgentIdentity = true
+				continue
+			}
+			state.UnrelatedSSHAgentIdentities++
+		}
+	}
+
+	for _, app := range w.Applications {
+		service := plan.RequiredService(app)
+		if service == "" || !plan.IsInstalled(app, state) {
+			continue
+		}
+		enabled, e1 := w.Runner.Run(ctx, run.Spec{Name: "systemctl", Args: []string{"is-enabled", service}})
+		active, e2 := w.Runner.Run(ctx, run.Spec{Name: "systemctl", Args: []string{"is-active", service}})
+		state.Services[service] = e1 == nil && e2 == nil && strings.TrimSpace(enabled.Stdout) == "enabled" && strings.TrimSpace(active.Stdout) == "active"
+	}
+
+	return state, nil
+}
+
+// External resolves authenticated account state and host-key freshness read-only.
+// It never logs in, authorizes sudo, or writes user files.
+func (w Workstation) External(ctx context.Context, state plan.State) (plan.State, error) {
+	sshManager := sshops.Manager{Home: w.Home, Runner: w.Runner, HTTP: w.SSHHTTP, MetadataURL: w.SSHMetadataURL}
 	if state.ManagedSSHIdentity {
 		configuration, inspectErr := sshManager.InspectGitHubConfiguration(ctx)
 		state.SSHConfigurationReady = configuration.LocalReady
@@ -108,28 +148,12 @@ func (w Workstation) State(ctx context.Context) (plan.State, error) {
 		case sshops.HostKeyFreshnessUnavailable:
 			state.SSHHostKeyFreshness = plan.SSHHostKeyFreshnessUnavailable
 		}
-		err = inspectErr
-		if err != nil {
-			return state, fmt.Errorf("inspect GitHub SSH configuration: %w", err)
+		if inspectErr != nil {
+			return state, fmt.Errorf("inspect GitHub SSH configuration: %w", inspectErr)
 		}
 	}
-	if state.Installed["openssh"] && (!state.ManagedSSHIdentity || !state.SSHConfigurationReady) {
-		agentIdentities, available, err := sshManager.AgentIdentities(ctx)
-		if err != nil {
-			return state, fmt.Errorf("inspect ssh-agent identities: %w", err)
-		}
-		state.SSHAgentAvailable = available
-		for _, identity := range agentIdentities {
-			if managedFingerprint != "" && identity.Fingerprint == managedFingerprint {
-				state.ManagedSSHAgentIdentity = true
-				continue
-			}
-			state.UnrelatedSSHAgentIdentities++
-		}
-	}
-
 	githubManager := githubops.Manager{Runner: w.Runner}
-	state.GitHubAuth = githubManager.Authenticated(ctx)
+	state.GitHubAuth = state.Installed["github-cli"] && githubManager.Authenticated(ctx)
 	if state.GitHubAuth {
 		keys, err := githubManager.Keys(ctx)
 		if err != nil {
@@ -140,10 +164,10 @@ func (w Workstation) State(ctx context.Context) (plan.State, error) {
 			return state, fmt.Errorf("inspect GitHub SSH keys: %w", err)
 		}
 		state.GitHubKeysKnown = true
-		if managedFingerprint != "" {
+		if state.ManagedSSHFingerprint != "" {
 			state.ManagedGitHubKeyKnown = true
 			for _, key := range keys {
-				if key.Fingerprint == managedFingerprint {
+				if key.Fingerprint == state.ManagedSSHFingerprint {
 					state.ManagedGitHubKey = true
 					continue
 				}
@@ -160,4 +184,13 @@ func addLines(target map[string]bool, output string) {
 			target[line] = true
 		}
 	}
+}
+
+// State runs both read-only observation phases in canonical order.
+func (w Workstation) State(ctx context.Context) (plan.State, error) {
+	state, err := w.Local(ctx)
+	if err != nil {
+		return state, err
+	}
+	return w.External(ctx, state)
 }

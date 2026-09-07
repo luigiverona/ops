@@ -47,6 +47,12 @@ type prepareRunner struct {
 func (f *prepareRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
 	f.calls = append(f.calls, spec)
 	joined := strings.Join(spec.Args, " ")
+	if spec.Name == "systemctl" {
+		if spec.Args[0] == "is-enabled" {
+			return run.Result{Stdout: "enabled\n"}, nil
+		}
+		return run.Result{Stdout: "active\n"}, nil
+	}
 	if f.failUpgrade && spec.Name == "sudo" && strings.Contains(joined, "pacman -Syu") {
 		return run.Result{}, errors.New("upgrade failed")
 	}
@@ -141,7 +147,7 @@ func TestPreparePlanDeclineRendersBeforeConfirmationAndDoesNotMutate(t *testing.
 	var output bytes.Buffer
 	runner := &prepareRunner{}
 	runtime := Runtime{Runner: runner, Out: &output, Err: &output}
-	code := runtime.preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("n\n"), Out: &output})
+	code := runtime.executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("n\n"), Out: &output})
 	if code != Success || len(runner.calls) != 0 {
 		t.Fatalf("code=%d calls=%#v", code, runner.calls)
 	}
@@ -160,23 +166,19 @@ func TestPreparePlanDeclineRendersBeforeConfirmationAndDoesNotMutate(t *testing.
 func TestPreparePlanProgressMatchesMutationOrder(t *testing.T) {
 	state := readyExecutionState()
 	resolver := outputResolver{pacman: map[string]plan.Package{
-		"mullvad-vpn":        {Name: "mullvad-vpn", Optional: []string{"example-dependency"}},
+		"mullvad-vpn":        {Name: "mullvad-vpn"},
 		"example-dependency": {Name: "example-dependency"},
 	}}
-	p, err := plan.Build(context.Background(), config.Config{Version: 1, Applications: []config.Application{{Identifier: "mullvad-vpn", Source: "pacman"}}}, state, resolver)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := resolveAndPlan(context.Background(), config.Config{Version: 2, Applications: []config.Application{{Identifier: "mullvad-vpn", Source: "pacman"}}}, state, resolver)
 	var output bytes.Buffer
 	runner := &prepareRunner{}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 	if code != Success {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
 	wantProgress := []string{
 		"sudo|configure|privileged operations",
 		"full system upgrade|upgrade|pacman; confirm transaction in pacman",
-		"mullvad-vpn -> example-dependency|install|pacman",
 		"mullvad-vpn|install|pacman",
 		"mullvad-vpn -> mullvad-daemon.service|enable|systemd",
 		"mullvad-vpn|configure|pacman install reason",
@@ -184,7 +186,7 @@ func TestPreparePlanProgressMatchesMutationOrder(t *testing.T) {
 	if got := progressRecords(output.String()); strings.Join(got, "\n") != strings.Join(wantProgress, "\n") {
 		t.Fatalf("progress records=%v, want=%v\n%s", got, wantProgress, output.String())
 	}
-	if got := mutationOrder(runner.calls); strings.Join(got, ",") != "upgrade,dependency,application,service" {
+	if got := mutationOrder(runner.calls); strings.Join(got, ",") != "upgrade,application,service" {
 		t.Fatalf("mutation order=%v", got)
 	}
 	if planAt, confirmAt, progressAt := strings.Index(output.String(), "Plan\n"), strings.Index(output.String(), "Prepare this workstation?"), strings.Index(output.String(), "\nProgress\n"); planAt < 0 || confirmAt <= planAt || progressAt <= confirmAt {
@@ -204,7 +206,7 @@ func readyExecutionState() plan.State {
 	return plan.State{
 		Installed: map[string]bool{"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true},
 		Explicit:  map[string]bool{"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true},
-		Foreign:   map[string]bool{}, Flatpaks: map[string]bool{}, Paru: true, Flathub: true, Multilib: true,
+		Foreign:   map[string]bool{}, Flatpaks: map[string]bool{}, Flathub: true, Multilib: true,
 		GitName: "User", GitEmail: "user@example.com", ManagedSSHIdentity: true, SSHConfigurationReady: true,
 		SSHHostKeyFreshness: plan.SSHHostKeyFreshnessCurrent,
 		GitHubAuth:          true, GitHubKeysKnown: true, ManagedGitHubKeyKnown: true, ManagedGitHubKey: true,
@@ -238,16 +240,13 @@ func TestPreparePlanAllReadyHasNoMutationOrProgress(t *testing.T) {
 	state.Installed["bitwarden"] = true
 	state.Explicit["bitwarden"] = true
 	state.Flatpaks["com.tutanota.Tutanota"] = true
-	p, err := plan.Build(context.Background(), config.Config{Version: 1, Applications: []config.Application{
+	p := resolveAndPlan(context.Background(), config.Config{Version: 2, Applications: []config.Application{
 		{Identifier: "bitwarden", Source: "pacman"},
 		{Identifier: "com.tutanota.Tutanota", Source: "flatpak"},
 	}}, state, outputResolver{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	var output bytes.Buffer
 	runner := &prepareRunner{}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 	if code != Success {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
@@ -270,7 +269,7 @@ func TestPreparePlanReportsExplicitReasonFailureAsApplicationIssue(t *testing.T)
 	}}, GitStatus: "ready", SSHStatus: "ready", GitHubStatus: "ready"}
 	var output bytes.Buffer
 	runner := &prepareRunner{failMarkExplicit: true}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 	if code != Issues || !strings.Contains(output.String(), "application install reason was not configured") || !strings.Contains(output.String(), "apps    0/1") {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
@@ -291,7 +290,7 @@ func TestConfigureApplicationsRevalidateTheirDeclaredSourceBeforeMarkingExplicit
 			}}, GitStatus: "ready", SSHStatus: "ready", GitHubStatus: "ready"}
 			var output bytes.Buffer
 			runner := &prepareRunner{}
-			code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+			code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 			if code != Success {
 				t.Fatalf("code=%d\n%s", code, output.String())
 			}
@@ -318,7 +317,7 @@ func TestConfigureSourceDriftIsAnApplicationIssueAndDoesNotBlockOtherApplication
 	}, GitStatus: "ready", SSHStatus: "ready", GitHubStatus: "ready"}
 	var output bytes.Buffer
 	runner := &prepareRunner{sourceDrift: map[string]bool{"-Qn:stale": true}}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 	if code != Issues || !strings.Contains(output.String(), "application source changed after planning; rerun ops") || !strings.Contains(output.String(), "apps    1/2") {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
@@ -339,8 +338,8 @@ func TestPreparePlanNoOpGolden(t *testing.T) {
 	p := plan.Plan{Core: readyCore(), Applications: readyApplications(), GitStatus: "ready", SSHStatus: "ready", GitHubStatus: "ready"}
 	var output bytes.Buffer
 	runner := &prepareRunner{}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader(""), Out: &output})
-	want := "Plan\n\nNo changes\n  workstation is already ready\n\nUnchanged\n  7 core components\n  8 applications\n\nFinal\n  system  ready\n  core    7/7\n  apps    8/8\n  git     ready\n  ssh     ready\n  github  ready\n\nWorkstation ready.\n"
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader(""), Out: &output})
+	want := "Plan\n\nNo changes\n  workstation is already ready\n\nUnchanged\n  5 core components\n  8 applications\n\nFinal\n  system  ready\n  core    5/5\n  apps    8/8\n  git     ready\n  ssh     ready\n  github  ready\n\nWorkstation ready.\n"
 	if code != Success || output.String() != want || len(runner.calls) != 0 {
 		t.Fatalf("code=%d calls=%#v\n--- got ---\n%s--- want ---\n%s", code, runner.calls, output.String(), want)
 	}
@@ -350,7 +349,11 @@ func TestPreparePublicNoActionPathDoesNotRequireTTY(t *testing.T) {
 	if mode := os.Getenv("OPS_TEST_NO_TTY_MODE"); mode != "" {
 		runtime, output, runner := noActionPrepareRuntime(t, mode == "diagnostic")
 		code := runtime.Prepare(context.Background())
-		if code != Success || !strings.Contains(output.String(), "\nFinal\n") {
+		wantCode := Success
+		if mode == "diagnostic" {
+			wantCode = Issues
+		}
+		if code != wantCode || !strings.Contains(output.String(), "\nFinal\n") {
 			t.Fatalf("mode=%s code=%d\n%s", mode, code, output.String())
 		}
 		if mode == "diagnostic" && !strings.Contains(output.String(), "GitHub SSH host-key freshness  unavailable") {
@@ -418,7 +421,7 @@ func noActionPrepareRuntime(t *testing.T, unavailable bool) (Runtime, *bytes.Buf
 	}
 	output := &bytes.Buffer{}
 	return Runtime{
-		Runner: runner, Out: output, Err: output, Home: home, EUID: func() int { return 1000 }, OSRelease: osRelease,
+		Runner: runner, Out: output, Err: output, Home: home, EUID: func() int { return 1000 }, OSRelease: osRelease, PacmanConf: testPacmanConf(t),
 		SSHHTTP: metadata.Client(), SSHMetadataURL: metadata.URL,
 	}, output, runner
 }
@@ -427,7 +430,7 @@ func TestPreparePlanDiagnosticOnlyDoesNotConfirmOrMutate(t *testing.T) {
 	p := plan.Plan{Core: readyCore(), Applications: []plan.Application{{Declaration: config.Application{Identifier: "broken", Source: "aur"}, State: "failed", Cause: "source resolution failed: unavailable"}}, GitStatus: "ready", SSHStatus: "ready", GitHubStatus: "ready"}
 	var output bytes.Buffer
 	runner := &prepareRunner{}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader(""), Out: &output})
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader(""), Out: &output})
 	if code != Issues || len(runner.calls) != 0 || strings.Contains(output.String(), "Prepare this workstation?") || !strings.Contains(output.String(), "Application diagnostics") || !strings.Contains(output.String(), "\nIssues\n") || !strings.Contains(output.String(), "\nFinal\n") {
 		t.Fatalf("diagnostic-only lifecycle was not a no-op:\n%s", output.String())
 	}
@@ -441,8 +444,8 @@ func TestPreparePlanContinuesUnrelatedWorkWhenHostKeyFreshnessUnavailable(t *tes
 	}
 	var output bytes.Buffer
 	runner := &prepareRunner{}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
-	if code != Success {
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+	if code != Issues {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
 	if !strings.Contains(output.String(), "GitHub SSH host-key freshness  unavailable  retry later") ||
@@ -475,15 +478,12 @@ func TestPreparePlanUnauthenticatedGitHubReconcilesOnlyAfterConfirmation(t *test
 	}
 	state := readyExecutionState()
 	state.GitHubAuth, state.GitHubKeysKnown, state.ManagedGitHubKeyKnown, state.ManagedGitHubKey = false, false, false, false
-	p, err := plan.Build(context.Background(), config.Config{Version: 1}, state, outputResolver{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := resolveAndPlan(context.Background(), config.Config{Version: 2}, state, outputResolver{})
 
 	t.Run("authenticate and register", func(t *testing.T) {
 		var output bytes.Buffer
 		runner := &prepareRunner{sshFingerprint: fingerprint}
-		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 		if code != Success {
 			t.Fatalf("code=%d\n%s", code, output.String())
 		}
@@ -525,7 +525,7 @@ func TestPreparePlanReviewsDeferredAndKnownGitHubKeysAccurately(t *testing.T) {
 	t.Run("deferred keys are reviewed only after login finds one", func(t *testing.T) {
 		var output bytes.Buffer
 		runner := &prepareRunner{sshFingerprint: fingerprint, remoteKeys: remote}
-		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), deferred, ui.UI{In: strings.NewReader("y\ny\n"), Out: &output})
+		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), deferred, ui.UI{In: strings.NewReader("y\ny\n"), Out: &output})
 		if code != Success || !strings.Contains(output.String(), "GitHub SSH keys") || !strings.Contains(output.String(), "inspect") || !strings.Contains(output.String(), "reconcile after login") || !strings.Contains(output.String(), "\nReview\n") || !strings.Contains(output.String(), "Keep this key?") {
 			t.Fatalf("code=%d\n%s", code, output.String())
 		}
@@ -535,10 +535,7 @@ func TestPreparePlanReviewsDeferredAndKnownGitHubKeysAccurately(t *testing.T) {
 		state := readyExecutionState()
 		state.ManagedGitHubKey = false
 		state.OtherGitHubKeys = 1
-		p, err := plan.Build(context.Background(), config.Config{Version: 1}, state, outputResolver{})
-		if err != nil {
-			t.Fatal(err)
-		}
+		p := resolveAndPlan(context.Background(), config.Config{Version: 2}, state, outputResolver{})
 		var planOutput bytes.Buffer
 		Runtime{Out: &planOutput}.showPlan(p)
 		if !strings.Contains(planOutput.String(), "GitHub SSH keys") || !strings.Contains(planOutput.String(), "review") || !strings.Contains(planOutput.String(), "account keys") {
@@ -546,7 +543,7 @@ func TestPreparePlanReviewsDeferredAndKnownGitHubKeysAccurately(t *testing.T) {
 		}
 		var output bytes.Buffer
 		runner := &prepareRunner{sshFingerprint: fingerprint, authenticated: true, remoteKeys: remote}
-		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\ny\n"), Out: &output})
+		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\ny\n"), Out: &output})
 		if code != Success || !strings.Contains(output.String(), "\nReview\n") || !strings.Contains(output.String(), "Keep this key?") {
 			t.Fatalf("code=%d\n%s", code, output.String())
 		}
@@ -571,7 +568,7 @@ func TestPreparePlanSSHAddOutcomesAreAccurate(t *testing.T) {
 			p := plan.Plan{Core: readyCore(), LoadSSHAgent: true, GitStatus: "ready", SSHStatus: "required", GitHubStatus: "ready", AuthenticateGitHub: test.githubWork}
 			var output bytes.Buffer
 			runner := &prepareRunner{sshFingerprint: fingerprint, sshAddErr: test.sshAddErr}
-			code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+			code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 			if code != test.wantCode || !strings.Contains(output.String(), "ssh     "+test.wantSSH) {
 				t.Fatalf("code=%d\n%s", code, output.String())
 			}
@@ -594,7 +591,7 @@ func TestApprovedGitAndSSHActionsDoNotAskForSecondAuthorization(t *testing.T) {
 		p := plan.Plan{Core: readyCore(), ConfigureGit: true, SSHStatus: "ready", GitHubStatus: "ready"}
 		var output bytes.Buffer
 		runner := &prepareRunner{}
-		code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\nExample User\nuser@example.com\n"), Out: &output})
+		code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\nExample User\nuser@example.com\n"), Out: &output})
 		if code != Success {
 			t.Fatalf("code=%d\n%s", code, output.String())
 		}
@@ -641,13 +638,10 @@ func TestPreparePlanRefreshesExistingGitHubAuthorizationBeforeKeyAPI(t *testing.
 	home, fingerprint, _ := unauthenticatedGitHubFixture(t)
 	state := readyExecutionState()
 	state.GitHubSSHKeyScopeInsufficient = true
-	p, err := plan.Build(context.Background(), config.Config{Version: 1}, state, outputResolver{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := resolveAndPlan(context.Background(), config.Config{Version: 2}, state, outputResolver{})
 	var output bytes.Buffer
 	runner := &prepareRunner{sshFingerprint: fingerprint, authenticated: true}
-	code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+	code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 	if code != Success {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
@@ -668,10 +662,7 @@ func TestPreparePlanRecoversLateGitHubSessionMissingSSHKeyScope(t *testing.T) {
 	delete(state.Installed, "github-cli")
 	delete(state.Explicit, "github-cli")
 	state.GitHubAuth, state.GitHubKeysKnown, state.ManagedGitHubKeyKnown, state.ManagedGitHubKey = false, false, false, false
-	p, err := plan.Build(context.Background(), config.Config{Version: 1}, state, outputResolver{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := resolveAndPlan(context.Background(), config.Config{Version: 2}, state, outputResolver{})
 	if !p.AuthenticateGitHub || p.RefreshGitHubSSHKeyScope {
 		t.Fatalf("initial unavailable-gh plan=%#v", p)
 	}
@@ -687,7 +678,7 @@ func TestPreparePlanRecoversLateGitHubSessionMissingSSHKeyScope(t *testing.T) {
 	t.Run("refreshes and retries the late session", func(t *testing.T) {
 		var output bytes.Buffer
 		runner := &prepareRunner{sshFingerprint: fingerprint, githubSessionAfterInstall: true, scopeErrorsLeft: 1, remoteKeys: remote}
-		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 		if code != Success {
 			t.Fatalf("code=%d\n%s", code, output.String())
 		}
@@ -714,7 +705,7 @@ func TestPreparePlanRecoversLateGitHubSessionMissingSSHKeyScope(t *testing.T) {
 	t.Run("does not refresh arbitrary key API failures", func(t *testing.T) {
 		var output bytes.Buffer
 		runner := &prepareRunner{sshFingerprint: fingerprint, githubSessionAfterInstall: true, failKeyAPI: true}
-		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 		if code != Issues || runner.githubRefreshes != 0 || runner.githubAPICalls != 1 {
 			t.Fatalf("code=%d refreshes=%d key API calls=%d\n%s", code, runner.githubRefreshes, runner.githubAPICalls, output.String())
 		}
@@ -723,16 +714,13 @@ func TestPreparePlanRecoversLateGitHubSessionMissingSSHKeyScope(t *testing.T) {
 	t.Run("does not duplicate an explicitly planned refresh", func(t *testing.T) {
 		state := readyExecutionState()
 		state.GitHubSSHKeyScopeInsufficient = true
-		explicit, err := plan.Build(context.Background(), config.Config{Version: 1}, state, outputResolver{})
-		if err != nil {
-			t.Fatal(err)
-		}
+		explicit := resolveAndPlan(context.Background(), config.Config{Version: 2}, state, outputResolver{})
 		if explicit.AuthenticateGitHub || !explicit.RefreshGitHubSSHKeyScope {
 			t.Fatalf("explicit scope-refresh plan=%#v", explicit)
 		}
 		var output bytes.Buffer
 		runner := &prepareRunner{sshFingerprint: fingerprint, authenticated: true, scopeErrorsLeft: 2}
-		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), explicit, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), explicit, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 		if code != Issues || runner.githubRefreshes != 1 || runner.githubAPICalls != 1 {
 			t.Fatalf("code=%d refreshes=%d key API calls=%d\n%s", code, runner.githubRefreshes, runner.githubAPICalls, output.String())
 		}
@@ -743,7 +731,7 @@ func TestPreparePlanPostLoginKeyInspectionFailsClosed(t *testing.T) {
 	home, fingerprint, p := unauthenticatedGitHubFixture(t)
 	var output bytes.Buffer
 	runner := &prepareRunner{sshFingerprint: fingerprint, failKeyAPI: true}
-	code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+	code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 	if code != Issues {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
@@ -764,7 +752,7 @@ func TestPreparePlanPostLoginExistingManagedKeySkipsRegistration(t *testing.T) {
 	remote := `[{"id":1,"title":"managed","key":` + strconv.Quote(strings.TrimSpace(string(publicKey))) + `}]`
 	var output bytes.Buffer
 	runner := &prepareRunner{sshFingerprint: fingerprint, remoteKeys: remote}
-	code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+	code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 	if code != Success {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
@@ -780,13 +768,10 @@ func TestPreparePlanAuthenticatedMissingManagedKeyRegistersWithoutSecondAuthoriz
 	home, fingerprint, _ := unauthenticatedGitHubFixture(t)
 	state := readyExecutionState()
 	state.ManagedGitHubKey = false
-	p, err := plan.Build(context.Background(), config.Config{Version: 1}, state, outputResolver{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := resolveAndPlan(context.Background(), config.Config{Version: 2}, state, outputResolver{})
 	var output bytes.Buffer
 	runner := &prepareRunner{sshFingerprint: fingerprint, authenticated: true}
-	code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+	code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 	if code != Success || strings.Join(mutationOrder(runner.calls), ",") != "github-key" {
 		t.Fatalf("code=%d mutations=%v\n%s", code, mutationOrder(runner.calls), output.String())
 	}
@@ -795,10 +780,7 @@ func TestPreparePlanAuthenticatedMissingManagedKeyRegistersWithoutSecondAuthoriz
 	}
 
 	state.ManagedGitHubKey = true
-	second, err := plan.Build(context.Background(), config.Config{Version: 1}, state, outputResolver{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	second := resolveAndPlan(context.Background(), config.Config{Version: 2}, state, outputResolver{})
 	if second.AuthenticateGitHub || second.ReviewGitHubKeys || second.ConfigureGitHubKey {
 		t.Fatalf("successful reconciliation did not converge: %#v", second)
 	}
@@ -824,10 +806,7 @@ func unauthenticatedGitHubFixture(t *testing.T) (string, string, plan.Plan) {
 	}
 	state := readyExecutionState()
 	state.GitHubAuth, state.GitHubKeysKnown, state.ManagedGitHubKeyKnown, state.ManagedGitHubKey = false, false, false, false
-	p, err := plan.Build(context.Background(), config.Config{Version: 1}, state, outputResolver{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := resolveAndPlan(context.Background(), config.Config{Version: 2}, state, outputResolver{})
 	return home, fingerprint, p
 }
 
@@ -836,7 +815,7 @@ func TestPreparePlanPreservesFatalAndNonfatalFailureSemantics(t *testing.T) {
 		p := plan.Plan{Core: readyCore(), FullUpgrade: true, Applications: []plan.Application{{Declaration: config.Application{Identifier: "later", Source: "flatpak"}, State: "install"}}}
 		var output bytes.Buffer
 		runner := &prepareRunner{failUpgrade: true}
-		code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+		code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 		if code != Fatal || strings.Contains(strings.Join(mutationOrder(runner.calls), ","), "application") {
 			t.Fatalf("code=%d mutations=%v\n%s", code, mutationOrder(runner.calls), output.String())
 		}
@@ -849,7 +828,7 @@ func TestPreparePlanPreservesFatalAndNonfatalFailureSemantics(t *testing.T) {
 		}, GitStatus: "ready", SSHStatus: "ready", GitHubStatus: "ready"}
 		var output bytes.Buffer
 		runner := &prepareRunner{failFlatpak: "broken"}
-		code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+		code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 		if code != Issues || strings.Join(mutationOrder(runner.calls), ",") != "application,application" {
 			t.Fatalf("code=%d mutations=%v\n%s", code, mutationOrder(runner.calls), output.String())
 		}
@@ -882,4 +861,10 @@ func mutationOrder(calls []run.Spec) []string {
 		}
 	}
 	return order
+}
+
+// executeForTest isolates operation-order/security tests from final discovery.
+// Public lifecycle convergence is covered separately in lifecycle_test.go.
+func (a Runtime) executeForTest(ctx context.Context, p plan.Plan, terminal ui.UI) int {
+	return a.reportExecution(a.executePlan(ctx, p, terminal))
 }

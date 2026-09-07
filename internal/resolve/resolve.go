@@ -48,19 +48,16 @@ func (r Resolver) Pacman(ctx context.Context, name string) (plan.Package, bool, 
 	if fields["Name"] != name {
 		return r.archPackage(ctx, name)
 	}
-	return plan.Package{Name: name, Repository: fields["Repository"], Optional: splitPacmanList(fields["Optional Deps"]), Required: splitPacmanList(fields["Depends On"]), Conflicts: splitPacmanList(fields["Conflicts With"])}, true, nil
+	return plan.Package{Name: name, Repository: fields["Repository"]}, true, nil
 }
 
 func (r Resolver) archPackage(ctx context.Context, name string) (plan.Package, bool, error) {
 	var response struct {
 		Valid   bool `json:"valid"`
 		Results []struct {
-			Name         string   `json:"pkgname"`
-			Repository   string   `json:"repo"`
-			Architecture string   `json:"arch"`
-			Depends      []string `json:"depends"`
-			Optional     []string `json:"optdepends"`
-			Conflicts    []string `json:"conflicts"`
+			Name         string `json:"pkgname"`
+			Repository   string `json:"repo"`
+			Architecture string `json:"arch"`
 		} `json:"results"`
 	}
 	endpoint := "https://archlinux.org/packages/search/json/?name=" + url.QueryEscape(name) + "&arch=x86_64"
@@ -80,7 +77,7 @@ func (r Resolver) archPackage(ctx context.Context, name string) (plan.Package, b
 		default:
 			continue
 		}
-		return plan.Package{Name: name, Repository: result.Repository, Required: result.Depends, Optional: result.Optional, Conflicts: result.Conflicts}, true, nil
+		return plan.Package{Name: name, Repository: result.Repository}, true, nil
 	}
 	return plan.Package{}, false, nil
 }
@@ -90,9 +87,6 @@ func (r Resolver) AUR(ctx context.Context, name string) (plan.Package, bool, err
 		ResultCount int `json:"resultcount"`
 		Results     []struct {
 			Name, PackageBase string
-			Depends           []string
-			OptDepends        []string
-			Conflicts         []string
 		} `json:"results"`
 	}
 	endpoint := "https://aur.archlinux.org/rpc/v5/info?arg%5B%5D=" + url.QueryEscape(name)
@@ -100,11 +94,20 @@ func (r Resolver) AUR(ctx context.Context, name string) (plan.Package, bool, err
 	if err != nil {
 		return plan.Package{}, false, err
 	}
-	if status == http.StatusNotFound || response.ResultCount != 1 || response.Results[0].Name != name {
+	if status == http.StatusNotFound {
+		return plan.Package{}, false, nil
+	}
+	if response.ResultCount != len(response.Results) || response.ResultCount > 1 {
+		return plan.Package{}, false, errors.New("malformed AUR response count")
+	}
+	if response.ResultCount != 1 || response.Results[0].Name != name {
 		return plan.Package{}, false, nil
 	}
 	p := response.Results[0]
-	return plan.Package{Name: p.Name, PackageBase: p.PackageBase, Required: p.Depends, Optional: p.OptDepends, Conflicts: p.Conflicts}, true, nil
+	if !aurmeta.ValidPackageName(p.PackageBase) {
+		return plan.Package{}, false, errors.New("invalid AUR package base")
+	}
+	return plan.Package{Name: p.Name, PackageBase: p.PackageBase}, true, nil
 }
 
 // AURSource pins .SRCINFO to the exact AUR Git commit that will be reviewed.
@@ -112,27 +115,19 @@ func (r Resolver) AURSource(ctx context.Context, name string) (plan.AURSource, b
 	if !aurmeta.ValidPackageName(name) {
 		return plan.AURSource{}, false, errors.New("invalid AUR package base")
 	}
-	repository := "https://aur.archlinux.org/" + name + ".git"
-	result, err := r.Runner.Run(ctx, run.Spec{Name: "git", Args: []string{"ls-remote", repository, "HEAD"}})
+	data, status, err := r.getBytes(ctx, "https://aur.archlinux.org/"+name+".git/info/refs?service=git-upload-pack")
 	if err != nil {
 		return plan.AURSource{}, false, err
 	}
-	commits := make(map[string]bool)
-	for _, line := range strings.Split(result.Stdout, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 2 && fields[1] == "HEAD" && gitObject.MatchString(fields[0]) {
-			commits[strings.ToLower(fields[0])] = true
-		}
+	if status == http.StatusNotFound {
+		return plan.AURSource{}, false, nil
 	}
-	if len(commits) != 1 {
-		return plan.AURSource{}, false, errors.New("AUR HEAD did not resolve to exactly one commit")
-	}
-	var commit string
-	for value := range commits {
-		commit = value
+	commit, err := advertisedHEAD(data)
+	if err != nil {
+		return plan.AURSource{}, false, err
 	}
 	endpoint := "https://aur.archlinux.org/cgit/aur.git/plain/.SRCINFO?h=" + url.QueryEscape(name) + "&id=" + url.QueryEscape(commit)
-	data, status, err := r.getBytes(ctx, endpoint)
+	data, status, err = r.getBytes(ctx, endpoint)
 	if err != nil {
 		return plan.AURSource{}, false, err
 	}
@@ -306,36 +301,22 @@ func (r Resolver) Flatpak(ctx context.Context, id string) (bool, error) {
 }
 
 func (r Resolver) getJSON(ctx context.Context, endpoint string, target any) (int, error) {
-	client := r.Client
-	if client == nil {
-		client = &http.Client{Timeout: 20 * time.Second}
+	data, status, err := r.getBytes(ctx, endpoint)
+	if err != nil || status == http.StatusNotFound {
+		return status, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return 0, err
+	if err := json.Unmarshal(data, target); err != nil {
+		return status, fmt.Errorf("malformed remote JSON: %w", err)
 	}
-	req.Header.Set("User-Agent", "ops/1")
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return resp.StatusCode, nil
-	}
-	if resp.StatusCode != http.StatusOK {
-		return resp.StatusCode, fmt.Errorf("service returned HTTP %s", resp.Status)
-	}
-	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
-		return resp.StatusCode, err
-	}
-	return resp.StatusCode, nil
+	return status, nil
 }
 
 func (r Resolver) getBytes(ctx context.Context, endpoint string) ([]byte, int, error) {
 	client := r.Client
 	if client == nil {
-		client = &http.Client{Timeout: 20 * time.Second}
+		client = &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return errors.New("unexpected metadata redirect; refusing to change source")
+		}}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -344,18 +325,18 @@ func (r Resolver) getBytes(ctx context.Context, endpoint string) ([]byte, int, e
 	req.Header.Set("User-Agent", "ops/1")
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, unavailableError{err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, resp.StatusCode, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, resp.StatusCode, fmt.Errorf("service returned HTTP %s", resp.Status)
+		return nil, resp.StatusCode, unavailableError{fmt.Errorf("service returned HTTP %d; retry later", resp.StatusCode)}
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024+1))
 	if err != nil {
-		return nil, resp.StatusCode, err
+		return nil, resp.StatusCode, unavailableError{err}
 	}
 	if len(data) > 2*1024*1024 {
 		return nil, resp.StatusCode, errors.New("service response exceeds size limit")
@@ -378,11 +359,4 @@ func parsePacmanInfo(output string) map[string]string {
 		}
 	}
 	return fields
-}
-
-func splitPacmanList(value string) []string {
-	if value == "" || value == "None" {
-		return nil
-	}
-	return strings.Split(value, "\n")
 }

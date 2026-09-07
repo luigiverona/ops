@@ -21,6 +21,7 @@ func TestV2StrictDeclarations(t *testing.T) {
 		"version=2\nflatpak=[\"org.example.App/stable\"]",
 		"version=2\nflatpak=[\"App\"]",
 		"version=2\nunknown=[]",
+		"version=2\npacman=[\"pkg\"]\naur=[\"pkg\"]",
 		"version=2\n[apps]\nbrowser=[]",
 	} {
 		if _, err := Parse([]byte(data)); err == nil {
@@ -84,29 +85,10 @@ flatpak = ["Com.Example.Vault"]
 }
 
 func TestInvalidConfigs(t *testing.T) {
-	tests := map[string]string{
-		"malformed TOML":  `version = [`,
-		"missing version": `[apps]`,
-		"unsupported version": `version=3
-[apps]`,
-		"unknown category": `version=1
-[apps]
-office=[]`,
-		"unknown source":   configWith("browser", "snap:firefox"),
-		"missing colon":    configWith("browser", "pacman"),
-		"empty source":     configWith("browser", ":firefox"),
-		"empty identifier": configWith("browser", "pacman: "),
-		"duplicate declaration": `version=1
-[apps]
-browser=["pacman:firefox"]
-vpn=[" PACMAN : firefox "]`,
-	}
-	for name, data := range tests {
-		t.Run(name, func(t *testing.T) {
-			if _, err := Parse([]byte(data)); err == nil {
-				t.Fatal("expected validation error")
-			}
-		})
+	for _, data := range []string{"version = [", "pacman=[]", "version=3", "version=2\npacman=[1]", "version=2\npacman=[\"\"]", "version=2\n[unknown]"} {
+		if _, err := Parse([]byte(data)); err == nil {
+			t.Fatalf("accepted %q", data)
+		}
 	}
 }
 
@@ -168,11 +150,4 @@ func TestConfigurationPathsRejectSymlinksAndNonRegularFiles(t *testing.T) {
 			t.Fatal("expected non-regular file rejection")
 		}
 	})
-}
-
-func configWith(category, declaration string) string {
-	var b strings.Builder
-	b.WriteString("version=1\n[apps]\n")
-	b.WriteString(category + "=[\"" + declaration + "\"]\n")
-	return b.String()
 }

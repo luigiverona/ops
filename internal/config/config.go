@@ -101,6 +101,7 @@ func Parse(data []byte) (Config, error) {
 	}
 	cfg := Config{Version: Version}
 	seen := make(map[Application]bool)
+	packageSources := make(map[string]Source)
 	for _, group := range []struct {
 		source Source
 		ids    []string
@@ -118,6 +119,12 @@ func Parse(data []byte) (Config, error) {
 				return Config{}, fmt.Errorf("invalid configuration: duplicate declaration %s:%s", app.Source, id)
 			}
 			seen[app] = true
+			if app.Source != Flatpak {
+				if source, ok := packageSources[id]; ok && source != app.Source {
+					return Config{}, fmt.Errorf("invalid configuration: package %q cannot be both pacman and AUR", id)
+				}
+				packageSources[id] = app.Source
+			}
 			cfg.Applications = append(cfg.Applications, app)
 		}
 	}

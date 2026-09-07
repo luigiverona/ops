@@ -10,17 +10,16 @@ import (
 	"github.com/luigiverona/ops/internal/aurmeta"
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/plan"
+	"github.com/luigiverona/ops/internal/resolve"
 )
 
-func TestShowPlanRealV100Workstation(t *testing.T) {
+func TestShowPlanMixedWorkstation(t *testing.T) {
 	p := realWorkstationPlan(t)
 	var output bytes.Buffer
 	Runtime{Out: &output}.showPlan(p)
 	want := "Plan\n" +
 		"\nSystem\n" +
 		"  full system upgrade  upgrade  pacman; confirm transaction in pacman\n" +
-		"\nCore\n" +
-		"  paru  install  AUR bootstrap; review required\n" +
 		"\nApplications\n" +
 		"  bitwarden              install  pacman\n" +
 		"  com.tutanota.Tutanota  install  flatpak\n" +
@@ -80,10 +79,7 @@ func TestShowPlanSeparatesApplicationDiagnosticsFromReviewActions(t *testing.T) 
 func TestShowPlanIncludesScopeRefreshOnlyWhenNeeded(t *testing.T) {
 	state := readyExecutionState()
 	state.GitHubSSHKeyScopeInsufficient = true
-	p, err := plan.Build(context.Background(), config.Config{Version: 1}, state, outputResolver{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := resolveAndPlan(context.Background(), config.Config{Version: 2}, state, outputResolver{})
 	if p.AuthenticateGitHub || !p.RefreshGitHubSSHKeyScope {
 		t.Fatalf("scope refresh plan=%#v", p)
 	}
@@ -101,30 +97,26 @@ func TestReportGroupsIssuesAndPreservesMultilineAlignment(t *testing.T) {
 		{State: "Unresolved", Name: "one", Source: "aur", Cause: "missing\nnext\x1b[31m", Impact: "not installed", Action: "fix declaration"},
 		{State: "Failed", Name: "two", Stage: "setup", Cause: "broken", Impact: "not installed", Action: "retry"},
 	})
-	want := "\nIssues\n\nUnresolved\n\none\n  source  aur\n  cause   missing\n          next\\x1b[31m\n  impact  not installed\n  action  fix declaration\n\nFailed\n\ntwo\n  stage   setup\n  cause   broken\n  impact  not installed\n  action  retry\n\nFinal\n  system  ready\n  core    7/7\n  apps    0/2\n  git     ready\n  ssh     ready\n  github  failed\n\nWorkstation completed with issues.\n"
+	want := "\nIssues\n\nUnresolved\n\none\n  source  aur\n  cause   missing\n          next\\x1b[31m\n  impact  not installed\n  action  fix declaration\n\nFailed\n\ntwo\n  stage   setup\n  cause   broken\n  impact  not installed\n  action  retry\n\nFinal\n  system  ready\n  core    0/5\n  apps    0/2\n  git     ready\n  ssh     ready\n  github  failed\n\nWorkstation completed with issues.\n"
 	if output.String() != want {
 		t.Fatalf("report mismatch\n--- got ---\n%s--- want ---\n%s", output.String(), want)
 	}
 }
 
-func TestShowPlanParuBootstrapConcreteDependencies(t *testing.T) {
+func TestShowPlanDeclaredAURDependencies(t *testing.T) {
 	source := plan.AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
 		PackageBase: "paru", Version: "2.1.0-2", MakeDepends: []string{"cargo"}, Packages: []aurmeta.Package{{Name: "paru"}},
 	}}
 	state := readyExecutionState()
-	state.Paru = false
 	state.Installed["base-devel"] = false
 	state.Explicit["base-devel"] = false
-	p, err := plan.Build(context.Background(), config.Config{Version: 1}, state, outputResolver{
-		source: &source,
+	p := resolveAndPlan(context.Background(), config.Config{Version: 2, Applications: []config.Application{{Source: "aur", Identifier: "paru"}}}, state, outputResolver{
+		aur: map[string]plan.Package{"paru": {Name: "paru", PackageBase: "paru"}}, source: &source,
 		deps: map[string]plan.OfficialDependency{
 			"base-devel": {Requirement: "base-devel", Provider: "base-devel", Packages: []string{"base-devel"}},
 			"cargo":      {Requirement: "cargo", Provider: "rust", Packages: []string{"llvm-libs", "rust"}},
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	var output bytes.Buffer
 	Runtime{Out: &output}.showPlan(p)
 	for _, row := range []string{
@@ -136,7 +128,7 @@ func TestShowPlanParuBootstrapConcreteDependencies(t *testing.T) {
 			t.Fatalf("missing row %q:\n%s", row, output.String())
 		}
 	}
-	if !strings.Contains(output.String(), "AUR bootstrap; review required") {
+	if !strings.Contains(output.String(), "aur; review required") {
 		t.Fatalf("missing reviewed paru bootstrap row:\n%s", output.String())
 	}
 }
@@ -154,34 +146,29 @@ func TestShowPlanDefersRemoteKeyComparisonUntilIdentityExists(t *testing.T) {
 	}
 }
 
-func TestShowPlanRendersDependenciesAndServicesWithOwners(t *testing.T) {
+func TestShowPlanRendersRequiredServicesWithOwners(t *testing.T) {
 	state := plan.State{
 		Installed: map[string]bool{"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true},
 		Explicit:  map[string]bool{"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true, "mullvad-vpn": true},
-		Foreign:   map[string]bool{}, Flatpaks: map[string]bool{}, Paru: true, Flathub: true, Multilib: true,
+		Foreign:   map[string]bool{}, Flatpaks: map[string]bool{}, Flathub: true, Multilib: true,
 		GitName: "User", GitEmail: "user@example.com", ManagedSSHIdentity: true, SSHConfigurationReady: true,
 		SSHHostKeyFreshness: plan.SSHHostKeyFreshnessCurrent,
 		GitHubAuth:          true, GitHubKeysKnown: true, ManagedGitHubKeyKnown: true, ManagedGitHubKey: true,
 	}
 	resolver := outputResolver{pacman: map[string]plan.Package{
-		"mullvad-vpn": {Name: "mullvad-vpn", Repository: "extra", Optional: []string{"libfoo: integration", "aaa-helper: helper"}},
+		"mullvad-vpn": {Name: "mullvad-vpn", Repository: "extra"},
 		"libfoo":      {Name: "libfoo", Repository: "extra"},
 		"aaa-helper":  {Name: "aaa-helper", Repository: "extra"},
 	}}
-	p, err := plan.Build(context.Background(), config.Config{Version: 1, Applications: []config.Application{{Identifier: "mullvad-vpn", Source: "pacman"}}}, state, resolver)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := resolveAndPlan(context.Background(), config.Config{Version: 2, Applications: []config.Application{{Identifier: "mullvad-vpn", Source: "pacman"}}}, state, resolver)
 	var output bytes.Buffer
 	Runtime{Out: &output}.showPlan(p)
 	want := "Plan\n\nSystem\n" +
 		"  full system upgrade  upgrade  pacman; confirm transaction in pacman\n" +
 		"\nApplications\n" +
-		"  mullvad-vpn -> aaa-helper              install  pacman\n" +
-		"  mullvad-vpn -> libfoo                  install  pacman\n" +
 		"  mullvad-vpn                            install  pacman\n" +
 		"  mullvad-vpn -> mullvad-daemon.service  enable   systemd\n" +
-		"\nUnchanged\n  7 core components\n"
+		"\nUnchanged\n  3 core components\n"
 	if output.String() != want {
 		t.Fatalf("plan mismatch\n--- got ---\n%s--- want ---\n%s", output.String(), want)
 	}
@@ -196,17 +183,17 @@ func TestShowPlanOnlyChangeAndAllReady(t *testing.T) {
 		{
 			name: "one configuration change",
 			plan: plan.Plan{Core: readyCore(), ConfigureGit: true},
-			want: "Plan\n\nIdentity and access\n  git  configure  user identity; input required\n\nUnchanged\n  7 core components\n",
+			want: "Plan\n\nIdentity and access\n  git  configure  user identity; input required\n\nUnchanged\n  5 core components\n",
 		},
 		{
 			name: "all ready",
 			plan: plan.Plan{Core: readyCore(), Applications: readyApplications()},
-			want: "Plan\n\nNo changes\n  workstation is already ready\n\nUnchanged\n  7 core components\n  8 applications\n",
+			want: "Plan\n\nNo changes\n  workstation is already ready\n\nUnchanged\n  5 core components\n  8 applications\n",
 		},
 		{
 			name: "no mutations with unavailable host-key freshness",
 			plan: plan.Plan{Core: readyCore(), Applications: readyApplications(), SSHHostKeyFreshness: plan.SSHHostKeyFreshnessUnavailable},
-			want: "Plan\n\nNo changes planned\n\nChecks\n  GitHub SSH host-key freshness  unavailable  retry later\n\nUnchanged\n  7 core components\n  8 applications\n",
+			want: "Plan\n\nNo changes planned\n\nChecks\n  GitHub SSH host-key freshness  unavailable  retry later\n\nUnchanged\n  5 core components\n  8 applications\n",
 		},
 	}
 	for _, test := range tests {
@@ -265,7 +252,7 @@ func TestProgressAndFailureRenderingRemainStructured(t *testing.T) {
 
 func TestPlanActionVocabularyIsCompleteAndClosed(t *testing.T) {
 	p := plan.Plan{
-		EnableMultilib: true, FullUpgrade: true, BootstrapParu: true,
+		EnableMultilib: true, FullUpgrade: true,
 		Applications: []plan.Application{{
 			Declaration: config.Application{Identifier: "example", Source: "pacman"}, State: "install",
 			Services: []string{"example.service"},
@@ -322,6 +309,7 @@ func realWorkstationPlan(t *testing.T) plan.Plan {
 			"librewolf-bin": true, "mullvad-browser-bin": true, "mullvad-vpn": true,
 			"discord": true, "spotify-launcher": true, "steam": true,
 		},
+		Services: map[string]bool{"mullvad-daemon.service": true},
 		Foreign:  map[string]bool{"librewolf-bin": true, "mullvad-browser-bin": true},
 		Flatpaks: map[string]bool{}, Flathub: true, Multilib: true,
 		GitName: "User", GitEmail: "user@example.com",
@@ -331,10 +319,7 @@ func realWorkstationPlan(t *testing.T) plan.Plan {
 		pacman:  map[string]plan.Package{"bitwarden": {Name: "bitwarden", Repository: "extra"}},
 		flatpak: map[string]bool{"com.tutanota.Tutanota": true},
 	}
-	p, err := plan.Build(context.Background(), config.Config{Version: 1, Applications: applications}, state, resolver)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := resolveAndPlan(context.Background(), config.Config{Version: 2, Applications: applications}, state, resolver)
 	return p
 }
 
@@ -394,4 +379,8 @@ func readyApplications() []plan.Application {
 		applications = append(applications, plan.Application{Declaration: config.Application{Identifier: identifier, Source: "pacman"}, State: "ready"})
 	}
 	return applications
+}
+
+func resolveAndPlan(ctx context.Context, cfg config.Config, state plan.State, resolver resolve.MetadataResolver) plan.Plan {
+	return plan.Build(cfg, state, resolve.Applications(ctx, cfg, state, resolver))
 }

@@ -154,7 +154,7 @@ func TestAURApplicationBuildIsPinnedNoninteractiveAndInstallsOnlySelectedOutput(
 		AUROutputs:         []string{"browser-bin"},
 		AURExplicitOutputs: []string{"browser-bin"},
 		AURDependencies:    []plan.OfficialDependency{{Requirement: "base-devel", Satisfied: true}, {Requirement: "builder", Provider: "builder", Packages: []string{"builder"}}, {Requirement: "runtime", Provider: "runtime", Packages: []string{"runtime"}}},
-		AURPackages:        []plan.BootstrapPackage{{Name: "builder", Purposes: []string{"build"}}, {Name: "runtime", Purposes: []string{"runtime"}}},
+		AURPackages:        []plan.BuildPackage{{Name: "builder", Purposes: []string{"build"}}, {Name: "runtime", Purposes: []string{"runtime"}}},
 	}
 	runner := &applicationAURRunner{}
 	var output bytes.Buffer
@@ -204,7 +204,7 @@ func TestAURApplicationBuildIsPinnedNoninteractiveAndInstallsOnlySelectedOutput(
 func TestAURApplicationPlanShowsOfficialDependenciesBeforeReviewInstall(t *testing.T) {
 	p := plan.Plan{Applications: []plan.Application{{
 		Declaration: config.Application{Identifier: "browser-bin", Source: "aur"}, State: "install",
-		AURPackages: []plan.BootstrapPackage{{Name: "builder", Purposes: []string{"build"}}, {Name: "runtime", Purposes: []string{"runtime"}}},
+		AURPackages: []plan.BuildPackage{{Name: "builder", Purposes: []string{"build"}}, {Name: "runtime", Purposes: []string{"runtime"}}},
 	}}}
 	var output bytes.Buffer
 	(Runtime{Out: &output}).showPlan(p)
@@ -244,7 +244,7 @@ func TestAURDeclaredOfficialDependencyIsInstalledExplicitly(t *testing.T) {
 		AUROutputs:         []string{"browser-bin"},
 		AURExplicitOutputs: []string{"browser-bin"},
 		AURDependencies:    []plan.OfficialDependency{{Requirement: "shared", Provider: "shared", Packages: []string{"shared"}}},
-		AURPackages:        []plan.BootstrapPackage{{Name: "shared", Purposes: []string{"runtime"}, AsExplicit: true}},
+		AURPackages:        []plan.BuildPackage{{Name: "shared", Purposes: []string{"runtime"}, AsExplicit: true}},
 	}
 	runner := &applicationAURRunner{}
 	manager := aur.Manager{Runner: runner, Review: func(string, map[string]string) error { return nil }}
@@ -273,7 +273,7 @@ func TestAURApplicationFailureContinuesWithUnrelatedApplications(t *testing.T) {
 	}, GitStatus: "ready", SSHStatus: "ready", GitHubStatus: "ready"}
 	var output bytes.Buffer
 	runner := &prepareRunner{}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 	if code != Issues || !strings.Contains(output.String(), "broken-bin") || !strings.Contains(output.String(), "org.example.Working  install  flatpak") {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}

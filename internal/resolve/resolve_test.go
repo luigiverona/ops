@@ -3,6 +3,7 @@ package resolve
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -31,18 +32,9 @@ func TestDisabledMultilibPackageResolvesThroughOfficialAPI(t *testing.T) {
 	})}
 	resolver := Resolver{Runner: missingRunner{}, Client: client}
 	pkg, found, err := resolver.Pacman(context.Background(), "steam")
-	if err != nil || !found || pkg.Repository != "multilib" || len(pkg.Required) != 1 {
+	if err != nil || !found || pkg.Repository != "multilib" || pkg.Name != "steam" {
 		t.Fatalf("package=%#v found=%v err=%v", pkg, found, err)
 	}
-}
-
-type aurSourceRunner struct{ commit string }
-
-func (f aurSourceRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
-	if spec.Name == "git" && len(spec.Args) == 3 && spec.Args[0] == "ls-remote" && spec.Args[2] == "HEAD" {
-		return run.Result{Stdout: f.commit + "\tHEAD\n"}, nil
-	}
-	return run.Result{}, errors.New("unexpected command")
 }
 
 type countingRunner struct{ calls int }
@@ -55,13 +47,21 @@ func (f *countingRunner) Run(_ context.Context, _ run.Spec) (run.Result, error) 
 func TestAURSourcePinsMetadataToExactGitCommit(t *testing.T) {
 	const commit = "0123456789012345678901234567890123456789"
 	client := &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(r.URL.Path, "/info/refs") {
+			body := "001e# service=git-upload-pack\n0000" + packet(commit+" HEAD\x00object-format=sha1\n") + "0000"
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		}
 		if r.URL.Query().Get("h") != "paru" || r.URL.Query().Get("id") != commit {
 			t.Fatalf("unpinned metadata request: %s", r.URL.String())
 		}
 		body := "pkgbase = paru\n\tpkgver = 2.1.0\n\tpkgrel = 2\n\tmakedepends = cargo\n\npkgname = paru\n"
 		return &http.Response{StatusCode: 200, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
 	})}
-	source, found, err := (Resolver{Runner: aurSourceRunner{commit: commit}, Client: client}).AURSource(context.Background(), "paru")
+	runner := &countingRunner{}
+	source, found, err := (Resolver{Runner: runner, Client: client}).AURSource(context.Background(), "paru")
+	if runner.calls != 0 {
+		t.Fatal("source discovery invoked a local command")
+	}
 	if err != nil || !found || source.Commit != commit || source.Metadata.PackageBase != "paru" || strings.Join(source.Metadata.MakeDepends, ",") != "cargo" {
 		t.Fatalf("source=%#v found=%v err=%v", source, found, err)
 	}
@@ -272,3 +272,5 @@ func TestOfficialTransactionIsConcreteDeterministicAndNoninteractive(t *testing.
 		t.Fatalf("query=%#v", runner.spec)
 	}
 }
+
+func packet(value string) string { return fmt.Sprintf("%04x%s", len(value)+4, value) }
