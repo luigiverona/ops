@@ -182,18 +182,7 @@ func TestBuildRejectsUnsafePlannedSourceIdentityBeforeFilesystemUse(t *testing.T
 	}
 }
 
-func TestBootstrapParuRejectsNonParuSourceBeforeFilesystemUse(t *testing.T) {
-	runner := &bootstrapRunner{}
-	err := (Manager{Runner: runner}).BootstrapParu(context.Background(), plan.AURSource{
-		Commit:   "0123456789012345678901234567890123456789",
-		Metadata: aurmeta.Metadata{PackageBase: "other", Packages: []aurmeta.Package{{Name: "paru"}}},
-	}, []string{"paru"}, func() error { return nil }, func(string, []string) error { return nil })
-	if err == nil || len(runner.calls) != 0 {
-		t.Fatalf("non-paru bootstrap source reached filesystem work: err=%v calls=%#v", err, runner.calls)
-	}
-}
-
-func TestBootstrapParuReviewDriftBuildAndInstallOrder(t *testing.T) {
+func TestPinnedBuildReviewDriftBuildAndInstallOrder(t *testing.T) {
 	const commit = "0123456789012345678901234567890123456789"
 	const srcinfo = "pkgbase = paru\n\tpkgver = 1\n\tpkgrel = 1\n\tmakedepends = cargo\n\npkgname = paru\n"
 
@@ -204,7 +193,7 @@ func TestBootstrapParuReviewDriftBuildAndInstallOrder(t *testing.T) {
 			order = append(order, "review")
 			return nil
 		}}
-		err := manager.BootstrapParu(context.Background(), plan.AURSource{Commit: commit, Metadata: paruMetadata(t, srcinfo)}, []string{"paru"}, func() error {
+		err := manager.Build(context.Background(), plan.AURSource{Commit: commit, Metadata: paruMetadata(t, srcinfo)}, "paru", []string{"paru"}, func() error {
 			order = append(order, "dependencies")
 			return nil
 		}, func(buildDir string, artifacts []string) error {
@@ -247,7 +236,7 @@ func TestBootstrapParuReviewDriftBuildAndInstallOrder(t *testing.T) {
 		runner := &bootstrapRunner{commit: commit, srcinfo: srcinfo}
 		mutated := false
 		manager := Manager{Runner: runner, Review: func(string, map[string]string) error { return errors.New("declined") }}
-		err := manager.BootstrapParu(context.Background(), plan.AURSource{Commit: commit, Metadata: paruMetadata(t, srcinfo)}, []string{"paru"}, func() error {
+		err := manager.Build(context.Background(), plan.AURSource{Commit: commit, Metadata: paruMetadata(t, srcinfo)}, "paru", []string{"paru"}, func() error {
 			mutated = true
 			return nil
 		}, func(string, []string) error {
@@ -268,7 +257,7 @@ func TestBootstrapParuReviewDriftBuildAndInstallOrder(t *testing.T) {
 		runner := &bootstrapRunner{commit: commit, srcinfo: strings.Replace(srcinfo, "cargo", "go", 1)}
 		mutated := false
 		manager := Manager{Runner: runner, Review: func(string, map[string]string) error { return nil }}
-		err := manager.BootstrapParu(context.Background(), plan.AURSource{Commit: commit, Metadata: paruMetadata(t, srcinfo)}, []string{"paru"}, func() error {
+		err := manager.Build(context.Background(), plan.AURSource{Commit: commit, Metadata: paruMetadata(t, srcinfo)}, "paru", []string{"paru"}, func() error {
 			mutated = true
 			return nil
 		}, func(string, []string) error {
@@ -286,7 +275,7 @@ func TestBootstrapParuReviewDriftBuildAndInstallOrder(t *testing.T) {
 		runner := &bootstrapRunner{commit: commit, srcinfo: changed}
 		mutated := false
 		manager := Manager{Runner: runner, Review: func(string, map[string]string) error { return nil }}
-		err := manager.BootstrapParu(context.Background(), plan.AURSource{Commit: commit, Metadata: paruMetadata(t, planned)}, []string{"paru"}, func() error {
+		err := manager.Build(context.Background(), plan.AURSource{Commit: commit, Metadata: paruMetadata(t, planned)}, "paru", []string{"paru"}, func() error {
 			mutated = true
 			return nil
 		}, func(string, []string) error {

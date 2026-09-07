@@ -39,6 +39,26 @@ func generate(t *testing.T, m Manager, name string) {
 
 type recordingRunner struct{ calls []run.Spec }
 
+func TestDiscoverRejectsUnsafeManagedPathsBeforeCommands(t *testing.T) {
+	for _, target := range []string{".ssh", ".ssh/ops", ".ssh/ops.pub"} {
+		t.Run(target, func(t *testing.T) {
+			home, outside := t.TempDir(), t.TempDir()
+			if target != ".ssh" {
+				if err := os.Mkdir(filepath.Join(home, ".ssh"), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Symlink(outside, filepath.Join(home, target)); err != nil {
+				t.Fatal(err)
+			}
+			runner := &recordingRunner{}
+			if _, err := (Manager{Home: home, Runner: runner}).Discover(context.Background()); err == nil || len(runner.calls) != 0 {
+				t.Fatalf("unsafe path reached commands: %v %v", err, runner.calls)
+			}
+		})
+	}
+}
+
 func (r *recordingRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
 	r.calls = append(r.calls, spec)
 	return run.Result{}, errors.New("stop after command inspection")

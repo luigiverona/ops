@@ -37,7 +37,7 @@ func TestExecRequiresDeclaredTerminalBoundary(t *testing.T) {
 func TestExecEOFStdinDoesNotConsumeInheritedInput(t *testing.T) {
 	inherited := strings.NewReader("must remain unread\n")
 	_, err := (Exec{In: inherited}).Run(context.Background(), Spec{
-		Name: "sh", Args: []string{"-c", "read value"}, Stdin: strings.NewReader(""),
+		Name: "sh", Args: []string{"-c", "read value"},
 	})
 	if err == nil {
 		t.Fatal("command unexpectedly read inherited input")
@@ -45,6 +45,23 @@ func TestExecEOFStdinDoesNotConsumeInheritedInput(t *testing.T) {
 	remaining, readErr := io.ReadAll(inherited)
 	if readErr != nil || string(remaining) != "must remain unread\n" {
 		t.Fatalf("remaining=%q err=%v", remaining, readErr)
+	}
+}
+
+func TestExecRefusesTruncatedParsedOutputButAllowsBuildLogs(t *testing.T) {
+	for _, allow := range []bool{false, true} {
+		result, err := (Exec{}).Run(context.Background(), Spec{Name: "sh", Args: []string{"-c", "head -c 2097153 /dev/zero"}, AllowTruncatedOutput: allow})
+		if (err == nil) != allow || len(result.Stdout) != captureLimit {
+			t.Fatalf("allow=%v bytes=%d err=%v", allow, len(result.Stdout), err)
+		}
+	}
+}
+
+func TestExecUsesStableLocale(t *testing.T) {
+	t.Setenv("LC_ALL", "invalid-locale")
+	result, err := (Exec{}).Run(context.Background(), Spec{Name: "sh", Args: []string{"-c", `printf '%s' "$LC_ALL"`}})
+	if err != nil || result.Stdout != "C" {
+		t.Fatalf("locale=%q err=%v", result.Stdout, err)
 	}
 }
 

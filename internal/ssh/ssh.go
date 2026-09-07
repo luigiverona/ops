@@ -42,6 +42,20 @@ func (m Manager) dir() string { return filepath.Join(m.Home, ".ssh") }
 
 // Discover validates all regular files by content and never follows symlinks.
 func (m Manager) Discover(ctx context.Context) ([]Identity, error) {
+	if info, err := os.Lstat(m.dir()); err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, errors.New("~/.ssh is not a safe regular directory")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	for _, name := range []string{"ops", "ops.pub"} {
+		if info, err := os.Lstat(filepath.Join(m.dir(), name)); err == nil && !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("managed SSH identity %s is not a regular file", name)
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
 	entries, err := os.ReadDir(m.dir())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil

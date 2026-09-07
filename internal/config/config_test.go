@@ -3,30 +3,104 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestV2StrictDeclarations(t *testing.T) {
+	for _, data := range []string{
+		"version=2\npacman=[\"git\",\"git\"]",
+		"version=2\naur=[\"pkg\",\"pkg\"]",
+		"version=2\nflatpak=[\"org.example.App\",\"org.example.App\"]",
+		"version=2\npacman=[\"--help\"]",
+		"version=2\npacman=[\"pkg>=2\"]",
+		"version=2\naur=[\"../escape\"]",
+		"version=2\naur=[\"..\"]",
+		"version=2\npacman=[\" git\"]",
+		"version=2\nflatpak=[\"org.example.App/stable\"]",
+		"version=2\nflatpak=[\"App\"]",
+		"version=2\nunknown=[]",
+		"version=2\npacman=[\"pkg\"]\naur=[\"pkg\"]",
+		"version=2\n[apps]\nbrowser=[]",
+	} {
+		if _, err := Parse([]byte(data)); err == nil {
+			t.Fatalf("accepted %q", data)
+		}
+	}
+	first, err := Parse([]byte("version=2\npacman=[\"z\",\"a\"]\naur=[\"pkg\"]"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Parse([]byte("version=2\naur=[\"pkg\"]\npacman=[\"a\",\"z\"]"))
+	if err != nil || !reflect.DeepEqual(first, second) {
+		t.Fatalf("order: %#v %#v %v", first, second, err)
+	}
+	if _, err := Parse([]byte("version=2")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse([]byte("version=1\n[apps]\nbrowser=[]")); err == nil || !strings.Contains(err.Error(), "migrate") {
+		t.Fatalf("migration: %v", err)
+	}
+}
+
+func TestInstallerDefaultMatches(t *testing.T) {
+	data, err := os.ReadFile("../../script/install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, ok := strings.Cut(string(data), "<<'OPS_CONFIG'\n")
+	if !ok {
+		t.Fatal("installer config marker missing")
+	}
+	got, _, ok := strings.Cut(rest, "\nOPS_CONFIG")
+	if !ok || got+"\n" != Default {
+		t.Fatal("installer default differs from config.Default")
+	}
+}
+
+func TestDocumentedConfigurationExamples(t *testing.T) {
+	for _, path := range []string{"../../README.md", "../../docs/configuration.md"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		blocks := strings.Split(string(data), "```toml\n")[1:]
+		if len(blocks) == 0 {
+			t.Fatalf("no configuration example in %s", path)
+		}
+		for _, block := range blocks {
+			body, _, ok := strings.Cut(block, "```")
+			if !ok {
+				t.Fatalf("unclosed TOML example in %s", path)
+			}
+			_, err := Parse([]byte(body))
+			if strings.HasPrefix(body, "version = 1\n") && strings.Contains(path, "configuration.md") {
+				if err == nil || !strings.Contains(err.Error(), "migrate") {
+					t.Fatal("legacy migration behavior drifted")
+				}
+			} else if err != nil {
+				t.Fatalf("invalid current example in %s: %v", path, err)
+			}
+		}
+	}
+}
 
 func TestDefaultConfig(t *testing.T) {
 	cfg, err := Parse([]byte(Default))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Version != 1 || len(cfg.Applications) != 0 {
+	if cfg.Version != Version || len(cfg.Applications) != 0 {
 		t.Fatalf("unexpected default: %#v", cfg)
 	}
 }
 
 func TestValidSourcesAndCasing(t *testing.T) {
-	data := `version = 1
-[apps]
-browser = [" pacman:firefox "]
-vpn = ["aur:mullvad-vpn-bin"]
-vault = ["flatpak:Com.Example.Vault"]
-mail=[]
-social=[]
-music=[]
-game=[]
+	data := `version = 2
+pacman = ["firefox"]
+aur = ["mullvad-vpn-bin"]
+flatpak = ["Com.Example.Vault"]
 `
 	cfg, err := Parse([]byte(data))
 	if err != nil {
@@ -38,29 +112,10 @@ game=[]
 }
 
 func TestInvalidConfigs(t *testing.T) {
-	tests := map[string]string{
-		"malformed TOML":  `version = [`,
-		"missing version": `[apps]`,
-		"unsupported version": `version=2
-[apps]`,
-		"unknown category": `version=1
-[apps]
-office=[]`,
-		"unknown source":   configWith("browser", "snap:firefox"),
-		"missing colon":    configWith("browser", "pacman"),
-		"empty source":     configWith("browser", ":firefox"),
-		"empty identifier": configWith("browser", "pacman: "),
-		"duplicate declaration": `version=1
-[apps]
-browser=["pacman:firefox"]
-vpn=[" PACMAN : firefox "]`,
-	}
-	for name, data := range tests {
-		t.Run(name, func(t *testing.T) {
-			if _, err := Parse([]byte(data)); err == nil {
-				t.Fatal("expected validation error")
-			}
-		})
+	for _, data := range []string{"version = [", "pacman=[]", "version=3", "version=2\npacman=[1]", "version=2\npacman=[\"\"]", "version=2\n[unknown]"} {
+		if _, err := Parse([]byte(data)); err == nil {
+			t.Fatalf("accepted %q", data)
+		}
 	}
 }
 
@@ -122,11 +177,4 @@ func TestConfigurationPathsRejectSymlinksAndNonRegularFiles(t *testing.T) {
 			t.Fatal("expected non-regular file rejection")
 		}
 	})
-}
-
-func configWith(category, declaration string) string {
-	var b strings.Builder
-	b.WriteString("version=1\n[apps]\n")
-	b.WriteString(category + "=[\"" + declaration + "\"]\n")
-	return b.String()
 }

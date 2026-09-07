@@ -115,7 +115,7 @@ func TestDoctorReportsUnavailableHostKeyFreshnessWithoutMutation(t *testing.T) {
 	}
 	var out bytes.Buffer
 	runtime := Runtime{
-		Runner: fake, Out: &out, Err: &out, Home: home, EUID: func() int { return 1000 }, OSRelease: osRelease,
+		Runner: fake, Out: &out, Err: &out, Home: home, EUID: func() int { return 1000 }, OSRelease: osRelease, PacmanConf: testPacmanConf(t),
 		SSHHTTP: metadata.Client(), SSHMetadataURL: metadata.URL,
 	}
 	code := runtime.Doctor(context.Background())
@@ -161,7 +161,7 @@ func TestDoctorIsReadOnlyAndNeverUsesSudo(t *testing.T) {
 	before, _ := os.ReadFile(path)
 	var out bytes.Buffer
 	fake := &doctorRunner{}
-	runtime := Runtime{Runner: fake, Out: &out, Err: &out, Home: home, EUID: func() int { return 1000 }, OSRelease: osRelease}
+	runtime := Runtime{Runner: fake, Out: &out, Err: &out, Home: home, EUID: func() int { return 1000 }, OSRelease: osRelease, PacmanConf: testPacmanConf(t)}
 	code := runtime.Doctor(context.Background())
 	if code != Issues {
 		t.Fatalf("code=%d output=%s", code, out.String())

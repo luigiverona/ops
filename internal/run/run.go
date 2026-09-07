@@ -3,6 +3,7 @@ package run
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -22,6 +23,8 @@ type Spec struct {
 	// terminal. Interactive commands without it are rejected to prevent an
 	// implementation shortcut from leaking arbitrary child output.
 	Interaction string
+	// AllowTruncatedOutput is only for logs, never parsed command output.
+	AllowTruncatedOutput bool
 }
 
 // Result contains captured output. Output is limited by callers when reported.
@@ -48,9 +51,9 @@ func (e Exec) Run(ctx context.Context, spec Spec) (Result, error) {
 	}
 	cmd := exec.CommandContext(ctx, spec.Name, spec.Args...)
 	cmd.Dir = spec.Dir
-	cmd.Env = append(os.Environ(), spec.Env...)
+	cmd.Env = append(append(os.Environ(), "LC_ALL=C"), spec.Env...)
 	cmd.Stdin = spec.Stdin
-	if cmd.Stdin == nil {
+	if cmd.Stdin == nil && spec.Interactive {
 		cmd.Stdin = e.In
 	}
 	var stdout, stderr tailBuffer
@@ -62,6 +65,9 @@ func (e Exec) Run(ctx context.Context, spec Spec) (Result, error) {
 		cmd.Stderr = &stderr
 	}
 	err := cmd.Run()
+	if !spec.Interactive && !spec.AllowTruncatedOutput && (stdout.truncated || stderr.truncated) {
+		err = errors.Join(err, errors.New("command output exceeded capture limit; refusing incomplete inspection"))
+	}
 	result := Result{Stdout: stdout.String(), Stderr: stderr.String()}
 	if err != nil {
 		return result, &Error{Name: spec.Name, Args: append([]string(nil), spec.Args...), Stderr: strings.TrimSpace(result.Stderr), Presented: spec.Interactive, Err: err}
@@ -69,17 +75,22 @@ func (e Exec) Run(ctx context.Context, spec Spec) (Result, error) {
 	return result, nil
 }
 
-const captureLimit = 64 * 1024
+const captureLimit = 2 * 1024 * 1024
 
-type tailBuffer struct{ data []byte }
+type tailBuffer struct {
+	data      []byte
+	truncated bool
+}
 
 func (b *tailBuffer) Write(p []byte) (int, error) {
 	n := len(p)
 	if n >= captureLimit {
+		b.truncated = b.truncated || n > captureLimit || len(b.data) > 0
 		b.data = append(b.data[:0], p[n-captureLimit:]...)
 		return n, nil
 	}
 	if len(b.data)+n > captureLimit {
+		b.truncated = true
 		drop := len(b.data) + n - captureLimit
 		copy(b.data, b.data[drop:])
 		b.data = b.data[:len(b.data)-drop]

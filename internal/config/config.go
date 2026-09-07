@@ -7,75 +7,62 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+	"regexp"
+	"sort"
+
+	"github.com/luigiverona/ops/internal/aurmeta"
 
 	"github.com/pelletier/go-toml/v2"
 )
 
-const Version = 1
+const Version = 2
 
-var Categories = []string{"browser", "vpn", "vault", "mail", "social", "music", "game"}
+const Default = `version = 2
 
-const Default = `# ops configuration
-#
-# Define each application using the "source:package" format.
-# Supported sources are "pacman", "aur", and "flatpak".
-# For pacman and AUR, use the exact package name; for Flatpak, use the exact application ID.
-# Add applications under the appropriate category below, and leave unused categories empty.
-# ops automatically installs and configures any required dependencies or system prerequisites.
-# ops installs declared applications but never removes applications that are no longer listed.
-# Applications that cannot be installed are skipped and reported as unresolved when the run finishes.
-#
-# Example:
-#
-# [apps]
-# browser = ["aur:librewolf-bin", "aur:mullvad-browser-bin"]
-# vpn = ["pacman:mullvad-vpn"]
-# vault = ["pacman:bitwarden"]
-# mail = ["flatpak:com.tutanota.Tutanota"]
-# social = ["pacman:discord"]
-# music = ["pacman:spotify-launcher"]
-# game = ["pacman:steam"]
-
-version = 1
-
-[apps]
-browser = []
-vpn = []
-vault = []
-mail = []
-social = []
-music = []
-game = []
+pacman = []
+aur = []
+flatpak = []
 `
 
 type rawConfig struct {
-	Version *int    `toml:"version"`
-	Apps    rawApps `toml:"apps"`
+	Version *int     `toml:"version"`
+	Pacman  []string `toml:"pacman"`
+	AUR     []string `toml:"aur"`
+	Flatpak []string `toml:"flatpak"`
 }
 
-type rawApps struct {
-	Browser []string `toml:"browser"`
-	VPN     []string `toml:"vpn"`
-	Vault   []string `toml:"vault"`
-	Mail    []string `toml:"mail"`
-	Social  []string `toml:"social"`
-	Music   []string `toml:"music"`
-	Game    []string `toml:"game"`
-}
+// Source is an exact package source. No fallback is permitted.
+type Source string
 
-// Application is a validated application declaration.
+const (
+	Pacman  Source = "pacman"
+	AUR     Source = "aur"
+	Flatpak Source = "flatpak"
+)
+
+// Application is a validated, source-qualified declaration.
 type Application struct {
-	Category   string
-	Source     string
+	Source     Source
 	Identifier string
 }
 
-// Config is the validated v1 configuration.
 type Config struct {
 	Version      int
 	Applications []Application
 }
+
+// ValidIdentifier rejects paths, options, versions, refs and fuzzy names.
+func ValidIdentifier(source Source, id string) bool {
+	switch source {
+	case Pacman, AUR:
+		return id != "." && id != ".." && aurmeta.ValidPackageName(id)
+	case Flatpak:
+		return len(id) <= 255 && flatpakID.MatchString(id)
+	}
+	return false
+}
+
+var flatpakID = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+\.[A-Za-z_][A-Za-z0-9_-]*$`)
 
 // Path returns the canonical configuration path for home.
 func Path(home string) string { return filepath.Join(home, ".config", "ops", "apps.toml") }
@@ -92,68 +79,56 @@ func Load(path string) (Config, error) {
 	return Parse(b)
 }
 
-// Parse strictly decodes and validates v1 configuration data.
+// Parse rejects legacy schemas with migration guidance and never rewrites files.
 func Parse(data []byte) (Config, error) {
+	var header struct {
+		Version *int `toml:"version"`
+	}
+	if err := toml.Unmarshal(data, &header); err != nil {
+		return Config{}, fmt.Errorf("invalid configuration: %w", err)
+	}
+	if header.Version == nil {
+		return Config{}, errors.New("invalid configuration: missing version")
+	}
+	if *header.Version != Version {
+		return Config{}, fmt.Errorf("unsupported configuration version %d; migrate to version 2 source lists (see docs/configuration.md); configuration was not changed", *header.Version)
+	}
 	var raw rawConfig
 	dec := toml.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&raw); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration: %w", err)
 	}
-	if raw.Version == nil {
-		return Config{}, errors.New("invalid configuration: missing version")
-	}
-	if *raw.Version != Version {
-		return Config{}, fmt.Errorf("invalid configuration: unsupported version %d", *raw.Version)
-	}
-
-	values := map[string][]string{
-		"browser": raw.Apps.Browser, "vpn": raw.Apps.VPN, "vault": raw.Apps.Vault,
-		"mail": raw.Apps.Mail, "social": raw.Apps.Social, "music": raw.Apps.Music,
-		"game": raw.Apps.Game,
-	}
-	seen := make(map[string]string)
-	cfg := Config{Version: *raw.Version}
-	for _, category := range Categories {
-		for i, declaration := range values[category] {
-			app, err := parseApplication(category, declaration)
-			if err != nil {
-				return Config{}, fmt.Errorf("invalid configuration: apps.%s[%d]: %w", category, i, err)
+	cfg := Config{Version: Version}
+	seen := make(map[Application]bool)
+	packageSources := make(map[string]Source)
+	for _, group := range []struct {
+		source Source
+		ids    []string
+	}{
+		{Pacman, raw.Pacman}, {AUR, raw.AUR}, {Flatpak, raw.Flatpak},
+	} {
+		ids := append([]string(nil), group.ids...)
+		sort.Strings(ids)
+		for _, id := range ids {
+			app := Application{Source: group.source, Identifier: id}
+			if !ValidIdentifier(app.Source, id) {
+				return Config{}, fmt.Errorf("invalid configuration: malformed %s identifier %q", app.Source, id)
 			}
-			key := app.Source + "\x00" + app.Identifier
-			if previous, ok := seen[key]; ok {
-				return Config{}, fmt.Errorf("invalid configuration: duplicate declaration %s:%s in %s and %s", app.Source, app.Identifier, previous, category)
+			if seen[app] {
+				return Config{}, fmt.Errorf("invalid configuration: duplicate declaration %s:%s", app.Source, id)
 			}
-			seen[key] = category
+			seen[app] = true
+			if app.Source != Flatpak {
+				if source, ok := packageSources[id]; ok && source != app.Source {
+					return Config{}, fmt.Errorf("invalid configuration: package %q cannot be both pacman and AUR", id)
+				}
+				packageSources[id] = app.Source
+			}
 			cfg.Applications = append(cfg.Applications, app)
 		}
 	}
 	return cfg, nil
-}
-
-func parseApplication(category, declaration string) (Application, error) {
-	declaration = strings.TrimSpace(declaration)
-	colon := strings.IndexByte(declaration, ':')
-	if colon < 0 {
-		return Application{}, errors.New("missing ':'")
-	}
-	source := strings.ToLower(strings.TrimSpace(declaration[:colon]))
-	identifier := strings.TrimSpace(declaration[colon+1:])
-	if source == "" {
-		return Application{}, errors.New("empty source")
-	}
-	if identifier == "" {
-		return Application{}, errors.New("empty identifier")
-	}
-	switch source {
-	case "pacman", "aur", "flatpak":
-	default:
-		return Application{}, fmt.Errorf("unsupported source %q", source)
-	}
-	if strings.ContainsAny(identifier, "\x00\r\n") {
-		return Application{}, errors.New("identifier contains control characters")
-	}
-	return Application{Category: category, Source: source, Identifier: identifier}, nil
 }
 
 // EnsureDefault creates the default configuration with private-by-default

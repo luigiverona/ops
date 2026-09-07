@@ -24,15 +24,6 @@ type Manager struct {
 	Review Review
 }
 
-// BootstrapParu reviews one pinned AUR source, verifies its metadata, builds as
-// the normal user, and delegates only the exact planned privileged operations.
-func (m Manager) BootstrapParu(ctx context.Context, source plan.AURSource, outputs []string, afterReview func() error, install func(string, []string) error) error {
-	if source.Metadata.PackageBase != "paru" {
-		return errors.New("invalid planned paru source")
-	}
-	return m.Build(ctx, source, "paru", outputs, afterReview, install)
-}
-
 // Build reviews and builds one exact AUR source as the normal user, then
 // delegates only installation of exact selected artifacts to its caller.
 func (m Manager) Build(ctx context.Context, source plan.AURSource, target string, outputs []string, afterReview func() error, install func(string, []string) error) error {
@@ -49,7 +40,7 @@ func (m Manager) Build(ctx context.Context, source plan.AURSource, target string
 		}
 		seenOutputs[output] = true
 	}
-	dir, err := os.MkdirTemp("", "ops-paru-*")
+	dir, err := os.MkdirTemp("", "ops-aur-*")
 	if err != nil {
 		return err
 	}
@@ -114,7 +105,7 @@ func (m Manager) Build(ctx context.Context, source plan.AURSource, target string
 	if err != nil || !sameFiles(files, currentFiles) {
 		return errors.New("reviewed AUR files changed before build")
 	}
-	if _, err := m.Runner.Run(ctx, run.Spec{Name: "makepkg", Dir: repo, Stdin: strings.NewReader("")}); err != nil {
+	if _, err := m.Runner.Run(ctx, run.Spec{Name: "makepkg", Dir: repo, AllowTruncatedOutput: true, Stdin: strings.NewReader("")}); err != nil {
 		return err
 	}
 	result, err = m.Runner.Run(ctx, run.Spec{Name: "makepkg", Args: []string{"--packagelist"}, Dir: repo, Stdin: strings.NewReader("")})

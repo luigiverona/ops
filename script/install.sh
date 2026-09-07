@@ -167,37 +167,11 @@ fi
 created=no
 if [ ! -e "$config" ] && [ ! -L "$config" ]; then
     if (umask 077; set -C; cat > "$config" <<'OPS_CONFIG'
-# ops configuration
-#
-# Define each application using the "source:package" format.
-# Supported sources are "pacman", "aur", and "flatpak".
-# For pacman and AUR, use the exact package name; for Flatpak, use the exact application ID.
-# Add applications under the appropriate category below, and leave unused categories empty.
-# ops automatically installs and configures any required dependencies or system prerequisites.
-# ops installs declared applications but never removes applications that are no longer listed.
-# Applications that cannot be installed are skipped and reported as unresolved when the run finishes.
-#
-# Example:
-#
-# [apps]
-# browser = ["aur:librewolf-bin", "aur:mullvad-browser-bin"]
-# vpn = ["pacman:mullvad-vpn"]
-# vault = ["pacman:bitwarden"]
-# mail = ["flatpak:com.tutanota.Tutanota"]
-# social = ["pacman:discord"]
-# music = ["pacman:spotify-launcher"]
-# game = ["pacman:steam"]
+version = 2
 
-version = 1
-
-[apps]
-browser = []
-vpn = []
-vault = []
-mail = []
-social = []
-music = []
-game = []
+pacman = []
+aur = []
+flatpak = []
 OPS_CONFIG
     ); then
         created=yes

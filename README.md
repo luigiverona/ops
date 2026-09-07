@@ -1,286 +1,125 @@
 # ops
 
-`ops` is an opinionated workstation preparer for official Arch Linux x86_64.
-It reconciles:
+An opinionated, secure workstation reconciler for official Arch Linux x86_64.
+It prepares Git, SSH, GitHub access, and the applications you declare. Run it as
+your normal user, never with `sudo ops`.
 
-```text
-workstation = core + declared applications
-```
-
-It installs missing declared applications and supporting functionality, but
-never removes an application because it disappeared from the configuration.
-
-## Platform and execution model
-
-The supported platform is exactly official Arch Linux on x86_64. Arch Linux
-ARM, derivatives such as Manjaro and EndeavourOS, other Linux distributions,
-macOS, and Windows are rejected.
-
-Run `ops` as the normal desktop user. `sudo ops` is rejected because AUR builds,
-user Flatpaks, Git configuration, SSH keys, and GitHub authentication must
-remain owned by that user. After an accepted plan, `ops` obtains one `sudo -v`
-authorization and safely refreshes that timestamp while privileged work is
-active. User-level work never uses sudo.
-
-## Installation
-
-The canonical install command is:
+## Install
 
 ```sh
 curl -fsSL https://ops.luigiverona.dev/install | sh
 ```
 
-The POSIX installer detects the exact platform, resolves the latest release,
-downloads `ops-linux-x86_64`, `checksums.txt`, and `checksums.txt.sig`, verifies
-the GPG signature and binary SHA-256, asks through `/dev/tty`, and atomically
-installs `/usr/local/bin/ops`. It creates `~/.config/ops/apps.toml` only when
-absent.
+The installer verifies the signed release and installs only the `ops` binary.
+It creates `~/.config/ops/apps.toml` only if absent; it does not install
+workstation packages. Internet access, sudo, and the official Arch base system
+are required. Git, an AUR helper, and Flatpak need not already exist.
 
-Release trust is provisioned with a reviewed embedded public key and the exact
-release-signing subkey fingerprint
-`EB564BFFD8F63A984BF72A0237A80EDB682BBBFD`. Installer and updater require that
-exact active signing subkey and fail closed on invalid trust or signatures.
-Release hosting is provisioned at `https://ops.luigiverona.dev`. See
-[Release security](docs/release-security.md) for the signing and publication
-model.
+## Quick start
+
+1. Install ops.
+2. Edit `~/.config/ops/apps.toml` with your preferred editor.
+3. Run `ops` in a terminal and review its plan.
+4. Run `ops doctor` to check the result.
+
+An empty application configuration is valid. Git identity input, an SSH key
+passphrase, and GitHub device authentication are interactive when first needed.
+After convergence, another `ops` run reports no changes.
+
+## Configuration
+
+```toml
+version = 2
+
+pacman = ["librewolf", "steam"]
+aur = ["mullvad-browser-bin"]
+flatpak = ["com.tutanota.Tutanota"]
+```
+
+Lists may be omitted or empty. Identifiers are exact and case-sensitive:
+there is no fuzzy matching or fallback between sources. Unknown fields,
+malformed identifiers, duplicates, and contradictory pacman/AUR declarations
+are rejected before changes. Removing a declaration never uninstalls software.
+
+Version 1 requires an explicit edit; ops never silently migrates your file.
+See [configuration and migration](docs/configuration.md).
+
+## What ops manages
+
+- Always: official `git`, `openssh`, and `github-cli`; Git identity; a managed
+  SSH identity and GitHub host trust; GitHub authentication and key reconciliation.
+- When declared: official applications, pinned/reviewed AUR applications, and
+  user-scoped Flatpaks.
+- Only when needed: multilib, AUR build prerequisites including `base-devel`,
+  Flatpak and the user Flathub remote, and required application services.
+
+`paru` is not required. Optional package dependencies are not guessed or
+automatically selected. Themes, application accounts, UI preferences, and
+unrelated personal configuration are not managed.
+
+Package installation is preceded by one full, interactive `pacman -Syu`.
+Prerequisites are installed and checked before dependent work. AUR source review
+precedes its build-dependency installation and normal-user build. A final
+re-inspection determines whether the workstation actually converged.
+See [architecture and dependency policy](docs/architecture.md).
 
 ## Commands
 
-```text
-ops             inspect, plan, confirm, and prepare the workstation
-ops doctor      perform read-only diagnostics
-ops update      verify and install a newer stable release
-ops --help      show command help
-ops --version   show the installed version
-```
+| Command | Purpose |
+| --- | --- |
+| `ops` | Inspect, resolve, plan, confirm, apply, and verify |
+| `ops doctor` | Read-only diagnostics; never sudo, installation, login, or edits |
+| `ops update` | Verify and atomically install a newer signed stable release |
+| `ops --help`, `ops --version` | Help and installed version |
 
-Actionable preparation requires a TTY. A fully converged or diagnostic-only
-invocation can inspect and report without one. `doctor`, `--help`, and
-`--version` remain line-oriented when redirected. There is no dry-run flag and
-there are no other public commands.
+Exit codes: `0` success or top-level decline; `1` actionable issues, unavailable
+checks, or incomplete work; `2` invalid configuration, unsafe state, or a fatal
+operation failure. No-op runs and doctor do not require a TTY.
 
-The preparation plan lists changes rather than repeating every discovered
-ready state. Actions use concrete verbs, application sources occupy a separate
-column, and already satisfied work is reduced to an `Unchanged` summary. For
-example:
+## Safety model
 
-```text
-Plan
+Release signatures require the exact embedded signing fingerprint; there is no
+checksum-only fallback. Plans do not authorize hidden prerequisite installs.
+Sudo is acquired only after confirmation and only for privileged work.
 
-System
-  full system upgrade  upgrade  pacman; confirm transaction in pacman
+AUR instructions are untrusted: review pinned files before approving a build.
+SSH/GitHub key deletion requires separate, explicit confirmation. Managed files
+use protected boundaries and atomic replacement; unrelated keys and host trust
+are preserved. See [workstation security](docs/workstation-security.md) and
+[release security](docs/release-security.md).
 
-Core
-  paru  install  AUR bootstrap; review required
+## Recovery / troubleshooting
 
-Applications
-  bitwarden              install  pacman
-  com.tutanota.Tutanota  install  flatpak
+Run `ops doctor`, resolve the reported cause, then rerun `ops`. There is no
+private convergence database to repair, and interrupted work is not rolled back
+as a whole. A failed core upgrade stops dependent work; unrelated application
+failures are reported separately.
 
-Identity and access
-  SSH identities                review        unrelated local keys
-  github.com SSH configuration  configure     managed identity and host trust
-  github                        authenticate  CLI login
-  GitHub SSH keys               inspect       reconcile after login
-  GitHub SSH key                configure     register after login, if missing
-
-Unchanged
-  5 core components
-  6 applications
-
-Prepare this workstation? [Y/n]
-```
-
-Preparation generally follows inspect -> plan -> confirm -> mutate -> verify.
-After confirmation, `Progress` records identify each operation owned by ops.
-One `Progress` block covers an uninterrupted sequence of operations; a later
-block starts only after `Review` content deliberately interrupts that sequence.
-`Issues` groups unresolved and failed work, and `Final` is emitted once with the
-observed outcome. A plan containing only diagnostics or unavailable checks is a
-true no-op: ops does not request confirmation or sudo and reports `Final`
-directly.
-That single plan confirmation authorizes deterministic listed actions; AUR package
-review remains intentionally separate, as do prompts that collect required values,
-drive external authentication/passphrase flows, or make explicit security review
-and deletion decisions.
-
-For v1.0.1, a full `pacman -Syu` is also intentionally interactive. After the ops
-plan is approved, Pacman presents and owns the final system transaction review and
-confirmation. ops does not use `--noconfirm` or automate Pacman prompts, because
-Pacman can make package replacement, provider-selection, or key-import decisions
-that ops cannot yet represent safely before confirmation.
-Noninteractive subprocess output is captured and included in actionable errors.
-Programs that require package review, upstream decisions, passwords,
-passphrases, or account authentication retain their interactive terminal
-streams. ops marks those streams in `Progress` with an `external` row before the
-program runs. In v1.0.2, GitHub login requests `admin:public_key`, the minimum
-scope needed for ops-managed account SSH-key reconciliation; an existing session
-without it is explicitly planned for `gh auth refresh`. Deferred key
-reconciliation is `inspect`; `Review` appears only when keys are actually
-available for review.
-
-Application dependencies and maintained services are separate planned actions,
-with their owning application retained in the item name:
-
-```text
-Applications
-  mullvad-vpn -> libfoo                  install  pacman
-  mullvad-vpn                            install  pacman
-  mullvad-vpn -> mullvad-daemon.service  enable   systemd
-```
-
-## Applications
-
-Configuration lives at `~/.config/ops/apps.toml`:
-
-```toml
-version = 1
-
-[apps]
-browser = ["pacman:librewolf"]
-vpn = ["pacman:mullvad-vpn"]
-vault = []
-mail = ["flatpak:com.tutanota.Tutanota"]
-social = []
-music = []
-game = ["pacman:steam"]
-```
-
-Supported sources are `pacman`, `aur`, and `flatpak`. Values use exact
-`source:identifier` syntax. The declared source is authoritative: there is no
-fuzzy matching or pacman-to-AUR-to-Flatpak fallback. Malformed TOML, unknown
-versions/categories/sources, empty identifiers, and duplicates are fatal before
-mutation or sudo. A valid but nonexistent identifier is `Unresolved` and does
-not stop unrelated applications.
-
-Required dependencies are handled by the source package manager. Compatible
-direct optional dependencies are considered one level deep; conflicting
-alternatives are skipped rather than guessed. Supporting packages retain
-dependency reason semantics. Objectively necessary maintained services are
-enabled. Themes, application accounts, UI preferences, and subjective defaults
-are not changed.
-
-## Core and Arch behavior
-
-The always-managed core is:
-
-```text
-git  ssh  github  aur  paru  flatpak  flathub
-```
-
-It maps to official `git`, `openssh`, `github-cli`, and `flatpak` packages, a
-reviewed normal-user `paru` bootstrap, user Flathub, and internal `base-devel`.
-
-Repository prerequisites such as `multilib` are planned first. `pacman.conf`
-changes are minimal, staged, checked for concurrent edits, validated by
-`pacman-conf`, and atomically replaced. Package mutations get exactly one full
-`pacman -Syu` before installs. `ops` never uses standalone `pacman -Sy`.
-
-AUR instructions are untrusted community content. The paru bootstrap and
-declared AUR applications display sanitized tracked files and require explicit
-review of a pinned source revision. ops revalidates that source, builds with
-normal-user `makepkg`, and installs only exact staged package outputs; declared
-applications do not delegate dependency or installation decisions to interactive
-paru. Source-declared full PGP fingerprints are read from that pinned metadata,
-planned when absent, fetched through a fixed HKPS endpoint in an isolated
-temporary keyring, and fingerprint-verified before import into the normal
-user's keyring. Existing signing keys are checked by exact primary fingerprint
-in both classic keyrings and GnuPG keyboxd-backed public-key storage. Flatpak
-and Flathub are always user-scoped.
-
-## Idempotency and recovery
-
-There is no internal state database. Every run discovers real pacman, Flatpak,
-Git, SSH, agent, gh, GitHub account keys, and configuration state. Ready
-components are skipped. Removing a declaration never uninstalls it. After
-interruption or a partial run, rerun `ops`; completed operations are preserved
-and actual state is rediscovered.
-
-## Git, SSH, and GitHub
-
-Git management is limited to missing/invalid `user.name` and `user.email`.
-Valid values are preserved; no personal Git preferences are managed.
-
-The managed SSH identity is Ed25519 at `~/.ssh/ops` and `~/.ssh/ops.pub`, with
-passphrase handling delegated to `ssh-keygen`. Discovery validates key material,
-pairs by fingerprint, ignores symlinks, and protects `config`, `known_hosts`,
-`authorized_keys`, certificates, directories, and sockets. Existing identities
-are inspected before planning. When SSH setup is required, unrelated identities
-are reviewed individually. Deletion shows exact files and requires a second
-confirmation defaulting to no.
-
-Agent identities are separate from local files; unloading never deletes files.
-An isolated, marked `~/.ssh/ops_config` makes `github.com` use only
-`~/.ssh/ops` with `IdentitiesOnly yes` after reboot. Because OpenSSH
-`IdentityFile` directives are additive, a marked dispatcher in `~/.ssh/config`
-excludes the byte-for-byte preserved `~/.ssh/ops_user_config` only for
-`github.com` and includes it for every other host. The preserved file remains
-the user's configuration; ops owns only its marked dispatcher and isolated
-managed files. Ops obtains GitHub's current public SSH host keys from GitHub's
-official HTTPS metadata, validates them, and atomically maintains marked
-`~/.ssh/ops_known_hosts` with
-`StrictHostKeyChecking yes`. The user's ordinary `known_hosts` is preserved and
-is not required. Recognized local configuration and host-key freshness are
-inspected separately. A temporary metadata transport/service failure is
-reported as unavailable and never causes a rewrite; malformed authoritative
-metadata remains a hard error. Existing unmarked ops-specific files and unsafe
-symlinks are refused rather than overwritten. Effective configuration is
-structurally verified with `ssh -G`.
-
-Authentication is delegated to `gh auth login --git-protocol ssh
---skip-ssh-key`; ops never stores tokens. When key reconciliation is required,
-unrelated existing GitHub keys are reviewed one at a time by title/fingerprint.
-Remote deletion gets a second default-no confirmation. The managed key gets a
-fingerprint-derived title, duplicates are avoided, and SSH access is verified.
-When already authenticated, ops reads the account's keys before planning and
-matches the managed key by fingerprint. When authentication is unavailable,
-the plan explicitly makes key inspection and conditional registration dependent
-on login; no remote mutation occurs during inspection.
-
-## Doctor and update
-
-`ops doctor` is read-only. It checks system, configuration, core, applications,
-Git, SSH, and GitHub without sudo, installs, edits, authentication, service
-changes, or key changes.
-
-`ops update` uses the installer's isolated GPG and signed SHA-256 trust. Sudo is
-requested only after verification. A staged version is verified and atomically
-renamed; a prior regular binary is restored if the final postcondition fails.
-Normal preparation never auto-updates.
-
-## Exit codes
-
-```text
-0  success, including intentional skips
-1  completed with application issues, or actionable doctor issues
-2  fatal error; ops could not safely continue
-```
-
-## Troubleshooting
-
-- Platform errors: verify `/etc/os-release` has `ID=arch` on official Arch and
-  run directly as the desktop user, not through sudo.
-- Configuration errors: fix the exact reported field; ops never guesses intent.
-- Upgrade failures: resolve the pacman error and complete `pacman -Syu` before
-  rerunning.
-- AUR failures: inspect the reviewed PKGBUILD, AUR comments, and makepkg error.
-- Trust errors: never bypass verification; confirm project release status and
-  the independently published fingerprint.
-- Interruptions: rerun ops to rediscover state and resume.
+For package-manager failures, resolve the pacman error and complete a full
+`sudo pacman -Syu`; never use a standalone partial upgrade. For source drift,
+review a newly resolved plan. For unavailable remote checks, retry when the
+service is reachable. Never bypass signature or SSH host-key verification.
 
 ## Development
 
+Use exactly Go 1.26.7 with `GOENV=off GOTOOLCHAIN=local`:
+
 ```sh
-go version # release validation uses exactly go1.26.7
-gofmt -w ./cmd ./internal
+go env GOVERSION
+go version
+go mod verify
+gofmt -l .
 go vet ./...
-go test ./...
+go test -count=1 ./...
+go test -race -count=1 ./...
 go build ./...
-sh -n script/install.sh script/prepare-release.sh script/render-install.sh script/publish-release.sh
+git diff --check
+sh -n script/install.sh script/prepare-release.sh script/render-install.sh script/publish-release.sh script/test-minimal-arch.sh
 ```
 
-Tests use temporary homes and pacman fixtures, fake external commands/GitHub,
-local HTTP servers, and ephemeral GPG keys. They never mutate real SSH, GitHub,
-Flatpak, package-manager, or system configuration state.
+Tests use temporary homes, fake command boundaries, local HTTP servers, and
+ephemeral test keys. CI keeps checkout/build tools outside its minimal Arch
+runtime. Full VM convergence is a separate gate:
+[pre-ops acceptance procedure](docs/vm-acceptance.md).
 
 Licensed under the MIT License.

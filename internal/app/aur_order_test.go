@@ -20,7 +20,7 @@ import (
 const bootstrapCommit = "0123456789012345678901234567890123456789"
 const bootstrapSRCINFO = "pkgbase = paru\n\tpkgver = 2.1.0\n\tpkgrel = 2\n\tmakedepends = cargo\n\npkgname = paru\n"
 
-type paruBootstrapRunner struct {
+type aurOrderRunner struct {
 	calls                            []run.Spec
 	events                           []string
 	output                           *bytes.Buffer
@@ -35,7 +35,7 @@ type paruBootstrapRunner struct {
 	staged                           map[string][]byte
 }
 
-func (f *paruBootstrapRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
+func (f *aurOrderRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
 	f.calls = append(f.calls, spec)
 	if spec.Name == "sudo" {
 		args := strings.Join(spec.Args, " ")
@@ -99,7 +99,7 @@ func (f *paruBootstrapRunner) Run(_ context.Context, spec run.Spec) (run.Result,
 		}
 	}
 	if spec.Name == "pacman" {
-		if len(spec.Args) == 2 && spec.Args[0] == "-Qe" && spec.Args[1] == "paru" {
+		if len(spec.Args) == 2 && (spec.Args[0] == "-Qe" || spec.Args[0] == "-Qm") && spec.Args[1] == "paru" {
 			return run.Result{}, nil
 		}
 		if len(spec.Args) > 0 && spec.Args[0] == "-T" {
@@ -182,7 +182,7 @@ func (f *paruBootstrapRunner) Run(_ context.Context, spec run.Spec) (run.Result,
 	return run.Result{}, errors.New("unexpected command: " + spec.Name + " " + strings.Join(spec.Args, " "))
 }
 
-func paruBootstrapPlan(t *testing.T) plan.Plan {
+func declaredParuPlan(t *testing.T) plan.Plan {
 	t.Helper()
 	metadata, err := aurmeta.Parse([]byte(bootstrapSRCINFO))
 	if err != nil {
@@ -190,27 +190,23 @@ func paruBootstrapPlan(t *testing.T) plan.Plan {
 	}
 	source := plan.AURSource{Commit: bootstrapCommit, Metadata: metadata}
 	state := readyExecutionState()
-	state.Paru = false
 	state.Installed["base-devel"] = false
 	state.Explicit["base-devel"] = false
-	p, err := plan.Build(context.Background(), config.Config{Version: 1}, state, outputResolver{
-		source: &source,
+	p := resolveAndPlan(context.Background(), config.Config{Version: 2, Applications: []config.Application{{Source: "aur", Identifier: "paru"}}}, state, outputResolver{
+		aur: map[string]plan.Package{"paru": {Name: "paru", PackageBase: "paru"}}, source: &source,
 		deps: map[string]plan.OfficialDependency{
 			"base-devel": {Requirement: "base-devel", Provider: "base-devel", Packages: []string{"base-devel"}},
 			"cargo":      {Requirement: "cargo", Provider: "rust", Packages: []string{"llvm-libs", "rust"}},
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	return p
 }
 
-func TestPreparePlanDeterministicParuBootstrap(t *testing.T) {
-	p := paruBootstrapPlan(t)
+func TestDeclaredAURReviewDependencyBuildOrder(t *testing.T) {
+	p := declaredParuPlan(t)
 	var output bytes.Buffer
-	runner := &paruBootstrapRunner{output: &output}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\ny\n"), Out: &output})
+	runner := &aurOrderRunner{output: &output}
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\ny\n"), Out: &output})
 	if code != Success {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
@@ -252,6 +248,7 @@ func TestPreparePlanDeterministicParuBootstrap(t *testing.T) {
 	wantProgress := []string{
 		"sudo|configure|privileged operations",
 		"full system upgrade|upgrade|pacman; confirm transaction in pacman",
+		"paru|install|aur",
 		"paru -> base-devel|install|pacman; build dependency",
 		"paru -> llvm-libs|install|pacman; build dependency",
 		"paru -> rust|install|pacman; provides cargo; build dependency",
@@ -264,21 +261,21 @@ func TestPreparePlanDeterministicParuBootstrap(t *testing.T) {
 }
 
 func TestPreparePlanDeclinedTopLevelParuPlanMutatesNothing(t *testing.T) {
-	p := paruBootstrapPlan(t)
+	p := declaredParuPlan(t)
 	var output bytes.Buffer
-	runner := &paruBootstrapRunner{output: &output}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("n\n"), Out: &output})
+	runner := &aurOrderRunner{output: &output}
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("n\n"), Out: &output})
 	if code != Success || len(runner.calls) != 0 {
 		t.Fatalf("code=%d calls=%#v\n%s", code, runner.calls, output.String())
 	}
 }
 
-func TestPreparePlanDeclinedParuReviewDoesNotMutateBootstrapPackages(t *testing.T) {
-	p := paruBootstrapPlan(t)
+func TestPreparePlanDeclinedParuReviewDoesNotMutateBuildPackages(t *testing.T) {
+	p := declaredParuPlan(t)
 	var output bytes.Buffer
-	runner := &paruBootstrapRunner{output: &output}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\nn\n"), Out: &output})
-	if code != Fatal {
+	runner := &aurOrderRunner{output: &output}
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\nn\n"), Out: &output})
+	if code != Issues {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
 	for _, event := range runner.events {
@@ -288,12 +285,12 @@ func TestPreparePlanDeclinedParuReviewDoesNotMutateBootstrapPackages(t *testing.
 	}
 }
 
-func TestPreparePlanParuProviderDriftFailsBeforeBootstrapMutation(t *testing.T) {
-	p := paruBootstrapPlan(t)
+func TestPreparePlanParuProviderDriftFailsBeforeBuildDependencyMutation(t *testing.T) {
+	p := declaredParuPlan(t)
 	var output bytes.Buffer
-	runner := &paruBootstrapRunner{output: &output, providerChanged: true}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\ny\n"), Out: &output})
-	if code != Fatal || !strings.Contains(output.String(), "provider changed after planning") {
+	runner := &aurOrderRunner{output: &output, providerChanged: true}
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\ny\n"), Out: &output})
+	if code != Issues || !strings.Contains(output.String(), "provider changed after planning") {
 		t.Fatalf("code=%d events=%v\n%s", code, runner.events, output.String())
 	}
 	for _, event := range runner.events {
@@ -303,12 +300,12 @@ func TestPreparePlanParuProviderDriftFailsBeforeBootstrapMutation(t *testing.T) 
 	}
 }
 
-func TestPreparePlanParuTransactionDriftFailsBeforeBootstrapMutation(t *testing.T) {
-	p := paruBootstrapPlan(t)
+func TestPreparePlanParuTransactionDriftFailsBeforeBuildDependencyMutation(t *testing.T) {
+	p := declaredParuPlan(t)
 	var output bytes.Buffer
-	runner := &paruBootstrapRunner{output: &output, transactionChanged: true}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\ny\n"), Out: &output})
-	if code != Fatal || !strings.Contains(output.String(), "transaction changed after planning") {
+	runner := &aurOrderRunner{output: &output, transactionChanged: true}
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\ny\n"), Out: &output})
+	if code != Issues || !strings.Contains(output.String(), "transaction changed after planning") {
 		t.Fatalf("code=%d events=%v\n%s", code, runner.events, output.String())
 	}
 	for _, event := range runner.events {
@@ -319,11 +316,11 @@ func TestPreparePlanParuTransactionDriftFailsBeforeBootstrapMutation(t *testing.
 }
 
 func TestPreparePlanFailedNoninteractiveSudoDoesNotRetry(t *testing.T) {
-	p := paruBootstrapPlan(t)
+	p := declaredParuPlan(t)
 	var output bytes.Buffer
-	runner := &paruBootstrapRunner{output: &output, failDependencies: true}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).preparePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\ny\n"), Out: &output})
-	if code != Fatal {
+	runner := &aurOrderRunner{output: &output, failDependencies: true}
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\ny\n"), Out: &output})
+	if code != Issues {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
 	interactiveAuthorizations := 0
