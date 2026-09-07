@@ -1,9 +1,23 @@
 package ui
 
 import (
+	"io"
 	"strings"
 	"testing"
 )
+
+func TestConfirmationEOFNeverGrantsApproval(t *testing.T) {
+	for _, input := range []string{"", "y", "invalid"} {
+		ok, err := (UI{In: strings.NewReader(input), Out: io.Discard}).Confirm("Proceed?", true)
+		if ok || err == nil {
+			t.Fatalf("input=%q approved=%v err=%v", input, ok, err)
+		}
+	}
+	ok, err := (UI{In: strings.NewReader("\n"), Out: io.Discard}).Confirm("Proceed?", true)
+	if !ok || err != nil {
+		t.Fatal("intentional blank line should retain documented default")
+	}
+}
 
 func TestRenderTableUsesActualContentWidths(t *testing.T) {
 	rows := []TableRow{

@@ -141,8 +141,8 @@ func (u UI) Confirm(question string, defaultYes bool) (bool, error) {
 			return false, err
 		}
 		line, err := readLine(u.In)
-		if err != nil && !errors.Is(err, io.EOF) {
-			return false, err
+		if err != nil {
+			return false, fmt.Errorf("confirmation not received; no approval granted: %w", err)
 		}
 		switch strings.ToLower(strings.TrimSpace(line)) {
 		case "":
