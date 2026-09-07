@@ -3,32 +3,53 @@ name: Arch integration
 on:
   workflow_dispatch:
   pull_request:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
-  arch-integration:
+  build:
     runs-on: ubuntu-latest
-    container: archlinux:latest
     env:
       GOENV: off
       GOTOOLCHAIN: local
+      CGO_ENABLED: '0'
     steps:
-      - name: Prepare disposable Arch container
-        run: pacman -Syu --noconfirm diffutils git openssh gnupg
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: '1.26.7'
           cache: true
-      - name: Verify toolchain
-        run: test "$(go env GOVERSION)" = go1.26.7
-      - name: Trust checked-out workspace in the disposable container
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      - name: Test on official Arch
-        run: go test ./...
-      - name: Build Linux x86_64 binary
-        run: go build ./cmd/ops
-      - name: Validate installer syntax
-        run: sh -n script/install.sh script/prepare-release.sh script/render-install.sh
+      - name: Build unsigned runtime candidate
+        run: |
+          test "$(go env GOVERSION)" = go1.26.7
+          go mod verify
+          mkdir -p candidate
+          go build -trimpath -mod=readonly -o candidate/ops ./cmd/ops
+          go test -c -o candidate/resolve.test ./internal/resolve
+          cp script/test-minimal-arch.sh candidate/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: minimal-arch-candidate
+          path: candidate/
+          if-no-files-found: error
+          retention-days: 7
+
+  minimal-runtime:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Checkout and Go never enter the runtime container.
+      - uses: actions/download-artifact@v8
+        with:
+          name: minimal-arch-candidate
+          path: candidate
+      - name: Exercise pristine official Arch runtime
+        run: |
+          docker run --rm --platform linux/amd64 \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/candidate,dst=/candidate,readonly" \
+            archlinux:base@sha256:818793c894d94534c22f2149154a39ebaee57e4e67321023b0866a1d5722036c \
+            sh /candidate/test-minimal-arch.sh
