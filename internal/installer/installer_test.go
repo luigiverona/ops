@@ -148,6 +148,10 @@ func TestInstallerSignatureStatusFailsClosed(t *testing.T) {
 				t.Fatalf("installer accepted unsafe signature state:\n%s", output)
 			}
 			if test.wantSuccess {
+				want := "ops 1.2.3 verified.\n\nInstalled ops 1.2.3.\nConfiguration: ~/.config/ops/apps.toml\n\nEdit the configuration, then run ops.\n"
+				if string(output) != want {
+					t.Fatalf("installer output=%q, want=%q", output, want)
+				}
 				if _, err := os.Stat(target); err != nil {
 					t.Fatalf("verified binary was not installed: %v", err)
 				}
@@ -169,6 +173,22 @@ func TestInstallerRejectsSymlinkedOpsConfigDirectory(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(outside, "apps.toml")); !os.IsNotExist(err) {
 		t.Fatal("installer created configuration through the symlink")
+	}
+}
+
+func TestInstallerDeclineLeavesBinaryAndConfigurationAbsent(t *testing.T) {
+	fingerprint := strings.Repeat("A", 40)
+	status := "[GNUPG:] VALIDSIG " + fingerprint + " 0 0 0 0 0 0 0 0 0\n"
+	cmd, target, home := installerCommand(t, fingerprint, status, "0")
+	cmd.Env = append(cmd.Env, "OPS_TEST_INSTALL_ANSWER=no")
+	output, err := cmd.CombinedOutput()
+	if err != nil || string(output) != "ops 1.2.3 verified.\nNo changes made.\n" {
+		t.Fatalf("err=%v output=%s", err, output)
+	}
+	for _, path := range []string{target, filepath.Join(home, ".config")} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("decline created %s: %v", path, err)
+		}
 	}
 }
 
@@ -287,9 +307,12 @@ exec "$@"`)
 	rendered = strings.Replace(rendered, "fingerprint='@OPS_SIGNING_FINGERPRINT@'", "fingerprint='"+fingerprint+"'", 1)
 	rendered = strings.Replace(rendered, "@OPS_SIGNING_PUBLIC_KEY@", "test public key", 1)
 	rendered = strings.Replace(rendered, `[ -r /dev/tty ] && [ -w /dev/tty ] || fail 'interactive installation requires a usable terminal'`, `:`, 1)
-	prompt := `printf 'Install this verified release? [Y/n] ' > /dev/tty
+	prompt := `printf 'Install to %s? [Y/n] ' "$target" > /dev/tty
 IFS= read -r answer < /dev/tty || fail 'could not read confirmation'`
-	rendered = strings.Replace(rendered, prompt, "answer=yes", 1)
+	if strings.Count(rendered, prompt) != 1 {
+		t.Fatal("installer must ask once, through the controlling terminal, for its exact target")
+	}
+	rendered = strings.Replace(rendered, prompt, `answer=${OPS_TEST_INSTALL_ANSWER:-yes}`, 1)
 	path := filepath.Join(dir, "install.sh")
 	_ = os.WriteFile(path, []byte(rendered), 0o700)
 	cmd := exec.Command("sh", path)

@@ -134,5 +134,13 @@ device-authentication, or real AUR build acceptance; the VM gate remains require
 
 No-op with unavailable host-key freshness exits 1 and does not prompt or mutate.
 Doctor never calls login, sudo, installation, or file replacement. Command
-inspection uses the C locale, EOF stdin, and bounded complete output. Build logs
-alone may be truncated; parsed metadata may not.
+inspection uses the C locale, EOF stdin, and bounded complete output. Successful
+build logs stay captured; approved pacman installs stream native output
+without acquiring stdin. Streaming does not relax capture limits for inspection;
+only commands explicitly designated as logs may truncate captured output.
+
+Presentation summarizes only planned work: a user-scoped Flatpak-only install
+does not announce a system upgrade. The AUR source view is separate from normal
+progress; its sanitized display is never used for metadata or equality checks.
+`ops update` has one approval for download, verification, and installation;
+signature/checksum verification still completes before sudo or replacement.

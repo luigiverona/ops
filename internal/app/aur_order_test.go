@@ -48,7 +48,7 @@ func (f *aurOrderRunner) Run(_ context.Context, spec run.Spec) (run.Result, erro
 			return run.Result{}, nil
 		case strings.HasPrefix(args, "-n pacman -S --needed --noconfirm --asdeps -- "):
 			f.events = append(f.events, "dependencies")
-			f.reviewVisibleAtDependencyInstall = strings.Contains(f.output.String(), "Build and install this reviewed AUR package?")
+			f.reviewVisibleAtDependencyInstall = strings.Contains(f.output.String(), "Install paru?")
 			if f.failDependencies {
 				return run.Result{}, errors.New("sudo timestamp unavailable")
 			}
@@ -206,7 +206,7 @@ func TestDeclaredAURReviewDependencyBuildOrder(t *testing.T) {
 	p := declaredParuPlan(t)
 	var output bytes.Buffer
 	runner := &aurOrderRunner{output: &output}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\ny\n"), Out: &output})
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n\ny\n"), Out: &output})
 	if code != Success {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
@@ -230,7 +230,7 @@ func TestDeclaredAURReviewDependencyBuildOrder(t *testing.T) {
 				t.Fatalf("approved bootstrap transaction became interactive: %#v", call)
 			}
 		}
-		if call.Name == "makepkg" && len(call.Args) == 0 && call.Interactive {
+		if call.Name == "makepkg" && (call.Interactive || call.StreamOutput) {
 			t.Fatalf("makepkg leaked an unnecessary interactive stream: %#v", call)
 		}
 	}
@@ -245,18 +245,13 @@ func TestDeclaredAURReviewDependencyBuildOrder(t *testing.T) {
 			}
 		}
 	}
-	wantProgress := []string{
-		"sudo|configure|privileged operations",
-		"full system upgrade|upgrade|pacman; confirm transaction in pacman",
-		"paru|install|aur",
-		"paru -> base-devel|install|pacman; build dependency",
-		"paru -> llvm-libs|install|pacman; build dependency",
-		"paru -> rust|install|pacman; provides cargo; build dependency",
-		"paru|install|AUR build",
-		"paru|install|local package",
-	}
+	wantProgress := []string{"Updating system...", "Reviewing paru...", "Installing build dependencies...", "Building paru...", "Installing paru..."}
 	if got := progressRecords(output.String()); strings.Join(got, "\n") != strings.Join(wantProgress, "\n") {
 		t.Fatalf("progress=%v, want=%v\n%s", got, wantProgress, output.String())
+	}
+	assertConciseOutput(t, output.String())
+	if strings.Count(output.String(), "Install paru? [y/N]") != 1 || strings.Count(output.String(), "Continue? [Y/n]") != 1 {
+		t.Fatalf("unexpected approval boundaries: %s", &output)
 	}
 }
 
@@ -274,7 +269,7 @@ func TestPreparePlanDeclinedParuReviewDoesNotMutateBuildPackages(t *testing.T) {
 	p := declaredParuPlan(t)
 	var output bytes.Buffer
 	runner := &aurOrderRunner{output: &output}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\nn\n"), Out: &output})
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n\nn\n"), Out: &output})
 	if code != Issues {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
@@ -285,11 +280,56 @@ func TestPreparePlanDeclinedParuReviewDoesNotMutateBuildPackages(t *testing.T) {
 	}
 }
 
+func TestCancelledAURSourceViewDoesNotAuthorizeBuild(t *testing.T) {
+	var output bytes.Buffer
+	runner := &aurOrderRunner{output: &output}
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), declaredParuPlan(t), ui.UI{In: strings.NewReader("y\nq\ny\n"), Out: &output})
+	if code != Issues || strings.Contains(output.String(), "Install paru?") {
+		t.Fatalf("code=%d output=%s", code, &output)
+	}
+	for _, event := range runner.events {
+		if event == "dependencies" || event == "makepkg" || event == "artifact" {
+			t.Fatalf("cancelled review authorized %s", event)
+		}
+	}
+}
+
+type cancelAtReview struct {
+	approval *strings.Reader
+	cancel   context.CancelFunc
+}
+
+func (r cancelAtReview) Read(p []byte) (int, error) {
+	if r.approval.Len() > 0 {
+		return r.approval.Read(p)
+	}
+	r.cancel()
+	return 0, context.Canceled
+}
+
+func TestInterruptedAURReviewStopsBeforeLaterPromptsOrBuild(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var output bytes.Buffer
+	runner := &aurOrderRunner{output: &output}
+	p := declaredParuPlan(t)
+	p.ConfigureGit = true
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(ctx, p, ui.UI{
+		In: cancelAtReview{approval: strings.NewReader("y\n"), cancel: cancel}, Out: &output,
+	})
+	if code != Fatal || strings.Contains(output.String(), "Git name:") || strings.Contains(output.String(), "Install paru?") {
+		t.Fatalf("code=%d output=%s", code, &output)
+	}
+	if strings.Join(runner.events, ",") != "sudo-v,upgrade" || !strings.Contains(output.String(), "Earlier changes may remain") {
+		t.Fatalf("events=%v output=%s", runner.events, &output)
+	}
+}
+
 func TestPreparePlanParuProviderDriftFailsBeforeBuildDependencyMutation(t *testing.T) {
 	p := declaredParuPlan(t)
 	var output bytes.Buffer
 	runner := &aurOrderRunner{output: &output, providerChanged: true}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\ny\n"), Out: &output})
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n\ny\n"), Out: &output})
 	if code != Issues || !strings.Contains(output.String(), "provider changed after planning") {
 		t.Fatalf("code=%d events=%v\n%s", code, runner.events, output.String())
 	}
@@ -304,7 +344,7 @@ func TestPreparePlanParuTransactionDriftFailsBeforeBuildDependencyMutation(t *te
 	p := declaredParuPlan(t)
 	var output bytes.Buffer
 	runner := &aurOrderRunner{output: &output, transactionChanged: true}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\ny\n"), Out: &output})
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n\ny\n"), Out: &output})
 	if code != Issues || !strings.Contains(output.String(), "transaction changed after planning") {
 		t.Fatalf("code=%d events=%v\n%s", code, runner.events, output.String())
 	}
@@ -319,7 +359,7 @@ func TestPreparePlanFailedNoninteractiveSudoDoesNotRetry(t *testing.T) {
 	p := declaredParuPlan(t)
 	var output bytes.Buffer
 	runner := &aurOrderRunner{output: &output, failDependencies: true}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\ny\n"), Out: &output})
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n\ny\n"), Out: &output})
 	if code != Issues {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}

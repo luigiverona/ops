@@ -201,37 +201,6 @@ func TestAURApplicationBuildIsPinnedNoninteractiveAndInstallsOnlySelectedOutput(
 	}
 }
 
-func TestAURApplicationPlanShowsOfficialDependenciesBeforeReviewInstall(t *testing.T) {
-	p := plan.Plan{Applications: []plan.Application{{
-		Declaration: config.Application{Identifier: "browser-bin", Source: "aur"}, State: "install",
-		AURPackages: []plan.BuildPackage{{Name: "builder", Purposes: []string{"build"}}, {Name: "runtime", Purposes: []string{"runtime"}}},
-	}}}
-	var output bytes.Buffer
-	(Runtime{Out: &output}).showPlan(p)
-	got := output.String()
-	for _, row := range []string{
-		"browser-bin -> builder  install  pacman; build dependency",
-		"browser-bin -> runtime  install  pacman; runtime dependency",
-		"browser-bin             install  aur; review required",
-	} {
-		if !strings.Contains(got, row) {
-			t.Fatalf("missing planned AUR work %q:\n%s", row, got)
-		}
-	}
-}
-
-func TestAURApplicationPlanShowsMissingSigningKeyBeforeConfirmation(t *testing.T) {
-	p := plan.Plan{Applications: []plan.Application{{
-		Declaration: config.Application{Identifier: "browser-bin", Source: "aur"}, State: "install",
-		AURSigningKeys: []string{"0123456789ABCDEF0123456789ABCDEF01234567"},
-	}}}
-	var output bytes.Buffer
-	(Runtime{Out: &output}).showPlan(p)
-	if !strings.Contains(output.String(), "browser-bin -> 0123456789ABCDEF0123456789ABCDEF01234567  configure  AUR signing key") {
-		t.Fatalf("missing signing-key action was not in plan:\n%s", output.String())
-	}
-}
-
 func TestAURDeclaredOfficialDependencyIsInstalledExplicitly(t *testing.T) {
 	metadata, err := aurmeta.Parse([]byte(applicationAURSRCINFO))
 	if err != nil {
@@ -274,7 +243,7 @@ func TestAURApplicationFailureContinuesWithUnrelatedApplications(t *testing.T) {
 	var output bytes.Buffer
 	runner := &prepareRunner{}
 	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
-	if code != Issues || !strings.Contains(output.String(), "broken-bin") || !strings.Contains(output.String(), "org.example.Working  install  flatpak") {
+	if code != Issues || !strings.Contains(output.String(), "broken-bin") || !strings.Contains(output.String(), "Installing org.example.Working...") {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
 	if got := strings.Join(mutationOrder(runner.calls), ","); got != "application" {

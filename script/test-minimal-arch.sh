@@ -43,11 +43,13 @@ check_doctor() {
     ops doctor >doctor.out 2>&1 || status=$?
     cat doctor.out
     test "$status" = 1
-    grep -Eq '^  git +missing$' doctor.out
-    grep -Eq '^  ssh +missing$' doctor.out
-    grep -Eq '^  github +missing$' doctor.out
-    grep -Eq '^  flatpak +not required$' doctor.out
-    grep -Eq '^  flathub +not required$' doctor.out
+    grep -Eq '^  git: missing$' doctor.out
+    grep -Eq '^  ssh: missing$' doctor.out
+    grep -Eq '^  github: missing$' doctor.out
+    if grep -Eq 'flatpak|flathub' doctor.out; then
+        echo 'unneeded capabilities appeared as problems' >&2
+        exit 1
+    fi
 }
 
 check_doctor
@@ -63,11 +65,15 @@ check_doctor
 printf 'n\n' | script -q -e -c /usr/local/bin/ops /dev/null >plan.out 2>&1
 tr -d '\r' <plan.out >plan.clean
 cat plan.clean
-for package in git github-cli openssh; do
-    grep -Eq "^  $package +install +pacman$" plan.clean
-done
-grep -q 'Prepare this workstation?' plan.clean
-grep -q 'Workstation preparation skipped.' plan.clean
+grep -q '^Workstation setup$' plan.clean
+grep -q '^  Git, SSH, GitHub$' plan.clean
+grep -Fq 'The system will be updated.' plan.clean
+grep -Fq 'Continue? [Y/n]' plan.clean
+grep -Fq 'No changes made.' plan.clean
+if grep -Eq '^(Plan|Progress|Review|Final)$' plan.clean; then
+    echo 'internal presentation leaked into default output' >&2
+    exit 1
+fi
 if grep -Eq 'paru|base-devel|flatpak|flathub|executable file not found' plan.clean; then
     echo 'unexpected hidden prerequisite in empty-app plan' >&2
     exit 1

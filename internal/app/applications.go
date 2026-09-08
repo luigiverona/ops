@@ -13,7 +13,6 @@ import (
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/resolve"
 	"github.com/luigiverona/ops/internal/run"
-	"github.com/luigiverona/ops/internal/ui"
 )
 
 func packageSubset(current, planned []string) bool {
@@ -30,11 +29,10 @@ func packageSubset(current, planned []string) bool {
 }
 
 func (a Runtime) installApplication(ctx context.Context, am arch.Manager, au aur.Manager, fm flatpak.Manager, application plan.Application) error {
-	if a.presentation == nil {
-		a.presentation = &presentation{}
-	}
 	name := application.Declaration.Identifier
-	a.showProgress(name, actionInstall, string(application.Declaration.Source))
+	if application.Declaration.Source != "aur" {
+		a.progress("Installing " + name + "...")
+	}
 	switch application.Declaration.Source {
 	case "pacman":
 		if err := am.Install(ctx, []string{name}, false); err != nil {
@@ -85,7 +83,6 @@ func (a Runtime) markApplicationExplicit(ctx context.Context, am arch.Manager, a
 	if _, err := a.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{query, name}}); err != nil {
 		return fmt.Errorf("application source changed after planning; rerun ops: expected %s package: %w", application.Declaration.Source, err)
 	}
-	a.showProgress(name, actionConfigure, "pacman install reason")
 	if err := am.MarkExplicit(ctx, []string{name}); err != nil {
 		return fmt.Errorf("preserve explicit install reason: %w", err)
 	}
@@ -106,12 +103,6 @@ func (a Runtime) installAURApplication(ctx context.Context, am arch.Manager, au 
 	afterReview := func() error {
 		keys := pgp.Manager{Runner: a.Runner}
 		if len(application.AURSigningKeys) > 0 {
-			rows := make([]ui.TableRow, 0, len(application.AURSigningKeys))
-			for _, fingerprint := range application.AURSigningKeys {
-				rows = append(rows, ui.TableRow{Item: application.Declaration.Identifier + " -> " + fingerprint, Action: actionConfigure, Detail: "AUR signing key"})
-			}
-			a.showProgressRows(rows)
-			a.showExternal("gpg keyserver", "retrieve exact AUR signing keys")
 			for _, fingerprint := range application.AURSigningKeys {
 				if err := keys.Import(ctx, fingerprint); err != nil {
 					return fmt.Errorf("prepare AUR signing key %s: %w", fingerprint, err)
@@ -151,7 +142,6 @@ func (a Runtime) installAURApplication(ctx context.Context, am arch.Manager, au 
 			}
 		}
 		var packages, explicitPackages []string
-		var progress []ui.TableRow
 		for _, pkg := range application.AURPackages {
 			if !missing[pkg.Name] {
 				continue
@@ -160,7 +150,6 @@ func (a Runtime) installAURApplication(ctx context.Context, am arch.Manager, au 
 			if pkg.AsExplicit {
 				explicitPackages = append(explicitPackages, pkg.Name)
 			}
-			progress = append(progress, ui.TableRow{Item: application.Declaration.Identifier + " -> " + pkg.Name, Action: actionInstall, Detail: buildPackageDetail(pkg)})
 		}
 		transaction, err := resolver.OfficialTransaction(ctx, packages)
 		if err != nil {
@@ -169,8 +158,8 @@ func (a Runtime) installAURApplication(ctx context.Context, am arch.Manager, au 
 		if !packageSubset(transaction, packages) {
 			return errors.New("AUR dependency transaction changed after planning; rerun ops")
 		}
-		if len(progress) > 0 {
-			a.showProgressRows(progress)
+		if len(packages) > 0 {
+			a.progress("Installing build dependencies...")
 		}
 		if err := am.Install(ctx, packages, true); err != nil {
 			return fmt.Errorf("install AUR build dependencies: %w", err)
@@ -194,11 +183,11 @@ func (a Runtime) installAURApplication(ctx context.Context, am arch.Manager, au 
 				return fmt.Errorf("AUR dependency %q is not satisfied after the planned installation", planned.Requirement)
 			}
 		}
-		a.showProgress(application.Declaration.Identifier, actionInstall, "AUR build")
+		a.progress("Building " + application.Declaration.Identifier + "...")
 		return nil
 	}
 	install := func(buildDir string, artifacts []string) error {
-		a.showProgress(application.Declaration.Identifier, actionInstall, "local package")
+		a.progress("Installing " + application.Declaration.Identifier + "...")
 		return am.InstallArtifacts(ctx, buildDir, artifacts, application.AUROutputs, application.AURExplicitOutputs)
 	}
 	return au.Build(ctx, application.AURSource, application.Declaration.Identifier, application.AUROutputs, afterReview, install)
@@ -221,8 +210,10 @@ func (a Runtime) configureApplication(ctx context.Context, am arch.Manager, appl
 }
 
 func (a Runtime) configureServices(ctx context.Context, application plan.Application) error {
+	if len(application.Services) > 0 {
+		a.progress("Configuring services for " + application.Declaration.Identifier + "...")
+	}
 	for _, service := range application.Services {
-		a.showProgress(application.Declaration.Identifier+" -> "+service, actionEnable, "systemd")
 		if _, err := a.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "systemctl", "enable", "--now", service}}); err != nil {
 			return err
 		}

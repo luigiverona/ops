@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -152,13 +151,13 @@ func TestPreparePlanDeclineRendersBeforeConfirmationAndDoesNotMutate(t *testing.
 		t.Fatalf("code=%d calls=%#v", code, runner.calls)
 	}
 	text := output.String()
-	if strings.Index(text, "Plan\n") < 0 || strings.Index(text, "Plan\n") > strings.Index(text, "Prepare this workstation?") {
+	if strings.Index(text, "Workstation setup\n") < 0 || strings.Index(text, "Workstation setup\n") > strings.Index(text, "Continue?") {
 		t.Fatalf("plan was not rendered before confirmation:\n%s", text)
 	}
-	if strings.Count(text, "Prepare this workstation?") != 1 {
-		t.Fatalf("top-level confirmations=%d\n%s", strings.Count(text, "Prepare this workstation?"), text)
+	if strings.Count(text, "Continue?") != 1 {
+		t.Fatalf("top-level confirmations=%d\n%s", strings.Count(text, "Continue?"), text)
 	}
-	if !strings.Contains(text, "full system upgrade  upgrade  pacman; confirm transaction in pacman") {
+	if !strings.Contains(text, "The system will be updated.") {
 		t.Fatalf("plan did not disclose pacman's transaction boundary:\n%s", text)
 	}
 }
@@ -176,30 +175,20 @@ func TestPreparePlanProgressMatchesMutationOrder(t *testing.T) {
 	if code != Success {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
-	wantProgress := []string{
-		"sudo|configure|privileged operations",
-		"full system upgrade|upgrade|pacman; confirm transaction in pacman",
-		"mullvad-vpn|install|pacman",
-		"mullvad-vpn -> mullvad-daemon.service|enable|systemd",
-		"mullvad-vpn|configure|pacman install reason",
-	}
+	wantProgress := []string{"Updating system...", "Installing mullvad-vpn...", "Configuring services for mullvad-vpn..."}
 	if got := progressRecords(output.String()); strings.Join(got, "\n") != strings.Join(wantProgress, "\n") {
 		t.Fatalf("progress records=%v, want=%v\n%s", got, wantProgress, output.String())
 	}
 	if got := mutationOrder(runner.calls); strings.Join(got, ",") != "upgrade,application,service" {
 		t.Fatalf("mutation order=%v", got)
 	}
-	if planAt, confirmAt, progressAt := strings.Index(output.String(), "Plan\n"), strings.Index(output.String(), "Prepare this workstation?"), strings.Index(output.String(), "\nProgress\n"); planAt < 0 || confirmAt <= planAt || progressAt <= confirmAt {
+	if planAt, confirmAt, progressAt := strings.Index(output.String(), "Workstation setup\n"), strings.Index(output.String(), "Continue?"), strings.Index(output.String(), "Updating system..."); planAt < 0 || confirmAt <= planAt || progressAt <= confirmAt {
 		t.Fatalf("plan/confirmation/progress boundary is out of order:\n%s", output.String())
 	}
-	if strings.Count(output.String(), "Prepare this workstation?") != 1 {
+	if strings.Count(output.String(), "Continue?") != 1 {
 		t.Fatalf("top-level confirmation count is not one:\n%s", output.String())
 	}
-	planEnd := strings.Index(output.String(), "Prepare this workstation?")
-	sudoAt := strings.Index(output.String(), "sudo  configure  privileged operations")
-	if planEnd < 0 || sudoAt <= planEnd || strings.Contains(output.String()[:planEnd], "sudo") {
-		t.Fatalf("sudo was not an explicit post-confirmation execution boundary:\n%s", output.String())
-	}
+
 }
 
 func readyExecutionState() plan.State {
@@ -214,22 +203,14 @@ func readyExecutionState() plan.State {
 }
 
 func progressRecords(output string) []string {
-	lines := strings.Split(output, "\n")
-	columns := regexp.MustCompile(` {2,}`)
 	var records []string
-	for i := 0; i < len(lines); i++ {
-		if lines[i] != "Progress" {
-			continue
+	for _, line := range strings.Split(output, "\n") {
+		// A line-oriented test UI does not echo user input after the prompt.
+		if index := strings.LastIndex(line, "] "); index >= 0 {
+			line = line[index+2:]
 		}
-		for i++; i < len(lines) && strings.HasPrefix(lines[i], "  "); i++ {
-			fields := columns.Split(strings.TrimSpace(lines[i]), 3)
-			if len(fields) != 3 {
-				continue
-			}
-			if fields[1] == "external" {
-				continue
-			}
-			records = append(records, strings.Join(fields, "|"))
+		if strings.HasSuffix(line, "...") {
+			records = append(records, line)
 		}
 	}
 	return records
@@ -250,7 +231,7 @@ func TestPreparePlanAllReadyHasNoMutationOrProgress(t *testing.T) {
 	if code != Success {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
-	if !strings.Contains(output.String(), "No changes\n  workstation is already ready") || strings.Contains(output.String(), "\nProgress\n") || strings.Contains(output.String(), "Prepare this workstation?") || strings.Count(output.String(), "\nFinal\n") != 1 {
+	if output.String() != "Workstation already ready.\n" {
 		t.Fatalf("all-ready output is misleading:\n%s", output.String())
 	}
 	if mutations := mutationOrder(runner.calls); len(mutations) != 0 {
@@ -270,8 +251,11 @@ func TestPreparePlanReportsExplicitReasonFailureAsApplicationIssue(t *testing.T)
 	var output bytes.Buffer
 	runner := &prepareRunner{failMarkExplicit: true}
 	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
-	if code != Issues || !strings.Contains(output.String(), "application install reason was not configured") || !strings.Contains(output.String(), "apps    0/1") {
+	if code != Issues || !strings.Contains(output.String(), "application configuration is incomplete") || strings.Contains(output.String(), "Workstation ready.") {
 		t.Fatalf("code=%d\n%s", code, output.String())
+	}
+	if !strings.Contains(output.String(), "Earlier changes may remain. Run ops doctor") {
+		t.Fatalf("partial state omitted: %s", &output)
 	}
 }
 
@@ -318,7 +302,7 @@ func TestConfigureSourceDriftIsAnApplicationIssueAndDoesNotBlockOtherApplication
 	var output bytes.Buffer
 	runner := &prepareRunner{sourceDrift: map[string]bool{"-Qn:stale": true}}
 	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
-	if code != Issues || !strings.Contains(output.String(), "application source changed after planning; rerun ops") || !strings.Contains(output.String(), "apps    1/2") {
+	if code != Issues || !strings.Contains(output.String(), "application source changed after planning; rerun ops") || !strings.Contains(output.String(), "Configuring working...") {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
 	markedStale, markedWorking := false, false
@@ -339,7 +323,7 @@ func TestPreparePlanNoOpGolden(t *testing.T) {
 	var output bytes.Buffer
 	runner := &prepareRunner{}
 	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader(""), Out: &output})
-	want := "Plan\n\nNo changes\n  workstation is already ready\n\nUnchanged\n  5 core components\n  8 applications\n\nFinal\n  system  ready\n  core    5/5\n  apps    8/8\n  git     ready\n  ssh     ready\n  github  ready\n\nWorkstation ready.\n"
+	want := "Workstation already ready.\n"
 	if code != Success || output.String() != want || len(runner.calls) != 0 {
 		t.Fatalf("code=%d calls=%#v\n--- got ---\n%s--- want ---\n%s", code, runner.calls, output.String(), want)
 	}
@@ -353,10 +337,10 @@ func TestPreparePublicNoActionPathDoesNotRequireTTY(t *testing.T) {
 		if mode == "diagnostic" {
 			wantCode = Issues
 		}
-		if code != wantCode || !strings.Contains(output.String(), "\nFinal\n") {
+		if code != wantCode || strings.Contains(output.String(), "\nFinal\n") {
 			t.Fatalf("mode=%s code=%d\n%s", mode, code, output.String())
 		}
-		if mode == "diagnostic" && !strings.Contains(output.String(), "GitHub SSH host-key freshness  unavailable") {
+		if mode == "diagnostic" && !strings.Contains(output.String(), "GitHub SSH host-key freshness unavailable") {
 			t.Fatalf("diagnostic no-op was not reported:\n%s", output.String())
 		}
 		for _, call := range runner.calls {
@@ -431,7 +415,7 @@ func TestPreparePlanDiagnosticOnlyDoesNotConfirmOrMutate(t *testing.T) {
 	var output bytes.Buffer
 	runner := &prepareRunner{}
 	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader(""), Out: &output})
-	if code != Issues || len(runner.calls) != 0 || strings.Contains(output.String(), "Prepare this workstation?") || !strings.Contains(output.String(), "Application diagnostics") || !strings.Contains(output.String(), "\nIssues\n") || !strings.Contains(output.String(), "\nFinal\n") {
+	if code != Issues || len(runner.calls) != 0 || strings.Contains(output.String(), "Continue?") || !strings.Contains(output.String(), "\nIssues\n") || strings.Contains(output.String(), "\nFinal\n") {
 		t.Fatalf("diagnostic-only lifecycle was not a no-op:\n%s", output.String())
 	}
 }
@@ -448,8 +432,8 @@ func TestPreparePlanContinuesUnrelatedWorkWhenHostKeyFreshnessUnavailable(t *tes
 	if code != Issues {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
-	if !strings.Contains(output.String(), "GitHub SSH host-key freshness  unavailable  retry later") ||
-		!strings.Contains(output.String(), "flathub  enable  Flatpak remote") {
+	if !strings.Contains(output.String(), "GitHub SSH host-key freshness unavailable; retry later.") ||
+		!strings.Contains(output.String(), "Preparing Flatpak applications...") {
 		t.Fatalf("unavailable check hid or blocked unrelated work:\n%s", output.String())
 	}
 	for _, call := range runner.calls {
@@ -487,7 +471,7 @@ func TestPreparePlanUnauthenticatedGitHubReconcilesOnlyAfterConfirmation(t *test
 		if code != Success {
 			t.Fatalf("code=%d\n%s", code, output.String())
 		}
-		want := []string{"github|authenticate|CLI login; SSH-key permission", "GitHub SSH keys|inspect|reconcile account keys", "GitHub SSH key|configure|managed key"}
+		want := []string{"Signing in to GitHub..."}
 		if got := progressRecords(output.String()); strings.Join(got, "\n") != strings.Join(want, "\n") {
 			t.Fatalf("progress=%v, want=%v\n%s", got, want, output.String())
 		}
@@ -503,7 +487,7 @@ func TestPreparePlanUnauthenticatedGitHubReconcilesOnlyAfterConfirmation(t *test
 		if !loginInteractive {
 			t.Fatal("gh auth login did not retain its interactive stream")
 		}
-		if !strings.Contains(output.String(), "GitHub SSH keys") || !strings.Contains(output.String(), "reconcile after login") {
+		if !strings.Contains(output.String(), "GitHub SSH keys") {
 			t.Fatalf("unknown remote-key state was not planned:\n%s", output.String())
 		}
 		if strings.Contains(output.String(), "GitHub SSH keys  review") || strings.Contains(output.String(), "\nReview\n") {
@@ -517,34 +501,34 @@ func TestPreparePlanUnauthenticatedGitHubReconcilesOnlyAfterConfirmation(t *test
 	})
 }
 
-func TestPreparePlanReviewsDeferredAndKnownGitHubKeysAccurately(t *testing.T) {
+func TestPreparePlanPreservesDeferredAndKnownGitHubKeys(t *testing.T) {
 	home, fingerprint, deferred := unauthenticatedGitHubFixture(t)
 	other := wirePublic(10)
 	remote := `[{"id":2,"title":"other","key":` + strconv.Quote(other) + `}]`
 
-	t.Run("deferred keys are reviewed only after login finds one", func(t *testing.T) {
+	t.Run("deferred keys are preserved after login", func(t *testing.T) {
 		var output bytes.Buffer
 		runner := &prepareRunner{sshFingerprint: fingerprint, remoteKeys: remote}
-		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), deferred, ui.UI{In: strings.NewReader("y\ny\n"), Out: &output})
-		if code != Success || !strings.Contains(output.String(), "GitHub SSH keys") || !strings.Contains(output.String(), "inspect") || !strings.Contains(output.String(), "reconcile after login") || !strings.Contains(output.String(), "\nReview\n") || !strings.Contains(output.String(), "Keep this key?") {
+		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), deferred, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+		if code != Success || !strings.Contains(output.String(), "GitHub SSH keys") || !strings.Contains(output.String(), "1 existing key preserved") || strings.Contains(output.String(), "Keep this key?") {
 			t.Fatalf("code=%d\n%s", code, output.String())
 		}
 	})
 
-	t.Run("known unrelated key is a real planned review", func(t *testing.T) {
+	t.Run("known unrelated key is preserved", func(t *testing.T) {
 		state := readyExecutionState()
 		state.ManagedGitHubKey = false
 		state.OtherGitHubKeys = 1
 		p := resolveAndPlan(context.Background(), config.Config{Version: 2}, state, outputResolver{})
 		var planOutput bytes.Buffer
 		Runtime{Out: &planOutput}.showPlan(p)
-		if !strings.Contains(planOutput.String(), "GitHub SSH keys") || !strings.Contains(planOutput.String(), "review") || !strings.Contains(planOutput.String(), "account keys") {
+		if !strings.Contains(planOutput.String(), "Configure\n  GitHub") {
 			t.Fatalf("known keys were not planned as review:\n%s", planOutput.String())
 		}
 		var output bytes.Buffer
 		runner := &prepareRunner{sshFingerprint: fingerprint, authenticated: true, remoteKeys: remote}
-		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\ny\n"), Out: &output})
-		if code != Success || !strings.Contains(output.String(), "\nReview\n") || !strings.Contains(output.String(), "Keep this key?") {
+		code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+		if code != Success || !strings.Contains(output.String(), "1 existing key preserved") || strings.Contains(output.String(), "Keep this key?") {
 			t.Fatalf("code=%d\n%s", code, output.String())
 		}
 	})
@@ -569,11 +553,11 @@ func TestPreparePlanSSHAddOutcomesAreAccurate(t *testing.T) {
 			var output bytes.Buffer
 			runner := &prepareRunner{sshFingerprint: fingerprint, sshAddErr: test.sshAddErr}
 			code := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
-			if code != test.wantCode || !strings.Contains(output.String(), "ssh     "+test.wantSSH) {
+			if code != test.wantCode || (test.wantSSH == "ready" && !strings.Contains(output.String(), "Workstation ready.")) {
 				t.Fatalf("code=%d\n%s", code, output.String())
 			}
 			if test.sshAddErr != nil {
-				if !strings.Contains(output.String(), "ssh-agent") || !strings.Contains(output.String(), "github  skipped") {
+				if !strings.Contains(output.String(), "ssh-agent") {
 					t.Fatalf("failed load was not reported or GitHub work was not skipped:\n%s", output.String())
 				}
 				for _, call := range runner.calls {
@@ -595,13 +579,13 @@ func TestApprovedGitAndSSHActionsDoNotAskForSecondAuthorization(t *testing.T) {
 		if code != Success {
 			t.Fatalf("code=%d\n%s", code, output.String())
 		}
-		if strings.Contains(output.String(), "Configure missing Git identity values?") || strings.Count(output.String(), "Prepare this workstation?") != 1 {
+		if strings.Contains(output.String(), "Configure missing Git identity values?") || strings.Count(output.String(), "Continue?") != 1 {
 			t.Fatalf("redundant Git authorization remains:\n%s", output.String())
 		}
-		if !strings.Contains(output.String(), "Git user.name:") || !strings.Contains(output.String(), "Git user.email:") {
+		if !strings.Contains(output.String(), "Git name:") || !strings.Contains(output.String(), "Git email:") {
 			t.Fatalf("required Git value input disappeared:\n%s", output.String())
 		}
-		if progressAt, promptAt := strings.Index(output.String(), "git  configure  user identity; input required"), strings.Index(output.String(), "Git user.name:"); progressAt < 0 || promptAt < progressAt {
+		if progressAt, promptAt := strings.Index(output.String(), "Git identity"), strings.Index(output.String(), "Git name:"); progressAt < 0 || promptAt < progressAt {
 			t.Fatalf("Git input was not announced first:\n%s", output.String())
 		}
 	})
@@ -651,7 +635,7 @@ func TestPreparePlanRefreshesExistingGitHubAuthorizationBeforeKeyAPI(t *testing.
 			refresh = call.Interactive && strings.Join(call.Args, " ") == "auth refresh --hostname github.com --scopes admin:public_key"
 		}
 	}
-	if !refresh || !strings.Contains(output.String(), "gh auth refresh  external  GitHub SSH-key authorization") {
+	if !refresh || !strings.Contains(output.String(), "Authorizing GitHub SSH key access...") {
 		t.Fatalf("scope refresh had no declared boundary:\n%s", output.String())
 	}
 }
@@ -690,7 +674,7 @@ func TestPreparePlanRecoversLateGitHubSessionMissingSSHKeyScope(t *testing.T) {
 				t.Fatalf("existing late session triggered unnecessary login: %#v", call)
 			}
 		}
-		if !strings.Contains(output.String(), "gh auth refresh  external  GitHub SSH-key authorization") {
+		if !strings.Contains(output.String(), "Authorizing GitHub SSH key access...") {
 			t.Fatalf("scope refresh had no declared external boundary:\n%s", output.String())
 		}
 		verified := false
@@ -738,7 +722,7 @@ func TestPreparePlanPostLoginKeyInspectionFailsClosed(t *testing.T) {
 	if got := mutationOrder(runner.calls); strings.Join(got, ",") != "github-authenticate" {
 		t.Fatalf("remote failure caused unsafe mutation: %v", got)
 	}
-	if strings.Contains(strings.Join(progressRecords(output.String()), "\n"), "GitHub SSH key|configure") {
+	if strings.Contains(output.String(), "This workstation added") {
 		t.Fatalf("registration progress preceded successful reconciliation:\n%s", output.String())
 	}
 }
@@ -759,7 +743,7 @@ func TestPreparePlanPostLoginExistingManagedKeySkipsRegistration(t *testing.T) {
 	if got := mutationOrder(runner.calls); strings.Join(got, ",") != "github-authenticate" {
 		t.Fatalf("existing managed key was registered again: %v", got)
 	}
-	if strings.Contains(strings.Join(progressRecords(output.String()), "\n"), "GitHub SSH key|configure") {
+	if strings.Contains(output.String(), "GitHub SSH keys") {
 		t.Fatalf("registration Progress emitted for an existing key:\n%s", output.String())
 	}
 }
@@ -775,7 +759,7 @@ func TestPreparePlanAuthenticatedMissingManagedKeyRegistersWithoutSecondAuthoriz
 	if code != Success || strings.Join(mutationOrder(runner.calls), ",") != "github-key" {
 		t.Fatalf("code=%d mutations=%v\n%s", code, mutationOrder(runner.calls), output.String())
 	}
-	if strings.Contains(output.String(), "Register ~/.ssh/ops.pub with GitHub?") || strings.Count(output.String(), "Prepare this workstation?") != 1 {
+	if strings.Contains(output.String(), "Register ~/.ssh/ops.pub with GitHub?") || strings.Count(output.String(), "Continue?") != 1 {
 		t.Fatalf("redundant registration authorization remains:\n%s", output.String())
 	}
 
@@ -832,7 +816,7 @@ func TestPreparePlanPreservesFatalAndNonfatalFailureSemantics(t *testing.T) {
 		if code != Issues || strings.Join(mutationOrder(runner.calls), ",") != "application,application" {
 			t.Fatalf("code=%d mutations=%v\n%s", code, mutationOrder(runner.calls), output.String())
 		}
-		wantProgress := []string{"broken|install|flatpak", "working|install|flatpak"}
+		wantProgress := []string{"Installing broken...", "Installing working..."}
 		if got := progressRecords(output.String()); strings.Join(got, "\n") != strings.Join(wantProgress, "\n") {
 			t.Fatalf("progress=%v, want=%v\n%s", got, wantProgress, output.String())
 		}

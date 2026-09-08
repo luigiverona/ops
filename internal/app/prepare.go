@@ -52,54 +52,50 @@ func (a Runtime) Prepare(ctx context.Context) int {
 	return a.preparePlan(ctx, cfg, p, terminal)
 }
 
-func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) execution {
-	a.presentation = &presentation{}
+func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (result execution) {
 	a.showPlan(p)
 	plannedProblems := planIssues(p)
 	if !p.HasActions() {
-		return execution{plan: p, ready: readyApplicationCount(p), git: p.GitStatus, ssh: p.SSHStatus, github: p.GitHubStatus, problems: plannedProblems}
+		return execution{git: p.GitStatus, ssh: p.SSHStatus, github: p.GitHubStatus, problems: plannedProblems}
 	}
-	confirmed, err := terminal.Confirm("Prepare this workstation?", true)
+	confirmed, err := terminal.Confirm("Continue?", true)
 	if err != nil {
 		return execution{status: a.fatal(err)}
 	}
 	if !confirmed {
-		a.reportSkipped(p)
+		fmt.Fprintln(a.Out, "No changes made.")
 		return execution{status: Success, skipped: true}
 	}
-
 	privileged := needsPrivilege(p)
 	var keeper *sudoops.Keeper
 	if privileged {
-		a.showProgress("sudo", actionConfigure, "privileged operations")
-		a.showExternal("sudo", "password prompt")
 		keeper, err = sudoops.Acquire(ctx, a.Runner)
 		if err != nil {
-			return execution{status: a.fatal(fmt.Errorf("sudo authorization failed: %w", err))}
+			return execution{status: a.fatal(fmt.Errorf("sudo authorization failed; no workstation changes made: %w", err))}
 		}
 		defer keeper.Close()
 	}
+	defer func() {
+		if result.status == Fatal {
+			fmt.Fprintln(a.Err, "Earlier changes may remain. Run ops doctor before retrying.")
+		}
+	}()
 
 	archManager := arch.Manager{Runner: a.Runner}
 	if p.EnableMultilib {
-		a.showProgress("multilib", actionEnable, "pacman repository")
+		a.progress("Preparing system...")
 		if err := archManager.EnableMultilib(ctx); err != nil {
 			return execution{status: a.coreFatal("multilib", err, "required repository configuration is unavailable")}
 		}
 	}
 	if p.FullUpgrade {
-		a.showProgress("full system upgrade", actionUpgrade, fullUpgradeDetail)
-		a.showExternal("pacman -Syu", "pacman transaction decisions")
+		a.progress("Updating system...")
 		if err := archManager.FullUpgrade(ctx); err != nil {
 			return execution{status: a.coreFatal("Arch system upgrade", err, "package installation cannot continue safely")}
 		}
 	}
 	if len(p.CorePackages) > 0 {
-		rows := make([]ui.TableRow, 0, len(p.CorePackages))
-		for _, pkg := range p.CorePackages {
-			rows = append(rows, ui.TableRow{Item: pkg, Action: actionInstall, Detail: "pacman"})
-		}
-		a.showProgressRows(rows)
+		a.progress("Installing packages...")
 	}
 	if err := archManager.Install(ctx, p.CorePackages, false); err != nil {
 		return execution{status: a.coreFatal("core packages", err, "required workstation capabilities are unavailable")}
@@ -110,59 +106,45 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) e
 	}
 
 	aurManager := aur.Manager{Runner: a.Runner, Review: func(name string, files map[string]string) error {
-		a.showReview("AUR build files for "+name, []ui.Field{{Name: "notice", Value: "untrusted community instructions"}})
-		names := make([]string, 0, len(files))
-		for filename := range files {
-			names = append(names, filename)
-		}
-		sort.Strings(names)
-		for _, filename := range names {
-			fmt.Fprintf(a.Out, "\n%s", ui.RenderReviewFile(filename, files[filename]))
-		}
-		ok, err := terminal.Confirm("Build and install this reviewed AUR package?", false)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return errReviewDeclined
-		}
-		return nil
+		return a.reviewAUR(ctx, terminal, name, files)
 	}}
 	flatpakManager := flatpak.Manager{Runner: a.Runner}
 	if p.AddFlathub {
-		a.showProgress("flathub", actionEnable, "Flatpak remote")
+		a.progress("Preparing Flatpak applications...")
 		if err := flatpakManager.AddFlathub(ctx); err != nil {
 			return execution{status: a.coreFatal("flathub", err, "Flatpak application support is unavailable")}
 		}
 	}
 
 	problems := plannedProblems
-	readyApps := 0
 	for _, application := range p.Applications {
 		if application.State == "ready" {
-			readyApps++
 			continue
 		}
 		if application.State.Problem() {
 			continue
 		}
 		if application.State == "configure" {
+			a.progress("Configuring " + application.Declaration.Identifier + "...")
 			if err := a.configureApplication(ctx, archManager, application); err != nil {
-				problems = append(problems, issue{State: "Failed", Name: application.Declaration.Identifier, Source: string(application.Declaration.Source), Cause: err.Error(), Impact: "application install reason was not configured", Action: "resolve the package error and run ops again"})
+				problems = append(problems, issue{State: "Failed", Name: application.Declaration.Identifier, Source: string(application.Declaration.Source), Cause: err.Error(), Impact: "application configuration is incomplete", Action: "run ops doctor, resolve the error, then run ops again"})
 				continue
 			}
-			readyApps++
 			continue
 		}
 		if err := a.installApplication(ctx, archManager, aurManager, flatpakManager, application); err != nil {
+			if ctx.Err() != nil {
+				return execution{status: a.fatal(fmt.Errorf("application setup interrupted: %w", err))}
+			}
 			state := "Failed"
+			impact := "application setup is incomplete; installation or configuration may have partially succeeded"
 			if errors.Is(err, errReviewDeclined) {
 				state = "Skipped"
+				impact = "this build's dependencies and artifacts were not installed"
 			}
-			problems = append(problems, issue{State: state, Name: application.Declaration.Identifier, Source: string(application.Declaration.Source), Cause: err.Error(), Impact: "application was not installed or configured", Action: "resolve the source error or review decision and run ops again"})
+			problems = append(problems, issue{State: state, Name: application.Declaration.Identifier, Source: string(application.Declaration.Source), Cause: err.Error(), Impact: impact, Action: "run ops doctor, resolve the source error or review decision, then run ops again"})
 			continue
 		}
-		readyApps++
 	}
 
 	gitStatus := p.GitStatus
@@ -208,7 +190,7 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) e
 		}
 	}
 
-	return execution{plan: p, applied: true, ready: readyApps, git: gitStatus, ssh: sshStatus, github: githubStatus, problems: problems}
+	return execution{applied: true, git: gitStatus, ssh: sshStatus, github: githubStatus, problems: problems}
 }
 
 func needsPrivilege(p plan.Plan) bool {
@@ -237,3 +219,40 @@ func (a Runtime) verifyCore(ctx context.Context, p plan.Plan) error {
 }
 
 var errReviewDeclined = errors.New("AUR build intentionally skipped by user; build dependencies and artifacts were not installed")
+
+// reviewAUR hides only declarative metadata from presentation. The AUR manager
+// still validates it and compares every tracked file before executing the build.
+func (a Runtime) reviewAUR(ctx context.Context, terminal ui.UI, name string, files map[string]string) error {
+	if _, ok := files["PKGBUILD"]; !ok {
+		return errors.New("AUR source does not track PKGBUILD; cannot review build instructions")
+	}
+	a.progress("Reviewing " + name + "...")
+	names := []string{"PKGBUILD"}
+	for filename := range files {
+		if filename != "PKGBUILD" && filename != ".SRCINFO" {
+			names = append(names, filename)
+		}
+	}
+	sort.Strings(names[1:])
+	review := make([]ui.ReviewFile, 0, len(names))
+	for _, filename := range names {
+		review = append(review, ui.ReviewFile{Name: filename, Contents: files[filename]})
+	}
+	if err := terminal.Review(ctx, review); err != nil {
+		if errors.Is(err, ui.ErrReviewCancelled) {
+			return errReviewDeclined
+		}
+		return fmt.Errorf("AUR review could not be completed; build not approved: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	ok, err := terminal.Confirm("Install "+ui.PrintableASCII(name)+"?", false)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errReviewDeclined
+	}
+	return nil
+}

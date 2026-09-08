@@ -21,8 +21,17 @@ duplicate, truncated, zero-object, and trailing advertisements. Remote responses
 are bounded; invalid JSON or `.SRCINFO` cannot authorize an install.
 
 Application fetch checks the pinned object ID, displays terminal-sanitized
-tracked files for explicit review, and compares declarative metadata and file
-contents before execution. The current source is never silently substituted.
+PKGBUILD and other tracked files for explicit review (except declarative
+`.SRCINFO`, which is still parsed and validated internally), and compares
+declarative metadata and file contents before execution. The current source is
+never silently substituted.
+The built-in line-oriented source view uses a separate terminal screen where
+supported, keeping patches and helpers out of the normal run transcript. Enter
+advances through every page, `b` revisits a page, and `q` cancels this build;
+completion returns to one default-no install approval. No external pager,
+shell hooks, or temporary review files are used. Dumb terminals retain a plain
+paginated view. Source controls are escaped before display; cancellation, EOF,
+or a failed review display cannot approve a build.
 Normal-user makepkg receives EOF stdin and cannot delegate package installation
 through an interactive helper. Providers, version expressions, output closure,
 and concrete official dependency transactions are revalidated before mutation.
@@ -44,10 +53,10 @@ user and can access that user's data. Do not approve sources you do not trust.
 The managed Ed25519 identity is `~/.ssh/ops` / `ops.pub`. Discovery pairs key
 material by exact fingerprint. Symlinked SSH directories or managed identities
 and nonregular managed targets are rejected. Unrelated files, authorized keys,
-certificates, sockets, and ordinary known_hosts are not rewritten. When setup
-requires key review, keeping unrelated identities is the default; deletion
-names exact files and requires a separate default-no confirmation. Agent
-unloading never deletes files.
+certificates, sockets, and ordinary known_hosts are not rewritten. Setup preserves
+unrelated local identities, loaded agent identities, and GitHub SSH keys without
+per-key prompts. It never deletes or unloads them; removing unrelated keys is a
+separate user-managed operation.
 
 A marked dispatcher in `~/.ssh/config` preserves the user's configuration in
 `ops_user_config` for hosts other than GitHub. Isolated `ops_config` and
@@ -62,7 +71,8 @@ and requests `admin:public_key`, the minimum additional permission needed for
 account SSH-key reconciliation. Existing insufficient sessions are explicitly
 planned for refresh. Account keys are compared by exact fingerprint and
 reinspected after login; failed inspection cannot authorize deletion or blind
-registration. Unrelated remote deletion has separate default-no confirmation.
+registration. Setup never deletes unrelated remote keys. The key summary is
+shown only when this run actually adds the managed key.
 The managed key has a fingerprint-derived title; duplicates are avoided and
 SSH access is verified after setup.
 

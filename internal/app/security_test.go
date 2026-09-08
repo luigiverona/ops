@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -18,48 +19,39 @@ import (
 	"github.com/luigiverona/ops/internal/ui"
 )
 
-func TestSSHDeletionRequiresBothConfirmations(t *testing.T) {
+func TestSetupPreservesUnrelatedSSHIdentitiesWithoutPrompts(t *testing.T) {
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
 		t.Skip("ssh-keygen unavailable")
 	}
 	home := t.TempDir()
 	dir := filepath.Join(home, ".ssh")
-	_ = os.Mkdir(dir, 0o700)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	generateTestIdentity(t, dir, "ops")
-	private := filepath.Join(dir, "existing")
 	generateTestIdentity(t, dir, "existing")
-	runtime := Runtime{Home: home, Runner: run.Exec{In: strings.NewReader(""), Out: io.Discard, Err: io.Discard}, Out: io.Discard, Err: io.Discard}
-	terminal := ui.UI{In: strings.NewReader("n\ny\n"), Out: io.Discard}
-	status, _, issues, fatal := runtime.configureSSH(context.Background(), terminal, plan.Plan{ReviewSSHIdentities: true})
-	if fatal != nil || len(issues) != 0 || status != "ready" {
-		t.Fatalf("status=%s issues=%v fatal=%v", status, issues, fatal)
+	before := make(map[string][]byte)
+	for _, name := range []string{"existing", "existing.pub"} {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = data
 	}
-	if _, err := os.Stat(private); !os.IsNotExist(err) {
-		t.Fatal("private identity was not deleted after both confirmations")
+	var output bytes.Buffer
+	input := strings.NewReader("n\ny\n")
+	runtime := Runtime{Home: home, Runner: run.Exec{Out: io.Discard, Err: io.Discard}, Out: &output, Err: &output}
+	status, _, issues, fatal := runtime.configureSSH(context.Background(), ui.UI{In: input, Out: &output}, plan.Plan{ReviewSSHIdentities: true})
+	if fatal != nil || len(issues) != 0 || status != "ready" || input.Len() != len("n\ny\n") || output.Len() != 0 {
+		t.Fatalf("status=%s issues=%v fatal=%v output=%s", status, issues, fatal, &output)
 	}
-	if _, err := os.Stat(private + ".pub"); !os.IsNotExist(err) {
-		t.Fatal("public identity was not deleted after both confirmations")
+	for name, want := range before {
+		got, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("unrelated key changed: %s, %v", name, err)
+		}
 	}
 }
-
-func TestSSHDeletionDefaultsToKeep(t *testing.T) {
-	if _, err := exec.LookPath("ssh-keygen"); err != nil {
-		t.Skip("ssh-keygen unavailable")
-	}
-	home := t.TempDir()
-	dir := filepath.Join(home, ".ssh")
-	_ = os.Mkdir(dir, 0o700)
-	generateTestIdentity(t, dir, "ops")
-	private := filepath.Join(dir, "existing")
-	generateTestIdentity(t, dir, "existing")
-	runtime := Runtime{Home: home, Runner: run.Exec{In: strings.NewReader(""), Out: io.Discard, Err: io.Discard}, Out: io.Discard, Err: io.Discard}
-	terminal := ui.UI{In: strings.NewReader("\n"), Out: io.Discard}
-	_, _, _, _ = runtime.configureSSH(context.Background(), terminal, plan.Plan{ReviewSSHIdentities: true})
-	if _, err := os.Stat(private); err != nil {
-		t.Fatal("default keep removed identity")
-	}
-}
-
 func generateTestIdentity(t *testing.T, dir, name string) {
 	t.Helper()
 	cmd := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", filepath.Join(dir, name))
@@ -69,8 +61,7 @@ func generateTestIdentity(t *testing.T, dir, name string) {
 }
 
 type githubFake struct {
-	deleted    []string
-	failDelete bool
+	deleted []string
 }
 
 func (f *githubFake) Run(_ context.Context, spec run.Spec) (run.Result, error) {
@@ -85,32 +76,91 @@ func (f *githubFake) Run(_ context.Context, spec run.Spec) (run.Result, error) {
 	}
 	if len(spec.Args) >= 3 && spec.Args[0] == "ssh-key" && spec.Args[1] == "delete" {
 		f.deleted = append(f.deleted, spec.Args[2])
-		if f.failDelete {
-			return run.Result{}, errors.New("denied")
-		}
 		return run.Result{}, nil
 	}
 	return run.Result{}, errors.New("unexpected command")
 }
 
-func TestGitHubKeysReviewedIndividuallyAndDoubleConfirmed(t *testing.T) {
+func TestSetupPreservesGitHubKeysWithoutPrompts(t *testing.T) {
 	fake := &githubFake{}
-	runtime := Runtime{Runner: fake, Out: io.Discard, Err: io.Discard}
-	terminal := ui.UI{In: strings.NewReader("n\ny\n"), Out: io.Discard}
+	var output bytes.Buffer
+	input := strings.NewReader("n\ny\n")
 	fingerprint, _ := sshops.PublicFingerprint(wirePublic(1))
-	status, issues := runtime.configureGitHub(context.Background(), terminal, &sshops.Identity{PublicPath: "unused", Fingerprint: fingerprint}, plan.Plan{ReviewGitHubKeys: true})
-	if status != "ready" || len(issues) != 0 || len(fake.deleted) != 1 || fake.deleted[0] != "2" {
+	status, issues := (Runtime{Runner: fake, Out: &output, Err: &output}).configureGitHub(context.Background(), ui.UI{In: input, Out: &output}, &sshops.Identity{Fingerprint: fingerprint}, plan.Plan{ReviewGitHubKeys: true})
+	if status != "ready" || len(issues) != 0 || len(fake.deleted) != 0 || input.Len() != len("n\ny\n") {
 		t.Fatalf("status=%s issues=%v deleted=%v", status, issues, fake.deleted)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("output=%q", output.String())
 	}
 }
 
-func TestGitHubDeletionFailureIsReported(t *testing.T) {
-	fake := &githubFake{failDelete: true}
-	runtime := Runtime{Runner: fake, Out: io.Discard, Err: io.Discard}
-	terminal := ui.UI{In: strings.NewReader("n\ny\n"), Out: io.Discard}
-	status, issues := runtime.configureGitHub(context.Background(), terminal, &sshops.Identity{}, plan.Plan{ReviewGitHubKeys: true})
-	if status != "failed" || len(issues) != 1 {
-		t.Fatalf("status=%s issues=%v", status, issues)
+type agentPreservationRunner struct {
+	prepareRunner
+}
+
+func (r *agentPreservationRunner) Run(ctx context.Context, spec run.Spec) (run.Result, error) {
+	if spec.Name == "ssh-add" && strings.Join(spec.Args, " ") == "-L" {
+		r.calls = append(r.calls, spec)
+		return run.Result{Stdout: wirePublic(19) + "\n"}, nil
+	}
+	return r.prepareRunner.Run(ctx, spec)
+}
+
+func TestSetupPreservesUnrelatedAgentKeysWithoutPrompts(t *testing.T) {
+	home, fingerprint, _ := unauthenticatedGitHubFixture(t)
+	runner := &agentPreservationRunner{prepareRunner{sshFingerprint: fingerprint}}
+	var output bytes.Buffer
+	input := strings.NewReader("n\n")
+	status, _, issues, fatal := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).configureSSH(context.Background(), ui.UI{In: input, Out: &output}, plan.Plan{ReviewSSHAgent: true, LoadSSHAgent: true})
+	if status != "ready" || len(issues) != 0 || fatal != nil || input.Len() != len("n\n") {
+		t.Fatalf("status=%s issues=%v fatal=%v", status, issues, fatal)
+	}
+	loaded := false
+	for _, call := range runner.calls {
+		if call.Name != "ssh-add" {
+			continue
+		}
+		args := strings.Join(call.Args, " ")
+		if args == filepath.Join(home, ".ssh", "ops") && call.Interactive {
+			loaded = true
+			continue
+		}
+		if args != "-L" {
+			t.Fatalf("unexpected agent mutation: %#v", call)
+		}
+	}
+	if !loaded || strings.Contains(output.String(), "?") {
+		t.Fatalf("managed load missing or extra prompt: %s", &output)
+	}
+}
+
+type githubRegistrationRaceRunner struct {
+	prepareRunner
+}
+
+func (r *githubRegistrationRaceRunner) Run(ctx context.Context, spec run.Spec) (run.Result, error) {
+	result, err := r.prepareRunner.Run(ctx, spec)
+	if r.githubAPICalls == 1 {
+		r.remoteKeys = `[{"id":1,"title":"managed","key":` + strconv.Quote(wirePublic(9)) + ` }]`
+	}
+	return result, err
+}
+
+func TestGitHubSummaryDoesNotClaimAnExistingKeyWasAdded(t *testing.T) {
+	home, fingerprint, _ := unauthenticatedGitHubFixture(t)
+	runner := &githubRegistrationRaceRunner{prepareRunner{sshFingerprint: fingerprint}}
+	var output bytes.Buffer
+	status, issues := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).configureGitHub(
+		context.Background(), ui.UI{}, &sshops.Identity{Fingerprint: fingerprint, PublicPath: filepath.Join(home, ".ssh", "ops.pub")}, plan.Plan{ConfigureGitHubKey: true},
+	)
+	if status != "ready" || len(issues) != 0 || output.Len() != 0 {
+		t.Fatalf("status=%s issues=%v output=%s", status, issues, &output)
+	}
+	for _, call := range runner.calls {
+		if call.Name == "gh" && strings.HasPrefix(strings.Join(call.Args, " "), "ssh-key add") {
+			t.Fatalf("duplicate registration: %#v", call)
+		}
 	}
 }
 

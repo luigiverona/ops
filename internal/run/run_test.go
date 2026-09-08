@@ -89,3 +89,38 @@ func TestExecNoninteractiveErrorRetainsCapturedStderr(t *testing.T) {
 		t.Fatalf("noninteractive diagnostic was lost: %v", err)
 	}
 }
+
+func TestExecStreamsTransactionOutputWithoutConsumingInput(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		input := strings.NewReader("reserved for ops\n")
+		var out, stderr bytes.Buffer
+		command := "if read value; then exit 99; fi; printf transaction; printf diagnostic >&2"
+		if fail {
+			command += "; exit 1"
+		}
+		_, err := (Exec{In: input, Out: &out, Err: &stderr}).Run(context.Background(), Spec{
+			Name: "sh", Args: []string{"-c", command}, StreamOutput: true,
+		})
+		if (err != nil) != fail || out.String() != "transaction" || stderr.String() != "diagnostic" || input.Len() != len("reserved for ops\n") {
+			t.Fatalf("fail=%v err=%v out=%q stderr=%q unread=%d", fail, err, &out, &stderr, input.Len())
+		}
+		if fail {
+			var commandErr *Error
+			if !errors.As(err, &commandErr) || !commandErr.Presented || commandErr.Stderr != "diagnostic" {
+				t.Fatalf("streamed failure lost stderr: %v", err)
+			}
+		}
+	}
+}
+
+func TestStreamingDoesNotAuthorizeTruncatedInspection(t *testing.T) {
+	for _, allow := range []bool{false, true} {
+		result, err := (Exec{Out: io.Discard, Err: io.Discard}).Run(context.Background(), Spec{
+			Name: "sh", Args: []string{"-c", "head -c 2097153 /dev/zero"},
+			StreamOutput: true, AllowTruncatedOutput: allow,
+		})
+		if (err == nil) != allow || len(result.Stdout) != captureLimit {
+			t.Fatalf("allow=%v len=%d err=%v", allow, len(result.Stdout), err)
+		}
+	}
+}
