@@ -269,6 +269,73 @@ func TestInstallArtifactsBindsStagedBytesAndExcludesDebug(t *testing.T) {
 	}
 }
 
+func TestInstallArtifactsSkipsMissingPredictions(t *testing.T) {
+	for _, predicted := range []string{"ops-artifact-probe-debug-1-1-any.pkg.tar.zst", "ops-artifact-probe-docs-1-1-any.pkg.tar.zst"} {
+		t.Run(predicted, func(t *testing.T) {
+			dir := t.TempDir()
+			artifact := filepath.Join(dir, "ops-artifact-probe-1-1-any.pkg.tar.zst")
+			if err := os.WriteFile(artifact, []byte("ops-artifact-probe"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runner := newArtifactStageRunner()
+			// Exercise both relative and absolute packagelist paths.
+			if err := (Manager{Runner: runner}).InstallArtifacts(context.Background(), dir, []string{predicted, artifact}, []string{"ops-artifact-probe"}, []string{"ops-artifact-probe"}); err != nil {
+				t.Fatal(err)
+			}
+			if runner.copyNumber != 1 || len(runner.installed) != 1 || !strings.HasPrefix(runner.installed[0], runner.stageDir+"/") || string(runner.installedBytes[0]) != "ops-artifact-probe" {
+				t.Fatalf("copies=%d installed=%v bytes=%q", runner.copyNumber, runner.installed, runner.installedBytes)
+			}
+			if !runner.cleaned || len(runner.staged) != 0 {
+				t.Fatalf("protected stage was not cleaned: %#v", runner)
+			}
+		})
+	}
+}
+
+func TestInstallArtifactsRejectsMissingPlannedOutputBeforeTransaction(t *testing.T) {
+	for _, partial := range []bool{false, true} {
+		name := "all missing"
+		if partial {
+			name = "partially produced"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			artifacts := []string{filepath.Join(dir, "suite-libs.pkg.tar.zst")}
+			targets := []string{"suite-libs"}
+			if partial {
+				cli := filepath.Join(dir, "suite-cli.pkg.tar.zst")
+				if err := os.WriteFile(cli, []byte("suite-cli"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				artifacts = append([]string{cli}, artifacts...)
+				targets = append([]string{"suite-cli"}, targets...)
+			}
+			runner := newArtifactStageRunner()
+			err := (Manager{Runner: runner}).InstallArtifacts(context.Background(), dir, artifacts, targets, targets)
+			if err == nil || !strings.Contains(err.Error(), `no protected artifact matches planned package "suite-libs"`) {
+				t.Fatalf("expected missing planned identity, got %v", err)
+			}
+			for _, call := range runner.calls {
+				if call.Name == "sudo" && len(call.Args) >= 3 && call.Args[1] == "pacman" && (call.Args[2] == "-U" || call.Args[2] == "-D") {
+					t.Fatalf("package mutation despite missing planned output: %#v", call)
+				}
+			}
+			if !runner.cleaned || len(runner.staged) != 0 || len(runner.installed) != 0 {
+				t.Fatalf("unexpected installation or uncleaned stage: %#v", runner)
+			}
+		})
+	}
+}
+
+func TestInstallArtifactsRejectsDuplicateMissingPredictionsBeforePrivilege(t *testing.T) {
+	dir := t.TempDir()
+	runner := newArtifactStageRunner()
+	err := (Manager{Runner: runner}).InstallArtifacts(context.Background(), dir, []string{"missing.pkg.tar.zst", filepath.Join(dir, "missing.pkg.tar.zst")}, []string{"suite"}, []string{"suite"})
+	if err == nil || !strings.Contains(err.Error(), "unsafe or duplicate package artifact path") || len(runner.calls) != 0 {
+		t.Fatalf("duplicate prediction accepted or privileged staging started: err=%v calls=%#v", err, runner.calls)
+	}
+}
+
 func TestInstallArtifactsSelectsOnlyExactSplitOutputs(t *testing.T) {
 	dir := t.TempDir()
 	cli := filepath.Join(dir, "suite-cli.pkg.tar.zst")
@@ -313,7 +380,7 @@ func TestInstallArtifactsFailsWhenExplicitReasonCannotBeVerified(t *testing.T) {
 }
 
 func TestInstallArtifactsRejectsUnsafeSourcesBeforePrivilege(t *testing.T) {
-	for _, kind := range []string{"symlink", "directory", "fifo", "outside"} {
+	for _, kind := range []string{"symlink", "broken symlink", "directory", "fifo", "outside", "missing outside"} {
 		t.Run(kind, func(t *testing.T) {
 			dir := t.TempDir()
 			path := filepath.Join(dir, "artifact")
@@ -323,6 +390,10 @@ func TestInstallArtifactsRejectsUnsafeSourcesBeforePrivilege(t *testing.T) {
 					t.Fatal(err)
 				}
 				if err := os.Symlink(filepath.Join(dir, "target"), path); err != nil {
+					t.Fatal(err)
+				}
+			case "broken symlink":
+				if err := os.Symlink(filepath.Join(dir, "missing"), path); err != nil {
 					t.Fatal(err)
 				}
 			case "directory":
@@ -338,6 +409,8 @@ func TestInstallArtifactsRejectsUnsafeSourcesBeforePrivilege(t *testing.T) {
 				if err := os.WriteFile(path, []byte("paru"), 0o600); err != nil {
 					t.Fatal(err)
 				}
+			case "missing outside":
+				path = filepath.Join(t.TempDir(), "missing")
 			}
 			runner := newArtifactStageRunner()
 			if err := (Manager{Runner: runner}).InstallArtifacts(context.Background(), dir, []string{path}, []string{"paru"}, []string{"paru"}); err == nil || len(runner.calls) != 0 {

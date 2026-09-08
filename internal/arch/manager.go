@@ -282,6 +282,16 @@ func openArtifactSources(buildDir string, artifacts []string) ([]*os.File, error
 			return nil, fmt.Errorf("unsafe or duplicate package artifact path %q", value)
 		}
 		seen[path] = true
+		pathInfo, lstatErr := os.Lstat(path)
+		if errors.Is(lstatErr, os.ErrNotExist) {
+			// makepkg --packagelist can predict outputs the build did not
+			// produce. Planned identities must still match staged artifacts.
+			continue
+		}
+		if lstatErr != nil || !pathInfo.Mode().IsRegular() {
+			closeSources()
+			return nil, fmt.Errorf("package artifact is unavailable or non-regular: %s", path)
+		}
 		resolved, resolveErr := filepath.EvalSymlinks(path)
 		if resolveErr != nil || resolved != path || !insidePath(root, resolved) {
 			closeSources()
