@@ -14,6 +14,7 @@ import (
 
 	"github.com/luigiverona/ops/internal/release"
 	"github.com/luigiverona/ops/internal/run"
+	"github.com/luigiverona/ops/internal/ui"
 	"github.com/luigiverona/ops/internal/version"
 )
 
@@ -54,10 +55,8 @@ func TestRuntimeUpdateAlreadyCurrentReturnsSuccessWithoutSudoOrReplacement(t *te
 	if code != Success {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
-	for _, want := range []string{"Update", "current         " + version.Value, "latest          " + version.Value, "status          up to date"} {
-		if !strings.Contains(output.String(), want) {
-			t.Fatalf("missing %q:\n%s", want, output.String())
-		}
+	if output.String() != "ops "+version.Value+" is up to date.\n" {
+		t.Fatalf("unexpected update output: %s", &output)
 	}
 	assertUpdateNeverPrivilegedOrReplaced(t, runner.calls)
 }
@@ -96,6 +95,49 @@ func archOSRelease(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestUpdateDeclineOrEOFDoesNotDownloadOrMutate(t *testing.T) {
+	setStableVersion(t)
+	for _, answer := range []string{"n\n", ""} {
+		var output bytes.Buffer
+		runner := &updateRunner{}
+		requests := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests++; http.Error(w, "unexpected", 500) }))
+		client := release.Client{HTTP: server.Client(), BaseURL: server.URL, Runner: runner}
+		code := (Runtime{Runner: runner, Out: &output, Err: &output}).installUpdate(context.Background(), client, "9.0.0", ui.UI{In: strings.NewReader(answer), Out: &output})
+		server.Close()
+		if requests != 0 || len(runner.calls) != 0 {
+			t.Fatal("unapproved update performed work")
+		}
+		if answer == "n\n" {
+			if code != Success || !strings.HasSuffix(output.String(), "No changes made.\n") {
+				t.Fatalf("code=%d output=%s", code, &output)
+			}
+		} else if code != Fatal || !strings.Contains(output.String(), "no approval granted") {
+			t.Fatalf("code=%d output=%s", code, &output)
+		}
+	}
+}
+
+func TestUpdateVerificationFailureKeepsActionableDetailAndNeverUsesSudo(t *testing.T) {
+	setStableVersion(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	var output bytes.Buffer
+	runner := &updateRunner{}
+	client := release.Client{HTTP: server.Client(), BaseURL: server.URL, Runner: runner, Trust: release.DefaultTrust()}
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).installUpdate(context.Background(), client, "9.0.0", ui.UI{In: strings.NewReader("y\n"), Out: &output})
+	if code != Fatal || len(runner.calls) != 0 || strings.Contains(output.String(), "ops 9.0.0 verified.") || strings.Count(output.String(), "?") != 1 {
+		t.Fatalf("code=%d calls=%v output=%s", code, runner.calls, &output)
+	}
+	for _, want := range []string{"503", "the installed ops binary was not changed", "run ops update again", "Update stopped."} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("missing %q: %s", want, &output)
+		}
+	}
 }
 
 func setStableVersion(t *testing.T) {

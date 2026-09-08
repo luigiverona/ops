@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -11,277 +12,215 @@ import (
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/resolve"
+	"github.com/luigiverona/ops/internal/ui"
 )
 
-func TestShowPlanMixedWorkstation(t *testing.T) {
-	p := realWorkstationPlan(t)
-	var output bytes.Buffer
-	Runtime{Out: &output}.showPlan(p)
-	want := "Plan\n" +
-		"\nSystem\n" +
-		"  full system upgrade  upgrade  pacman; confirm transaction in pacman\n" +
-		"\nApplications\n" +
-		"  bitwarden              install  pacman\n" +
-		"  com.tutanota.Tutanota  install  flatpak\n" +
-		"\nIdentity and access\n" +
-		"  SSH identities                review        unrelated local keys\n" +
-		"  github.com SSH configuration  configure     managed identity and host trust\n" +
-		"  github                        authenticate  CLI login; SSH-key permission\n" +
-		"  GitHub SSH keys               inspect       reconcile after login\n" +
-		"  GitHub SSH key                configure     register after login, if missing\n" +
-		"\nUnchanged\n" +
-		"  5 core components\n" +
-		"  6 applications\n"
-	if output.String() != want {
-		t.Fatalf("plan mismatch\n--- got ---\n%s--- want ---\n%s", output.String(), want)
-	}
-	for _, readyIdentifier := range []string{"librewolf-bin", "mullvad-browser-bin", "mullvad-vpn", "discord", "spotify-launcher", "steam"} {
-		if strings.Contains(output.String(), readyIdentifier) {
-			t.Fatalf("ready application %q dominated the change plan", readyIdentifier)
-		}
-	}
-}
-
-func TestShowPlanApplicationSourcesAndLongIdentifiers(t *testing.T) {
-	p := plan.Plan{Applications: []plan.Application{
-		{Declaration: config.Application{Identifier: "bitwarden", Source: "pacman"}, State: "install"},
-		{Declaration: config.Application{Identifier: "com.tutanota.Tutanota", Source: "flatpak"}, State: "install"},
-		{Declaration: config.Application{Identifier: "an-extremely-long-application-identifier", Source: "aur"}, State: "install"},
-	}}
-	var output bytes.Buffer
-	Runtime{Out: &output}.showPlan(p)
-	want := "Plan\n\nApplications\n" +
-		"  bitwarden                                 install  pacman\n" +
-		"  com.tutanota.Tutanota                     install  flatpak\n" +
-		"  an-extremely-long-application-identifier  install  aur; review required\n"
-	if output.String() != want {
-		t.Fatalf("plan mismatch\n--- got ---\n%s--- want ---\n%s", output.String(), want)
-	}
-}
-
-func TestShowPlanSeparatesApplicationDiagnosticsFromReviewActions(t *testing.T) {
-	p := plan.Plan{Applications: []plan.Application{
-		{Declaration: config.Application{Identifier: "librewolf-bin", Source: "aur"}, State: "unresolved", Cause: "exact identifier was not found in the declared source"},
-		{Declaration: config.Application{Identifier: "mullvad-browser-bin", Source: "aur"}, State: "failed", Cause: "optional dependency resolution failed: source unavailable"},
-		{Declaration: config.Application{Identifier: "bitwarden", Source: "pacman"}, State: "install"},
-	}, ReviewSSHIdentities: true}
-	var output bytes.Buffer
-	Runtime{Out: &output}.showPlan(p)
-	got := output.String()
-	if !strings.Contains(got, "Application diagnostics\n  librewolf-bin        unresolved") || !strings.Contains(got, "mullvad-browser-bin  failed") {
-		t.Fatalf("diagnostics were not distinct:\n%s", got)
-	}
-	if strings.Contains(got, "librewolf-bin        review") || !strings.Contains(got, "SSH identities  review") {
-		t.Fatalf("review vocabulary was not reserved for real review:\n%s", got)
-	}
-}
-
-func TestShowPlanIncludesScopeRefreshOnlyWhenNeeded(t *testing.T) {
-	state := readyExecutionState()
-	state.GitHubSSHKeyScopeInsufficient = true
-	p := resolveAndPlan(context.Background(), config.Config{Version: 2}, state, outputResolver{})
-	if p.AuthenticateGitHub || !p.RefreshGitHubSSHKeyScope {
-		t.Fatalf("scope refresh plan=%#v", p)
-	}
-	var output bytes.Buffer
-	Runtime{Out: &output}.showPlan(p)
-	if !strings.Contains(output.String(), "github           authenticate  add SSH-key management permission") {
-		t.Fatalf("scope refresh was not planned:\n%s", output.String())
-	}
-}
-
-func TestReportGroupsIssuesAndPreservesMultilineAlignment(t *testing.T) {
-	p := plan.Plan{Applications: []plan.Application{{Declaration: config.Application{Identifier: "one", Source: "aur"}}, {Declaration: config.Application{Identifier: "two", Source: "flatpak"}}}}
-	var output bytes.Buffer
-	Runtime{Out: &output}.report(p, 0, "ready", "ready", "failed", []issue{
-		{State: "Unresolved", Name: "one", Source: "aur", Cause: "missing\nnext\x1b[31m", Impact: "not installed", Action: "fix declaration"},
-		{State: "Failed", Name: "two", Stage: "setup", Cause: "broken", Impact: "not installed", Action: "retry"},
-	})
-	want := "\nIssues\n\nUnresolved\n\none\n  source  aur\n  cause   missing\n          next\\x1b[31m\n  impact  not installed\n  action  fix declaration\n\nFailed\n\ntwo\n  stage   setup\n  cause   broken\n  impact  not installed\n  action  retry\n\nFinal\n  system  ready\n  core    0/5\n  apps    0/2\n  git     ready\n  ssh     ready\n  github  failed\n\nWorkstation completed with issues.\n"
-	if output.String() != want {
-		t.Fatalf("report mismatch\n--- got ---\n%s--- want ---\n%s", output.String(), want)
-	}
-}
-
-func TestShowPlanDeclaredAURDependencies(t *testing.T) {
-	source := plan.AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
-		PackageBase: "paru", Version: "2.1.0-2", MakeDepends: []string{"cargo"}, Packages: []aurmeta.Package{{Name: "paru"}},
-	}}
-	state := readyExecutionState()
-	state.Installed["base-devel"] = false
-	state.Explicit["base-devel"] = false
-	p := resolveAndPlan(context.Background(), config.Config{Version: 2, Applications: []config.Application{{Source: "aur", Identifier: "paru"}}}, state, outputResolver{
-		aur: map[string]plan.Package{"paru": {Name: "paru", PackageBase: "paru"}}, source: &source,
-		deps: map[string]plan.OfficialDependency{
-			"base-devel": {Requirement: "base-devel", Provider: "base-devel", Packages: []string{"base-devel"}},
-			"cargo":      {Requirement: "cargo", Provider: "rust", Packages: []string{"llvm-libs", "rust"}},
-		},
-	})
-	var output bytes.Buffer
-	Runtime{Out: &output}.showPlan(p)
-	for _, row := range []string{
-		"paru -> base-devel  install  pacman; build dependency",
-		"paru -> llvm-libs   install  pacman; build dependency",
-		"paru -> rust        install  pacman; provides cargo; build dependency",
-	} {
-		if !strings.Contains(output.String(), row) {
-			t.Fatalf("missing row %q:\n%s", row, output.String())
-		}
-	}
-	if !strings.Contains(output.String(), "aur; review required") {
-		t.Fatalf("missing reviewed paru bootstrap row:\n%s", output.String())
-	}
-}
-
-func TestShowPlanDefersRemoteKeyComparisonUntilIdentityExists(t *testing.T) {
-	p := plan.Plan{
-		CreateSSHIdentity: true, ReviewGitHubKeys: true, ConfigureGitHubKey: true,
-		GitHubKeyStateUnknown: true, GitHubKeyAfterIdentity: true,
-	}
-	var output bytes.Buffer
-	Runtime{Out: &output}.showPlan(p)
-	if !strings.Contains(output.String(), "GitHub SSH key   configure  register after identity creation, if missing") ||
-		strings.Contains(output.String(), "register after login") {
-		t.Fatalf("future managed fingerprint was presented as known:\n%s", output.String())
-	}
-}
-
-func TestShowPlanRendersRequiredServicesWithOwners(t *testing.T) {
-	state := plan.State{
-		Installed: map[string]bool{"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true},
-		Explicit:  map[string]bool{"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true, "mullvad-vpn": true},
-		Foreign:   map[string]bool{}, Flatpaks: map[string]bool{}, Flathub: true, Multilib: true,
-		GitName: "User", GitEmail: "user@example.com", ManagedSSHIdentity: true, SSHConfigurationReady: true,
-		SSHHostKeyFreshness: plan.SSHHostKeyFreshnessCurrent,
-		GitHubAuth:          true, GitHubKeysKnown: true, ManagedGitHubKeyKnown: true, ManagedGitHubKey: true,
-	}
-	resolver := outputResolver{pacman: map[string]plan.Package{
-		"mullvad-vpn": {Name: "mullvad-vpn", Repository: "extra"},
-		"libfoo":      {Name: "libfoo", Repository: "extra"},
-		"aaa-helper":  {Name: "aaa-helper", Repository: "extra"},
-	}}
-	p := resolveAndPlan(context.Background(), config.Config{Version: 2, Applications: []config.Application{{Identifier: "mullvad-vpn", Source: "pacman"}}}, state, resolver)
-	var output bytes.Buffer
-	Runtime{Out: &output}.showPlan(p)
-	want := "Plan\n\nSystem\n" +
-		"  full system upgrade  upgrade  pacman; confirm transaction in pacman\n" +
-		"\nApplications\n" +
-		"  mullvad-vpn                            install  pacman\n" +
-		"  mullvad-vpn -> mullvad-daemon.service  enable   systemd\n" +
-		"\nUnchanged\n  3 core components\n"
-	if output.String() != want {
-		t.Fatalf("plan mismatch\n--- got ---\n%s--- want ---\n%s", output.String(), want)
-	}
-}
-
-func TestShowPlanOnlyChangeAndAllReady(t *testing.T) {
+func TestShowPlanConciseIntent(t *testing.T) {
 	tests := []struct {
 		name string
 		plan plan.Plan
 		want string
 	}{
-		{
-			name: "one configuration change",
-			plan: plan.Plan{Core: readyCore(), ConfigureGit: true},
-			want: "Plan\n\nIdentity and access\n  git  configure  user identity; input required\n\nUnchanged\n  5 core components\n",
-		},
-		{
-			name: "all ready",
-			plan: plan.Plan{Core: readyCore(), Applications: readyApplications()},
-			want: "Plan\n\nNo changes\n  workstation is already ready\n\nUnchanged\n  5 core components\n  8 applications\n",
-		},
-		{
-			name: "no mutations with unavailable host-key freshness",
-			plan: plan.Plan{Core: readyCore(), Applications: readyApplications(), SSHHostKeyFreshness: plan.SSHHostKeyFreshnessUnavailable},
-			want: "Plan\n\nNo changes planned\n\nChecks\n  GitHub SSH host-key freshness  unavailable  retry later\n\nUnchanged\n  5 core components\n  8 applications\n",
-		},
+		{"mixed", realWorkstationPlan(t), "Workstation setup\n\nInstall\n  bitwarden\n  com.tutanota.Tutanota\n\nConfigure\n  SSH, GitHub\n\nThe system will be updated.\n\n"},
+		{"identity", plan.Plan{ConfigureGit: true, CreateSSHIdentity: true, AuthenticateGitHub: true}, "Workstation setup\n\nConfigure\n  Git, SSH, GitHub\n\n"},
+		{"ready", plan.Plan{Core: readyCore(), Applications: readyApplications()}, ""},
+		{"scope refresh", plan.Plan{RefreshGitHubSSHKeyScope: true}, "Workstation setup\n\nConfigure\n  GitHub\n\n"},
+		{"application configuration", plan.Plan{Applications: []plan.Application{{Declaration: config.Application{Source: "pacman", Identifier: "mullvad-vpn"}, State: "configure", Services: []string{"mullvad-daemon.service"}}}}, "Workstation setup\n\nConfigure\n  mullvad-vpn\n\n"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			var output bytes.Buffer
-			Runtime{Out: &output}.showPlan(test.plan)
-			if output.String() != test.want {
-				t.Fatalf("plan mismatch\n--- got ---\n%s--- want ---\n%s", output.String(), test.want)
+			var out bytes.Buffer
+			Runtime{Out: &out}.showPlan(test.plan)
+			if out.String() != test.want {
+				t.Fatalf("got %q, want %q", out.String(), test.want)
 			}
 		})
 	}
 }
 
-func TestShowPlanIsDeterministic(t *testing.T) {
-	firstCore := map[string]string{"git": "ready", "ssh": "required", "github": "ready", "aur": "required", "paru": "required", "flatpak": "ready", "flathub": "ready"}
-	secondCore := map[string]string{"flathub": "ready", "flatpak": "ready", "paru": "required", "aur": "required", "github": "ready", "ssh": "required", "git": "ready"}
-	first := plan.Plan{Core: firstCore, CorePackages: []string{"openssh", "base-devel", "git"}, FullUpgrade: true}
-	second := plan.Plan{Core: secondCore, CorePackages: []string{"git", "openssh", "base-devel"}, FullUpgrade: true}
-	var firstOutput, secondOutput bytes.Buffer
-	Runtime{Out: &firstOutput}.showPlan(first)
-	Runtime{Out: &secondOutput}.showPlan(second)
-	if firstOutput.String() != secondOutput.String() {
-		t.Fatalf("map or input order changed output\n--- first ---\n%s--- second ---\n%s", firstOutput.String(), secondOutput.String())
-	}
-}
-
-func TestShowPlanPacmanTransactionBoundaryOnlyForFullUpgrade(t *testing.T) {
-	withUpgrade := plan.Plan{FullUpgrade: true}
-	withoutUpgrade := plan.Plan{CorePackages: []string{"git"}}
-	var withOutput, withoutOutput bytes.Buffer
-	Runtime{Out: &withOutput}.showPlan(withUpgrade)
-	Runtime{Out: &withoutOutput}.showPlan(withoutUpgrade)
-
-	if !strings.Contains(withOutput.String(), "full system upgrade  upgrade  pacman; confirm transaction in pacman") {
-		t.Fatalf("missing pacman transaction boundary:\n%s", withOutput.String())
-	}
-	if strings.Contains(withoutOutput.String(), "confirm transaction in pacman") {
-		t.Fatalf("pacman transaction boundary leaked into a non-upgrade plan:\n%s", withoutOutput.String())
-	}
-}
-
-func TestProgressAndFailureRenderingRemainStructured(t *testing.T) {
-	var progress bytes.Buffer
-	Runtime{Out: &progress}.showProgress("com.tutanota.Tutanota", actionInstall, "flatpak")
-	if want := "\nProgress\n  com.tutanota.Tutanota  install  flatpak\n"; progress.String() != want {
-		t.Fatalf("progress = %q, want %q", progress.String(), want)
-	}
-
-	var failure bytes.Buffer
-	code := (Runtime{Err: &failure}).fatal(errors.New("example failure"))
-	want := "Issues\n\nFailed\n\nops\n  cause   example failure\n  impact  workstation preparation could not safely continue\n  action  resolve the error and run ops again\n\nFinal\n  system  stopped\nWorkstation preparation stopped.\n"
-	if code != Fatal || failure.String() != want {
-		t.Fatalf("failure code=%d\n--- got ---\n%s--- want ---\n%s", code, failure.String(), want)
-	}
-}
-
-func TestPlanActionVocabularyIsCompleteAndClosed(t *testing.T) {
-	p := plan.Plan{
-		EnableMultilib: true, FullUpgrade: true,
-		Applications: []plan.Application{{
-			Declaration: config.Application{Identifier: "example", Source: "pacman"}, State: "install",
-			Services: []string{"example.service"},
-		}},
-		ConfigureGit: true, ReviewSSHIdentities: true, AuthenticateGitHub: true,
-		ReviewGitHubKeys: true, GitHubKeyStateUnknown: true,
-	}
-	want := map[string]bool{
-		actionInstall: true, actionConfigure: true, actionUpgrade: true,
-		actionEnable: true, actionAuthenticate: true, actionReview: true, actionInspect: true,
-	}
-	got := make(map[string]bool)
-	for _, section := range planSections(p) {
-		if section.Diagnostic {
-			continue
+func TestShowPlanHidesImplementationButKeepsExactIdentifiers(t *testing.T) {
+	p := declaredParuPlan(t)
+	p.Applications = append(p.Applications, plan.Application{Declaration: config.Application{Source: "flatpak", Identifier: "org.example.AVeryLongIdentifier"}, State: "install"})
+	p.Applications[0].AURSigningKeys = []string{"0123456789ABCDEF0123456789ABCDEF01234567"}
+	var out bytes.Buffer
+	Runtime{Out: &out}.showPlan(p)
+	for _, want := range []string{"  paru\n", "  org.example.AVeryLongIdentifier\n", "Required dependencies"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing %q: %s", want, &out)
 		}
-		for _, row := range section.Rows {
-			got[row.Action] = true
-			if row.Action == "ready" || row.Action == "required" || row.Action == "configuration required" {
-				t.Fatalf("state label used as action: %#v", row)
+	}
+	assertConciseOutput(t, out.String())
+	for _, hidden := range []string{"base-devel", "llvm-libs", "rust", "0123456789ABCDEF"} {
+		if strings.Contains(out.String(), hidden) {
+			t.Fatalf("internal dependency leaked: %s", &out)
+		}
+	}
+}
+
+func TestShowPlanPreservesDiagnostics(t *testing.T) {
+	p := plan.Plan{ConfigureGit: true, Applications: []plan.Application{{
+		Declaration: config.Application{Source: "aur", Identifier: "broken"}, State: "unresolved", Cause: "exact identifier not found",
+	}}}
+	var out bytes.Buffer
+	Runtime{Out: &out}.showPlan(p)
+	if !strings.Contains(out.String(), "Cannot install broken: exact identifier not found") || strings.Contains(out.String(), "\nInstall\n  broken") {
+		t.Fatalf("misleading intent: %s", &out)
+	}
+}
+
+func TestShowPlanIsDeterministic(t *testing.T) {
+	var first, second bytes.Buffer
+	Runtime{Out: &first}.showPlan(plan.Plan{CorePackages: []string{"git", "openssh"}, FullUpgrade: true})
+	Runtime{Out: &second}.showPlan(plan.Plan{CorePackages: []string{"openssh", "git"}, FullUpgrade: true})
+	if first.String() != second.String() {
+		t.Fatal("dependency ordering leaked into summary")
+	}
+}
+
+func TestReportKeepsActionableErrorsAndEscapesTerminalControls(t *testing.T) {
+	var out bytes.Buffer
+	Runtime{Out: &out}.report("ready", "ready", "failed", []issue{
+		{State: "Failed", Name: "example", Cause: "missing\nnext\x1b[31m", Impact: "not installed", Action: "fix declaration"},
+	})
+	for _, want := range []string{"missing\n", "next\\x1b[31m", "not installed", "fix declaration", "Workstation setup incomplete."} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing %q: %s", want, &out)
+		}
+	}
+	if strings.Contains(out.String(), "\x1b") || strings.Contains(out.String(), "\nFinal\n") {
+		t.Fatalf("unsafe/noisy error: %s", &out)
+	}
+	var fatal bytes.Buffer
+	if code := (Runtime{Err: &fatal}).fatal(errors.New("useful stderr")); code != Fatal || !strings.Contains(fatal.String(), "useful stderr") || !strings.Contains(fatal.String(), "run ops again") {
+		t.Fatalf("fatal error lost detail: %s", &fatal)
+	}
+}
+
+func assertConciseOutput(t *testing.T, output string) {
+	t.Helper()
+	for _, hidden := range []string{"\nPlan\n", "\nProgress\n", "\nReview\n", "\nFinal\n", ".SRCINFO", ".PKGINFO", " -> ", "external", "install reason", "confirm transaction in pacman", "ops-aur-", "ops-paru-"} {
+		if strings.Contains("\n"+output, hidden) {
+			t.Fatalf("unexpected default output %q:\n%s", hidden, output)
+		}
+	}
+}
+func TestAURReviewShowsBuildInstructionsAndRequiresOneApproval(t *testing.T) {
+	files := map[string]string{
+		"PKGBUILD":           "source setup.sh\n",
+		".SRCINFO":           "internal metadata\n",
+		"setup.sh":           "echo build\n",
+		"package.install":    "post_install() { echo install; }\n",
+		"other-instructions": "echo extra\x1b[31m\n",
+	}
+	for _, answer := range []string{"y\n", "\n", "n\n", ""} {
+		t.Run(fmt.Sprintf("%q", answer), func(t *testing.T) {
+			var out, review bytes.Buffer
+			err := (Runtime{Out: &out}).reviewAUR(context.Background(), ui.UI{In: strings.NewReader("\n\n\n\n" + answer), Out: &review}, "example-bin", files)
+			if (err == nil) != (answer == "y\n") {
+				t.Fatalf("answer=%q err=%v", answer, err)
+			}
+			if out.String() != "Reviewing example-bin...\n" || !strings.HasPrefix(review.String(), "AUR source review (1/4) - untrusted build instructions\nPKGBUILD\n\nsource setup.sh\n") {
+				t.Fatalf("PKGBUILD not first: %s", &out)
+			}
+			for _, file := range []string{"setup.sh", "package.install", "other-instructions"} {
+				if !strings.Contains(review.String(), "\n"+file+"\n") {
+					t.Fatalf("build instructions hidden: %s", file)
+				}
+			}
+			if strings.Count(review.String(), "?") != 1 || !strings.HasSuffix(review.String(), "Install example-bin? [y/N] ") {
+				t.Fatalf("redundant or unsafe approval: %s", &out)
+			}
+			assertConciseOutput(t, out.String())
+			if strings.Contains(review.String(), ".SRCINFO") {
+				t.Fatal("metadata appeared in source review")
+			}
+			if strings.Contains(review.String(), "\x1b") || !strings.Contains(review.String(), "\\x1b") {
+				t.Fatalf("unsafe review: %s", &out)
+			}
+			if files[".SRCINFO"] != "internal metadata\n" || !strings.Contains(files["other-instructions"], "\x1b") {
+				t.Fatal("presentation changed raw verification inputs")
+			}
+		})
+	}
+	var out bytes.Buffer
+	if err := (Runtime{Out: &out}).reviewAUR(context.Background(), ui.UI{}, "example", map[string]string{".SRCINFO": "metadata"}); err == nil {
+		t.Fatal("missing PKGBUILD accepted")
+	}
+}
+
+func TestFlatpakOnlyPlanDoesNotPromiseSystemWork(t *testing.T) {
+	state := readyExecutionState()
+	cfg := config.Config{Version: 2, Applications: []config.Application{{Source: config.Flatpak, Identifier: "org.example.App"}}}
+	p := resolveAndPlan(context.Background(), cfg, state, outputResolver{flatpak: map[string]bool{"org.example.App": true}})
+	if p.FullUpgrade || p.AddFlathub || len(p.CorePackages) != 0 {
+		t.Fatalf("not a Flatpak-only fixture: %#v", p)
+	}
+	var out bytes.Buffer
+	Runtime{Out: &out}.showPlan(p)
+	if out.String() != "Workstation setup\n\nInstall\n  org.example.App\n\n" {
+		t.Fatalf("misleading summary: %s", &out)
+	}
+	runner := &prepareRunner{}
+	out.Reset()
+	code := (Runtime{Out: &out, Err: &out, Runner: runner}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &out})
+	if code != Success || strings.Contains(out.String(), "Updating system") {
+		t.Fatalf("code=%d output=%s", code, &out)
+	}
+	for _, call := range runner.calls {
+		if call.Name == "sudo" {
+			t.Fatalf("Flatpak-only plan requested privilege: %#v", call)
+		}
+	}
+}
+
+func TestPlanSummaryOnlyAnnouncesPlannedSystemWork(t *testing.T) {
+	for _, test := range []struct {
+		p                                  plan.Plan
+		update, dependencies, repositories bool
+	}{
+		{p: plan.Plan{ConfigureGit: true}},
+		{p: plan.Plan{AddFlathub: true}},
+		{p: plan.Plan{FullUpgrade: true}, update: true},
+		{p: plan.Plan{CorePackages: []string{"git"}}, dependencies: true},
+		{p: plan.Plan{EnableMultilib: true}, repositories: true},
+		{p: plan.Plan{Applications: []plan.Application{{Declaration: config.Application{Source: config.AUR, Identifier: "example"}, State: plan.Unavailable, AURPackages: []plan.BuildPackage{{Name: "unused"}}}}}},
+	} {
+		var out bytes.Buffer
+		Runtime{Out: &out}.showPlan(test.p)
+		if strings.Contains(out.String(), "system will be updated") != test.update ||
+			strings.Contains(out.String(), "Required dependencies") != test.dependencies ||
+			strings.Contains(out.String(), "repositories will be enabled") != test.repositories {
+			t.Fatalf("plan=%#v output=%s", test.p, &out)
+		}
+	}
+}
+
+func TestIncompleteStatusNeverPrintsReady(t *testing.T) {
+	var out bytes.Buffer
+	Runtime{Out: &out}.report("failed", "ready", "ready", nil)
+	if strings.Contains(out.String(), "Workstation ready.") || !strings.Contains(out.String(), "Run ops doctor") {
+		t.Fatalf("output=%s", &out)
+	}
+}
+
+func TestServiceProgressIsOnePhaseAndVerifiesEveryService(t *testing.T) {
+	var output bytes.Buffer
+	runner := &prepareRunner{}
+	application := plan.Application{Declaration: config.Application{Source: "pacman", Identifier: "example"}, Services: []string{"first.service", "second.service"}}
+	err := (Runtime{Runner: runner, Out: &output}).configureServices(context.Background(), application)
+	if err != nil || output.String() != "Configuring services for example...\n" {
+		t.Fatalf("err=%v output=%s", err, &output)
+	}
+	for _, service := range application.Services {
+		var calls []string
+		for _, call := range runner.calls {
+			if call.Args[len(call.Args)-1] == service {
+				calls = append(calls, call.Name+" "+strings.Join(call.Args, " "))
 			}
 		}
-	}
-	if len(got) != len(want) {
-		t.Fatalf("actions=%v, want=%v", got, want)
-	}
-	for action := range want {
-		if !got[action] {
-			t.Fatalf("missing action %q in %v", action, got)
+		want := "sudo -n systemctl enable --now " + service + ",systemctl is-enabled " + service + ",systemctl is-active " + service
+		if strings.Join(calls, ",") != want {
+			t.Fatalf("service=%s calls=%v", service, calls)
 		}
 	}
 }

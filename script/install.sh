@@ -26,9 +26,6 @@ cleanup() {
 
 trap cleanup EXIT HUP INT TERM
 
-printf '%s\n' 'ops prepares an official Arch Linux x86_64 workstation.'
-printf '%s\n' 'The installer verifies a signed checksum manifest and binary before requesting sudo.'
-
 [ "$(id -u)" -ne 0 ] || fail 'run as a normal user; root would create incorrectly owned user configuration and cannot safely build AUR packages'
 [ "$(uname -s)" = Linux ] || fail 'only official Arch Linux is supported'
 [ "$(uname -m)" = x86_64 ] || fail 'only x86_64 is supported'
@@ -103,12 +100,12 @@ actual=$(sha256sum "$tmp/ops-linux-x86_64" | awk '{ print tolower($1) }')
 chmod 755 "$tmp/ops-linux-x86_64"
 [ "$("$tmp/ops-linux-x86_64" --version 2>/dev/null)" = "ops $version" ] || fail 'verified binary reports an unexpected version'
 
-printf '\nVerified\n  release         %s\n  signature       valid\n  sha256          valid\n  install path    %s\n' "$version" "$target"
-printf 'Install this verified release? [Y/n] ' > /dev/tty
+printf 'ops %s verified.\n' "$version"
+printf 'Install to %s? [Y/n] ' "$target" > /dev/tty
 IFS= read -r answer < /dev/tty || fail 'could not read confirmation'
 case "$answer" in
     ''|y|Y|yes|YES|Yes) ;;
-    n|N|no|NO|No) printf '%s\n' 'Installation skipped.'; exit 0 ;;
+    n|N|no|NO|No) printf '%s\n' 'No changes made.'; exit 0 ;;
     *) fail 'invalid response; enter yes or no' ;;
 esac
 
@@ -178,9 +175,9 @@ OPS_CONFIG
     fi
 fi
 
-printf '\nInstalled\n  binary          %s\n  configuration   %s\n' "$target" "$config"
+printf '\nInstalled ops %s.\nConfiguration: ~/.config/ops/apps.toml\n\n' "$version"
 if [ "$created" = yes ]; then
-    printf '%s\n' 'Edit apps.toml if desired, then run ops.'
+    printf '%s\n' 'Edit the configuration, then run ops.'
 else
     printf '%s\n' 'Existing apps.toml was preserved. Run ops when ready.'
 fi

@@ -119,7 +119,7 @@ func TestDoctorReportsUnavailableHostKeyFreshnessWithoutMutation(t *testing.T) {
 		SSHHTTP: metadata.Client(), SSHMetadataURL: metadata.URL,
 	}
 	code := runtime.Doctor(context.Background())
-	if code != Issues || !strings.Contains(out.String(), "GitHub SSH host-key freshness  unavailable  retry later") {
+	if code != Issues || !strings.Contains(out.String(), "GitHub SSH host-key freshness unavailable; retry later.") {
 		t.Fatalf("code=%d\n%s", code, out.String())
 	}
 	after := readDoctorSSHFiles(t, sshDir)

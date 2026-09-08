@@ -179,12 +179,17 @@ func TestMinimalFirstRunConvergesAndSecondRunIsNoOp(t *testing.T) {
 	if !(upgrade >= 0 && install > upgrade && verified > install && dependent > verified && final > dependent) {
 		t.Fatalf("invalid lifecycle order:\n%s", events)
 	}
-	if code := a.Doctor(ctx); code != Success {
+	assertConciseOutput(t, out.String())
+	if !strings.HasSuffix(out.String(), "Workstation ready.\n") {
+		t.Fatalf("missing final success: %s", out)
+	}
+	out.Reset()
+	if code := a.Doctor(ctx); code != Success || out.String() != "Workstation healthy.\n" {
 		t.Fatalf("doctor=%d\n%s", code, out.String())
 	}
 	r.events = nil
 	out.Reset()
-	if code := a.Prepare(ctx); code != Success || !strings.Contains(out.String(), "No changes") {
+	if code := a.Prepare(ctx); code != Success || out.String() != "Workstation already ready.\n" {
 		t.Fatalf("second run=%d\n%s", code, out.String())
 	}
 	for _, event := range r.events {

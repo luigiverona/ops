@@ -32,32 +32,37 @@ func (a Runtime) Doctor(ctx context.Context) int {
 	if missingConfig {
 		fmt.Fprintln(a.Out, "Configuration missing. Create ~/.config/ops/apps.toml with version = 2; see docs/configuration.md. No files changed.")
 	}
-	fmt.Fprintln(a.Out, "Doctor\n\nSystem\n  platform        ready\n  privilege       normal user")
-	fmt.Fprintln(a.Out, "\nCore")
+
 	for _, component := range plan.CoreOrder {
-		fmt.Fprintf(a.Out, "  %-15s %s\n", ui.PrintableASCII(component), ui.PrintableASCII(p.Core[component]))
-		actionable = actionable || (p.Core[component] != "ready" && p.Core[component] != "not required")
-	}
-	fmt.Fprintln(a.Out, "\nApplications")
-	if len(p.Applications) == 0 {
-		fmt.Fprintln(a.Out, "  declared        none")
+		if p.Core[component] != "ready" && p.Core[component] != "not required" {
+			fmt.Fprintf(a.Out, "  %s: %s\n", ui.PrintableASCII(component), ui.PrintableASCII(p.Core[component]))
+			actionable = true
+		}
 	}
 	for _, application := range p.Applications {
-		fmt.Fprintf(a.Out, "  %-15s %s\n", ui.PrintableASCII(application.Declaration.Identifier), ui.PrintableASCII(string(application.State)))
+		if application.State == "ready" {
+			continue
+		}
+		fmt.Fprintf(a.Out, "  %s: not ready\n", ui.PrintableASCII(application.Declaration.Identifier))
 		if application.Cause != "" {
 			fmt.Fprintf(a.Out, "    %s\n", ui.PrintableASCII(application.Cause))
 		}
-		actionable = actionable || application.State != "ready"
+		actionable = true
 	}
-	fmt.Fprintf(a.Out, "\nConfiguration\n  git             %s\n  ssh             %s\n  github          %s\n", ui.PrintableASCII(p.GitStatus), ui.PrintableASCII(p.SSHStatus), ui.PrintableASCII(p.GitHubStatus))
-	actionable = actionable || p.GitStatus != "ready" || p.SSHStatus != "ready" || p.GitHubStatus != "ready"
+	for _, component := range []struct{ name, status string }{{"Git", p.GitStatus}, {"SSH", p.SSHStatus}, {"GitHub", p.GitHubStatus}} {
+		if component.status != "ready" {
+			fmt.Fprintf(a.Out, "  %s: %s\n", component.name, ui.PrintableASCII(component.status))
+			actionable = true
+		}
+	}
 	if p.SSHHostKeyFreshness == plan.SSHHostKeyFreshnessUnavailable {
-		fmt.Fprintln(a.Out, "\nChecks\n  GitHub SSH host-key freshness  unavailable  retry later")
+		fmt.Fprintln(a.Out, "GitHub SSH host-key freshness unavailable; retry later.")
+		actionable = true
 	}
 	if actionable {
 		fmt.Fprintln(a.Out, "\nIssues detected. Run ops to prepare the workstation.")
 		return Issues
 	}
-	fmt.Fprintln(a.Out, "\nNo actionable issues detected.")
+	fmt.Fprintln(a.Out, "Workstation healthy.")
 	return Success
 }

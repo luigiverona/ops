@@ -60,6 +60,9 @@ func TestPacmanCommandsNeverCreatePartialUpgrade(t *testing.T) {
 	if !strings.Contains(second, "pacman -S --needed") || strings.Contains(second, " -Sy") {
 		t.Fatalf("unsafe install: %s", second)
 	}
+	if !f.calls[1].StreamOutput || f.calls[1].Interactive || f.calls[1].Stdin != nil {
+		t.Fatalf("approved transaction must stream output without consuming input: %#v", f.calls[1])
+	}
 }
 
 func TestManagerEnablesFixtureAtomically(t *testing.T) {
@@ -265,6 +268,10 @@ func TestInstallArtifactsBindsStagedBytesAndExcludesDebug(t *testing.T) {
 	for _, call := range runner.calls {
 		if call.Name == "sudo" && (len(call.Args) == 0 || call.Args[0] != "-n") {
 			t.Fatalf("interactive sudo: %#v", call)
+		}
+		transaction := call.Name == "sudo" && len(call.Args) > 2 && call.Args[1] == "pacman" && call.Args[2] == "-U"
+		if call.StreamOutput != transaction || call.Interactive {
+			t.Fatalf("only the approved artifact transaction may stream output: %#v", call)
 		}
 	}
 }

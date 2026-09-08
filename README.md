@@ -57,11 +57,19 @@ See [configuration and migration](docs/configuration.md).
 automatically selected. Themes, application accounts, UI preferences, and
 unrelated personal configuration are not managed.
 
-Package installation is preceded by one full, interactive `pacman -Syu`.
+Official/AUR package installation is preceded by one full, interactive `pacman -Syu`.
 Prerequisites are installed and checked before dependent work. AUR source review
 precedes its build-dependency installation and normal-user build. A final
 re-inspection determines whether the workstation actually converged.
 See [architecture and dependency policy](docs/architecture.md).
+
+The default output shows a short setup summary and high-level progress. A ready
+workstation needs no confirmation. AUR builds open a separate paginated source
+view: Enter advances, `b` goes back, and `q` cancels the build. Review PKGBUILD
+and all auxiliary tracked files, then explicitly approve the install (default:
+no). Metadata checks still run internally.
+Unrelated local SSH keys, agent identities, and GitHub keys are preserved without
+per-key prompts. Key removal is a separate user-managed operation.
 
 ## Commands
 
@@ -83,7 +91,7 @@ checksum-only fallback. Plans do not authorize hidden prerequisite installs.
 Sudo is acquired only after confirmation and only for privileged work.
 
 AUR instructions are untrusted: review pinned files before approving a build.
-SSH/GitHub key deletion requires separate, explicit confirmation. Managed files
+Setup never deletes SSH/GitHub keys. Managed files
 use protected boundaries and atomic replacement; unrelated keys and host trust
 are preserved. See [workstation security](docs/workstation-security.md) and
 [release security](docs/release-security.md).

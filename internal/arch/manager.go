@@ -119,7 +119,7 @@ func (m Manager) Install(ctx context.Context, packages []string, asDeps bool) er
 	}
 	args = append(args, "--")
 	args = append(args, packages...)
-	_, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: args})
+	_, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: args, StreamOutput: true, AllowTruncatedOutput: true})
 	return err
 }
 
@@ -246,7 +246,7 @@ func (m Manager) installArtifacts(ctx context.Context, paths []string, asDeps bo
 	}
 	args = append(args, "--")
 	args = append(args, paths...)
-	if _, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: args}); err != nil {
+	if _, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: args, StreamOutput: true, AllowTruncatedOutput: true}); err != nil {
 		return err
 	}
 	return nil

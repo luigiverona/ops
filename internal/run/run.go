@@ -13,12 +13,14 @@ import (
 
 // Spec describes one command without shell interpolation.
 type Spec struct {
-	Name        string
-	Args        []string
-	Dir         string
-	Env         []string
-	Stdin       io.Reader
-	Interactive bool
+	Name  string
+	Args  []string
+	Dir   string
+	Env   []string
+	Stdin io.Reader
+	// StreamOutput exposes native transaction output without granting stdin access.
+	StreamOutput bool
+	Interactive  bool
 	// Interaction documents why this child, rather than ops, must own the
 	// terminal. Interactive commands without it are rejected to prevent an
 	// implementation shortcut from leaking arbitrary child output.
@@ -57,7 +59,7 @@ func (e Exec) Run(ctx context.Context, spec Spec) (Result, error) {
 		cmd.Stdin = e.In
 	}
 	var stdout, stderr tailBuffer
-	if spec.Interactive {
+	if spec.Interactive || spec.StreamOutput {
 		cmd.Stdout = io.MultiWriter(&stdout, e.Out)
 		cmd.Stderr = io.MultiWriter(&stderr, e.Err)
 	} else {
@@ -70,7 +72,7 @@ func (e Exec) Run(ctx context.Context, spec Spec) (Result, error) {
 	}
 	result := Result{Stdout: stdout.String(), Stderr: stderr.String()}
 	if err != nil {
-		return result, &Error{Name: spec.Name, Args: append([]string(nil), spec.Args...), Stderr: strings.TrimSpace(result.Stderr), Presented: spec.Interactive, Err: err}
+		return result, &Error{Name: spec.Name, Args: append([]string(nil), spec.Args...), Stderr: strings.TrimSpace(result.Stderr), Presented: spec.Interactive || spec.StreamOutput, Err: err}
 	}
 	return result, nil
 }

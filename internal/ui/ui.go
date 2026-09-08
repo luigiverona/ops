@@ -16,50 +16,11 @@ type UI struct {
 	Out io.Writer
 }
 
-// TableRow is one plain-text presentation row with distinct value columns.
-type TableRow struct {
-	Item   string
-	Action string
-	Detail string
-}
-
 // Field is a labeled, plain-text value. RenderFields keeps every continuation
 // aligned under its value so command errors cannot take over the terminal.
 type Field struct {
 	Name  string
 	Value string
-}
-
-// RenderTable aligns rows from their actual content and never emits terminal controls.
-func RenderTable(rows []TableRow) string {
-	rows = append([]TableRow(nil), rows...)
-	for i := range rows {
-		rows[i].Item = printableASCII(rows[i].Item)
-		rows[i].Action = printableASCII(rows[i].Action)
-		rows[i].Detail = printableASCII(rows[i].Detail)
-	}
-	itemWidth, actionWidth := 0, 0
-	for _, row := range rows {
-		itemWidth = max(itemWidth, len(row.Item))
-		actionWidth = max(actionWidth, len(row.Action))
-	}
-	var b strings.Builder
-	for _, row := range rows {
-		b.WriteString("  ")
-		b.WriteString(row.Item)
-		if row.Action != "" || row.Detail != "" {
-			b.WriteString(strings.Repeat(" ", itemWidth-len(row.Item)+2))
-			if row.Action != "" {
-				b.WriteString(row.Action)
-			}
-		}
-		if row.Detail != "" {
-			b.WriteString(strings.Repeat(" ", actionWidth-len(row.Action)+2))
-			b.WriteString(row.Detail)
-		}
-		b.WriteByte('\n')
-	}
-	return b.String()
 }
 
 func printableASCII(value string) string {
@@ -113,12 +74,6 @@ func fieldValue(value string) string {
 		b.WriteString(printableASCII(string(r)))
 	}
 	return b.String()
-}
-
-// RenderReviewFile deliberately exposes reviewed source while escaping every
-// terminal control character. Newlines remain structural content boundaries.
-func RenderReviewFile(name, contents string) string {
-	return "File " + printableASCII(name) + "\n" + fieldValue(contents) + "\n"
 }
 
 // OpenTTY opens the controlling terminal for interactive preparation.

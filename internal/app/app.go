@@ -18,16 +18,6 @@ const (
 	Success = 0
 	Issues  = 1
 	Fatal   = 2
-
-	actionInstall      = "install"
-	actionConfigure    = "configure"
-	actionUpgrade      = "upgrade"
-	actionEnable       = "enable"
-	actionAuthenticate = "authenticate"
-	actionReview       = "review"
-	actionInspect      = "inspect"
-
-	fullUpgradeDetail = "pacman; confirm transaction in pacman"
 )
 
 // Runtime holds process-scoped dependencies.
@@ -41,16 +31,10 @@ type Runtime struct {
 	PacmanConf     string
 	SSHHTTP        *http.Client
 	SSHMetadataURL string
-	presentation   *presentation
 }
 
 type issue struct {
 	State, Name, Source, Stage, Cause, Impact, Action string
-}
-
-type presentation struct {
-	progressStarted bool
-	reviewActive    bool
 }
 
 func (a Runtime) detect(ctx context.Context) error {
