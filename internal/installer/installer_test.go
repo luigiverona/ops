@@ -1,13 +1,16 @@
 package installer
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luigiverona/ops/internal/config"
 )
@@ -429,12 +432,14 @@ func TestInstallerConfigurationFailuresAndRaces(t *testing.T) {
 	}{
 		{"parent creation failure", "binary_installed=yes", `mkdir() { return 1; }`, "could not create configuration parent", false},
 		{"directory creation failure", "binary_installed=yes", `mkdir() { if [ "$*" = "$config_dir" ]; then return 1; fi; command mkdir "$@"; }`, "could not create configuration directory", false},
-		{"exclusive creation failure", "    if (umask 077; set -C; {", `rmdir "$config_dir"`, "could not create", false},
-		{"write failure", "    if (umask 077; set -C; {", `cat() { printf 'partial'; return 1; }`, "could not write", false},
-		{"raced regular file", "    if (umask 077; set -C; {", `printf 'raced config' > "$config"`, "Preserved existing ~/.config/ops/apps.toml.", true},
-		{"raced symlink", "    if (umask 077; set -C; {", `printf 'keep' > "$HOME/outside"; ln -s "$HOME/outside" "$config"`, "apps.toml is a symlink", false},
-		{"raced dangling symlink", "    if (umask 077; set -C; {", `ln -s "$HOME/outside" "$config"`, "apps.toml is a symlink", false},
-		{"raced config directory", "    if (umask 077; set -C; {", `mkdir "$config"`, "apps.toml is not a regular file", false},
+		{"exclusive creation failure", "    config_stage=$(", `rmdir "$config_dir"`, "could not create", false},
+		{"write failure", "        if ! cat > ./apps.toml", `cat() { printf 'partial'; return 1; }`, "could not write", false},
+		{"simulated close failure", "        if ! cat > ./apps.toml", `cat() { command cat; return 1; }`, "could not write", false},
+		{"failed writer with concurrent config", "        if ! cat > ./apps.toml", `cat() { printf 'replacement config' > /proc/$$/cwd/apps.toml; printf 'partial'; return 1; }`, "could not write", false},
+		{"raced regular file", "        ln -T -- ./apps.toml", `printf 'raced config' > "$config"`, "Preserved existing ~/.config/ops/apps.toml.", true},
+		{"raced symlink", "        ln -T -- ./apps.toml", `printf 'keep' > "$HOME/outside"; ln -s "$HOME/outside" "$config"`, "apps.toml is a symlink", false},
+		{"raced dangling symlink", "        ln -T -- ./apps.toml", `ln -s "$HOME/outside" "$config"`, "apps.toml is a symlink", false},
+		{"raced config directory", "        ln -T -- ./apps.toml", `mkdir "$config"`, "apps.toml is not a regular file", false},
 		{"ops directory changed after preflight", "binary_installed=yes", `mkdir -p "$config_parent"; ln -s "$HOME" "$config_dir"`, "configuration directory ~/.config/ops is a symlink", false},
 	}
 	for _, test := range tests {
@@ -456,11 +461,19 @@ func TestInstallerConfigurationFailuresAndRaces(t *testing.T) {
 					t.Fatalf("incorrect partial installation report: %s", output)
 				}
 			}
+			stages, stageErr := filepath.Glob(filepath.Join(home, ".config", "ops", ".ops-config.*"))
+			if stageErr != nil || len(stages) != 0 {
+				t.Fatalf("staging files remain: %v, %v", stages, stageErr)
+			}
 			switch test.name {
-			case "raced regular file", "write failure":
+			case "write failure", "simulated close failure":
+				if _, err := os.Lstat(config.Path(home)); !os.IsNotExist(err) {
+					t.Fatalf("failed writer published config: %v", err)
+				}
+			case "raced regular file", "failed writer with concurrent config":
 				want := "raced config"
-				if test.name == "write failure" {
-					want = "partial"
+				if test.name == "failed writer with concurrent config" {
+					want = "replacement config"
 				}
 				if data, err := os.ReadFile(config.Path(home)); err != nil || string(data) != want {
 					t.Fatalf("unexpected config contents: %q, %v", data, err)
@@ -473,6 +486,113 @@ func TestInstallerConfigurationFailuresAndRaces(t *testing.T) {
 				if _, err := os.Lstat(filepath.Join(home, "outside")); !os.IsNotExist(err) {
 					t.Fatalf("created dangling symlink target: %v", err)
 				}
+			}
+		})
+	}
+}
+
+func TestInstallerConfigWriteCannotFollowReplacedDirectory(t *testing.T) {
+	for _, boundary := range []string{"config_physical=$(", "    config_stage=$(", "        ln -T -- ./apps.toml"} {
+		for _, replacement := range []string{`ln -s "$HOME/outside" "$config_dir"`, `mkdir "$config_dir"`} {
+			t.Run(boundary+replacement, func(t *testing.T) {
+				fingerprint := strings.Repeat("A", 40)
+				cmd, _, home := installerCommand(t, fingerprint, "[GNUPG:] VALIDSIG "+fingerprint+" 0 0 0 0 0 0 0 0 0\n", "0")
+				installerHook(t, cmd, boundary, `mkdir "$HOME/outside"; mv "$config_dir" "$HOME/original-ops"; `+replacement)
+				output, err := cmd.CombinedOutput()
+				// A replacement real directory before pinning is safe to adopt.
+				adopted := boundary == "config_physical=$(" && replacement == `mkdir "$config_dir"`
+				if (err == nil) != adopted {
+					t.Fatalf("directory race: %v\n%s", err, output)
+				}
+				if _, err := os.Lstat(filepath.Join(home, "outside", "apps.toml")); !os.IsNotExist(err) {
+					t.Fatalf("write escaped through replaced directory: %v\n%s", err, output)
+				}
+				if !adopted && replacement == `mkdir "$config_dir"` {
+					if _, err := os.Lstat(config.Path(home)); !os.IsNotExist(err) {
+						t.Fatalf("write followed replacement directory: %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestInstallerConfigDirectoryCreationRace(t *testing.T) {
+	for _, symlink := range []bool{false, true} {
+		t.Run(fmt.Sprint(symlink), func(t *testing.T) {
+			fingerprint := strings.Repeat("A", 40)
+			cmd, _, home := installerCommand(t, fingerprint, "[GNUPG:] VALIDSIG "+fingerprint+" 0 0 0 0 0 0 0 0 0\n", "0")
+			create := `command mkdir "$config_dir"`
+			if symlink {
+				create = `ln -s "$HOME/outside" "$config_dir"`
+			}
+			installerHook(t, cmd, "binary_installed=yes", `command mkdir "$HOME/outside"; mkdir() { if [ "$*" = "$config_dir" ]; then `+create+`; return 1; fi; command mkdir "$@"; }`)
+			output, err := cmd.CombinedOutput()
+			if (err != nil) != symlink {
+				t.Fatalf("directory creation race: %v\n%s", err, output)
+			}
+			if !symlink {
+				if data, err := os.ReadFile(config.Path(home)); err != nil || string(data) != config.Default {
+					t.Fatalf("default not created: %q, %v", data, err)
+				}
+			}
+			if _, err := os.Lstat(filepath.Join(home, "outside", "apps.toml")); !os.IsNotExist(err) {
+				t.Fatalf("write escaped through directory creation race: %v", err)
+			}
+		})
+	}
+}
+
+func TestInstallerAllowsSymlinkedConfigParent(t *testing.T) {
+	fingerprint := strings.Repeat("A", 40)
+	cmd, _, home := installerCommand(t, fingerprint, "[GNUPG:] VALIDSIG "+fingerprint+" 0 0 0 0 0 0 0 0 0\n", "0")
+	parent := t.TempDir()
+	if err := os.Symlink(parent, filepath.Join(home, ".config")); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("installer rejected user-owned parent symlink: %v\n%s", err, output)
+	}
+	if data, err := os.ReadFile(filepath.Join(parent, "ops", "apps.toml")); err != nil || string(data) != config.Default {
+		t.Fatalf("default not created: %q, %v", data, err)
+	}
+}
+
+func TestInstallerCleansRelativeTemporaryDirectory(t *testing.T) {
+	fingerprint := strings.Repeat("A", 40)
+	cmd, _, _ := installerCommand(t, fingerprint, "[GNUPG:] VALIDSIG "+fingerprint+" 0 0 0 0 0 0 0 0 0\n", "0")
+	cmd.Dir = filepath.Dir(cmd.Args[1])
+	tmpDir := filepath.Join(cmd.Dir, "relative-tmp")
+	if err := os.Mkdir(tmpDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Env = append(cmd.Env, "TMPDIR=relative-tmp")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("installer failed with relative TMPDIR: %v\n%s", err, output)
+	}
+	if entries, err := os.ReadDir(tmpDir); err != nil || len(entries) != 0 {
+		t.Fatalf("installer did not clean temporary downloads: %v, %v", entries, err)
+	}
+}
+
+func TestInstallerConfigPublicationRejectsRacedNonregularTargets(t *testing.T) {
+	for _, hook := range []string{`ln -s /dev/null "$config"`, `mkfifo "$config"`} {
+		t.Run(hook, func(t *testing.T) {
+			fingerprint := strings.Repeat("A", 40)
+			cmd, _, home := installerCommand(t, fingerprint, "[GNUPG:] VALIDSIG "+fingerprint+" 0 0 0 0 0 0 0 0 0\n", "0")
+			installerHook(t, cmd, "        ln -T -- ./apps.toml", hook)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			bounded := exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
+			bounded.Env = cmd.Env
+			bounded.WaitDelay = time.Second
+			output, err := bounded.CombinedOutput()
+			if err == nil || ctx.Err() != nil || strings.Contains(string(output), "Created ~/.config") || strings.Contains(string(output), "could not write") {
+				t.Fatalf("unsafe publication: %v, %v\n%s", err, ctx.Err(), output)
+			}
+			info, err := os.Lstat(config.Path(home))
+			if err != nil || info.Mode().IsRegular() {
+				t.Fatalf("raced target changed: %v, %v", info, err)
 			}
 		})
 	}

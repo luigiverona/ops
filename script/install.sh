@@ -13,7 +13,7 @@ fail() {
 cleanup() {
     if [ -n "${tmp:-}" ]; then
         case "$tmp" in
-            "${TMPDIR:-/tmp}"/ops-install.*) rm -rf -- "$tmp" ;;
+            "${tmp_parent:-/tmp}"/ops-install.*) rm -rf -- "$tmp" ;;
         esac
     fi
     if [ -n "${staged:-}" ]; then
@@ -33,7 +33,7 @@ trap cleanup EXIT HUP INT TERM
 os_id=$(awk -F= '$1 == "ID" { value=$2; gsub(/^"|"$/, "", value); print value; exit }' /etc/os-release)
 [ "$os_id" = arch ] || fail 'only official Arch Linux is supported; derivatives are not supported'
 
-for command in curl sha256sum gpg awk mktemp sudo install mv cp rm chmod mkdir; do
+for command in curl sha256sum gpg awk mktemp sudo install mv cp rm chmod mkdir ln rmdir; do
     command -v "$command" >/dev/null 2>&1 || fail "$command is required for verified installation"
 done
 [ -r /dev/tty ] && [ -w /dev/tty ] || fail 'interactive installation requires a usable terminal'
@@ -48,7 +48,8 @@ version=$(curl -fsSL "$release_base/latest") || fail 'could not resolve the late
 version=$(printf '%s' "$version" | awk 'NF { gsub(/[[:space:]]/, ""); print; exit }')
 printf '%s\n' "$version" | awk -F. 'NF == 3 && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ { ok=1 } END { exit !ok }' || fail 'release service returned an invalid version'
 
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/ops-install.XXXXXXXX") || fail 'could not create a temporary directory'
+tmp_parent=$(CDPATH= cd -P "${TMPDIR:-/tmp}" && pwd -P) || fail 'could not resolve temporary directory'
+tmp=$(mktemp -d "$tmp_parent/ops-install.XXXXXXXX") || fail 'could not create a temporary directory'
 chmod 700 "$tmp"
 gpg_home=$tmp/gnupg
 mkdir "$gpg_home" || fail 'could not create an isolated GPG home'
@@ -121,7 +122,7 @@ config_fail() {
     fail "$*"
 }
 
-# Read-only preflight; repeat after directory creation and failed exclusive opens.
+# Read-only preflight; repeat after directory creation and failed exclusive publication.
 # The user's .config parent may be a symlink, but managed targets must not be.
 check_config_path() {
     if [ -e "$config_parent" ] && [ ! -d "$config_parent" ]; then
@@ -132,6 +133,9 @@ check_config_path() {
     fi
     if [ -e "$config_dir" ] && [ ! -d "$config_dir" ]; then
         config_fail 'configuration path ~/.config/ops is not a directory'
+    fi
+    if [ "${config_pinned:-no}" = yes ] && [ ! "$config_dir" -ef . ]; then
+        config_fail 'configuration directory changed during installation; inspect the path and rerun the installer'
     fi
     if [ -L "$config" ]; then
         config_fail 'configuration file ~/.config/ops/apps.toml is a symlink; refusing unsafe configuration creation'
@@ -185,12 +189,28 @@ if [ ! -d "$config_dir" ]; then
     }
 fi
 check_config_path
+# Pin the physical directory before writing. Relative operations keep using it
+# even if another process replaces ~/.config/ops after the checks.
+config_physical=$(CDPATH= cd -P "$config_parent" && pwd -P) || config_fail 'could not resolve configuration parent'
+CDPATH= cd -P "$config_dir" || config_fail 'could not enter configuration directory'
+[ "$(pwd -P)" = "$config_physical/ops" ] || config_fail 'configuration directory changed during installation'
+config_pinned=yes
+check_config_path
 created=no
 if [ ! -e "$config" ]; then
-    # Noclobber keeps creation exclusive. Status 3 means the open succeeded but
-    # writing failed; a partial file must never be reported as preserved.
-    if (umask 077; set -C; {
-        if ! cat <<'OPS_CONFIG'
+    # Stage privately on the same filesystem, then link without replacement.
+    # Never expose a partial apps.toml or open a raced-in device/FIFO for writing.
+    config_stage=$(umask 077; mktemp -d ./.ops-config.XXXXXXXX) || config_fail "could not create configuration staging directory; fix permissions and rerun the installer"
+    result=0
+    (
+        CDPATH= cd -P "$config_stage" || config_fail 'could not enter configuration staging directory'
+        [ "$(pwd -P)" = "$config_physical/ops/${config_stage#./}" ] || config_fail 'configuration staging directory changed during installation'
+        # Cleanup is confined to the private staging directory, never apps.toml
+        # in the managed directory, which another process may have replaced.
+        trap 'rm -f -- ./apps.toml' EXIT
+        trap 'exit 2' HUP INT TERM
+        umask 077
+        if ! cat > ./apps.toml <<'OPS_CONFIG'
 # Applications managed by ops.
 # Use exact, case-sensitive identifiers from the selected source.
 #
@@ -213,19 +233,22 @@ aur = []
 flatpak = []
 OPS_CONFIG
         then
-            exit 3
+            config_fail "could not write configuration; installer did not create apps.toml; fix storage or permissions and rerun the installer"
         fi
-    } > "$config"); then
-        created=yes
-    else
-        result=$?
-        if [ "$result" -eq 3 ]; then
-            config_fail "could not write $config; the file may be incomplete; inspect and repair it before running ops"
-        fi
-        check_config_path
-        # An exclusive open can lose a race to another regular file. Preserve it.
-        [ -f "$config" ] || config_fail "could not create $config; fix the path or permissions and rerun the installer"
-    fi
+        # The parent shell stays in the pinned destination while this subshell
+        # writes in staging. Linux procfs lets ln use that directory directly.
+        ln -T -- ./apps.toml /proc/$$/cwd/apps.toml || exit 4
+    ) || result=$?
+    rmdir -- "$config_stage" || config_fail 'could not remove configuration staging directory; inspect the path before retrying'
+    case "$result" in
+        0) created=yes ;;
+        4)
+            check_config_path
+            # A concurrent regular file belongs to its creator and is preserved.
+            [ -f "$config" ] || config_fail "could not create $config; fix the path or permissions and rerun the installer"
+            ;;
+        *) exit "$result" ;;
+    esac
 fi
 
 check_config_path
