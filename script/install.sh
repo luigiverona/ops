@@ -109,6 +109,39 @@ case "$answer" in
     *) fail 'invalid response; enter yes or no' ;;
 esac
 
+config_dir=$HOME/.config/ops
+config=$config_dir/apps.toml
+config_parent=$HOME/.config
+binary_installed=no
+
+config_fail() {
+    if [ "$binary_installed" = yes ]; then
+        printf '\nInstalled ops %s, but configuration setup failed for %s.\nThe binary remains installed.\n' "$version" "$config" >&2
+    fi
+    fail "$*"
+}
+
+# Read-only preflight; repeat after directory creation and failed exclusive opens.
+# The user's .config parent may be a symlink, but managed targets must not be.
+check_config_path() {
+    if [ -e "$config_parent" ] && [ ! -d "$config_parent" ]; then
+        config_fail "configuration parent $config_parent is not a directory"
+    fi
+    if [ -L "$config_dir" ]; then
+        config_fail 'configuration directory ~/.config/ops is a symlink; refusing unsafe configuration creation'
+    fi
+    if [ -e "$config_dir" ] && [ ! -d "$config_dir" ]; then
+        config_fail 'configuration path ~/.config/ops is not a directory'
+    fi
+    if [ -L "$config" ]; then
+        config_fail 'configuration file ~/.config/ops/apps.toml is a symlink; refusing unsafe configuration creation'
+    fi
+    if [ -e "$config" ] && [ ! -f "$config" ]; then
+        config_fail 'configuration path ~/.config/ops/apps.toml is not a regular file'
+    fi
+}
+check_config_path
+
 sudo -v || fail 'sudo authorization failed'
 suffix=$$
 staged=$target.ops-new-$suffix
@@ -142,42 +175,66 @@ if [ "$("$target" --version 2>/dev/null || true)" != "ops $version" ]; then
 fi
 sudo -n rm -f -- "$backup"
 
-config_dir=$HOME/.config/ops
-config=$config_dir/apps.toml
-config_parent=$HOME/.config
-mkdir -p "$config_parent"
-if [ -L "$config_dir" ]; then
-    fail 'configuration directory ~/.config/ops is a symlink; refusing unsafe configuration creation'
-fi
-if [ -e "$config_dir" ] && [ ! -d "$config_dir" ]; then
-    fail 'configuration path ~/.config/ops is not a directory'
-fi
+binary_installed=yes
+check_config_path
+(umask 077; mkdir -p "$config_parent") || config_fail "could not create configuration parent $config_parent; fix the path and rerun the installer"
 if [ ! -d "$config_dir" ]; then
-    (umask 077; mkdir "$config_dir") || fail 'could not safely create configuration directory'
+    (umask 077; mkdir "$config_dir") || {
+        check_config_path
+        [ -d "$config_dir" ] || config_fail "could not create configuration directory $config_dir; fix the path and rerun the installer"
+    }
 fi
-if [ -L "$config" ]; then
-    fail 'configuration file ~/.config/ops/apps.toml is a symlink; refusing unsafe configuration creation'
-fi
-if [ -e "$config" ] && [ ! -f "$config" ]; then
-    fail 'configuration path ~/.config/ops/apps.toml is not a regular file'
-fi
+check_config_path
 created=no
-if [ ! -e "$config" ] && [ ! -L "$config" ]; then
-    if (umask 077; set -C; cat > "$config" <<'OPS_CONFIG'
+if [ ! -e "$config" ]; then
+    # Noclobber keeps creation exclusive. Status 3 means the open succeeded but
+    # writing failed; a partial file must never be reported as preserved.
+    if (umask 077; set -C; {
+        if ! cat <<'OPS_CONFIG'
+# Applications managed by ops.
+# Use exact, case-sensitive identifiers from the selected source.
+#
+# Official Arch packages (pacman):
+#   https://archlinux.org/packages/
+#   pacman -Ss SEARCH_TERM
+#
+# AUR packages (aur):
+#   https://aur.archlinux.org/
+#
+# Flatpak application IDs (flatpak):
+#   https://flathub.org/
+#   flatpak search SEARCH_TERM
+
+# apps.toml format version. Independent of the ops program version.
 version = 2
 
 pacman = []
 aur = []
 flatpak = []
 OPS_CONFIG
-    ); then
+        then
+            exit 3
+        fi
+    } > "$config"); then
         created=yes
+    else
+        result=$?
+        if [ "$result" -eq 3 ]; then
+            config_fail "could not write $config; the file may be incomplete; inspect and repair it before running ops"
+        fi
+        check_config_path
+        # An exclusive open can lose a race to another regular file. Preserve it.
+        [ -f "$config" ] || config_fail "could not create $config; fix the path or permissions and rerun the installer"
     fi
 fi
 
-printf '\nInstalled ops %s.\nConfiguration: ~/.config/ops/apps.toml\n\n' "$version"
+check_config_path
+
+printf '\nInstalled ops %s.\n' "$version"
 if [ "$created" = yes ]; then
-    printf '%s\n' 'Edit the configuration, then run ops.'
+    printf '%s\n\n' 'Created ~/.config/ops/apps.toml.'
+    printf '%s\n' 'Optionally add applications; the file explains names and sources.'
 else
-    printf '%s\n' 'Existing apps.toml was preserved. Run ops when ready.'
+    printf '%s\n\n' 'Preserved existing ~/.config/ops/apps.toml.'
 fi
+printf '%s\n' 'Run ops to review workstation setup, including Git, SSH, and GitHub.'

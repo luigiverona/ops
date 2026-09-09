@@ -15,20 +15,27 @@ It creates `~/.config/ops/apps.toml` only if absent; it does not install
 workstation packages. Internet access, sudo, and the official Arch base system
 are required. Git, an AUR helper, and Flatpak need not already exist.
 
+Existing configuration files are preserved. If configuration setup fails after
+the binary is installed, the installer reports that the binary remains installed
+and gives repair guidance; installation is not transactional.
+
 ## Quick start
 
 1. Install ops.
-2. Edit `~/.config/ops/apps.toml` with your preferred editor.
+2. Optionally add applications to `~/.config/ops/apps.toml` with your preferred
+   editor. The generated file explains identifiers and sources.
 3. Run `ops` in a terminal and review its plan.
 4. Run `ops doctor` to check the result.
 
-An empty application configuration is valid. Git identity input, an SSH key
-passphrase, and GitHub device authentication are interactive when first needed.
+Empty application lists are valid; ops still manages Git, SSH, and GitHub setup.
+Git identity input, an SSH key passphrase, and GitHub device authentication are
+interactive when first needed.
 After convergence, another `ops` run reports no changes.
 
 ## Configuration
 
 ```toml
+# apps.toml format, independent of the ops program version.
 version = 2
 
 pacman = ["librewolf", "steam"]
@@ -41,7 +48,9 @@ there is no fuzzy matching or fallback between sources. Unknown fields,
 malformed identifiers, duplicates, and contradictory pacman/AUR declarations
 are rejected before changes. Removing a declaration never uninstalls software.
 
-Version 1 requires an explicit edit; ops never silently migrates your file.
+The `version` field identifies the apps.toml format, independently of the ops
+program version. Format 1 requires a manual migration; ops never migrates or
+rewrites your file.
 See [configuration and migration](docs/configuration.md).
 
 ## What ops manages

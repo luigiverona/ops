@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/luigiverona/ops/internal/config"
 )
 
 func scriptPath(t *testing.T) string {
@@ -139,7 +141,7 @@ func TestInstallerSignatureStatusFailsClosed(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			cmd, target, _ := installerCommand(t, fingerprint, test.status, test.exit)
+			cmd, target, home := installerCommand(t, fingerprint, test.status, test.exit)
 			output, err := cmd.CombinedOutput()
 			if test.wantSuccess && err != nil {
 				t.Fatalf("installer failed: %v\n%s", err, output)
@@ -148,12 +150,22 @@ func TestInstallerSignatureStatusFailsClosed(t *testing.T) {
 				t.Fatalf("installer accepted unsafe signature state:\n%s", output)
 			}
 			if test.wantSuccess {
-				want := "ops 1.2.3 verified.\n\nInstalled ops 1.2.3.\nConfiguration: ~/.config/ops/apps.toml\n\nEdit the configuration, then run ops.\n"
+				want := "ops 1.2.3 verified.\n\nInstalled ops 1.2.3.\nCreated ~/.config/ops/apps.toml.\n\nOptionally add applications; the file explains names and sources.\nRun ops to review workstation setup, including Git, SSH, and GitHub.\n"
 				if string(output) != want {
 					t.Fatalf("installer output=%q, want=%q", output, want)
 				}
 				if _, err := os.Stat(target); err != nil {
 					t.Fatalf("verified binary was not installed: %v", err)
+				}
+				data, err := os.ReadFile(config.Path(home))
+				if err != nil || string(data) != config.Default {
+					t.Fatalf("created config = %q, %v", data, err)
+				}
+				for path, mode := range map[string]os.FileMode{config.Path(home): 0o600, filepath.Dir(config.Path(home)): 0o700} {
+					info, err := os.Stat(path)
+					if err != nil || info.Mode().Perm() != mode {
+						t.Fatalf("private permissions for %s: %v, %v", path, info, err)
+					}
 				}
 			}
 		})
@@ -201,12 +213,22 @@ func TestInstallerPreservesExistingConfigAndRejectsUnsafeConfigFile(t *testing.T
 		_ = os.MkdirAll(dir, 0o700)
 		path := filepath.Join(dir, "apps.toml")
 		_ = os.WriteFile(path, []byte("user configuration\n"), 0o600)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("installer failed: %v\n%s", err, output)
+		before, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		output, err := cmd.CombinedOutput()
+		want := "ops 1.2.3 verified.\n\nInstalled ops 1.2.3.\nPreserved existing ~/.config/ops/apps.toml.\n\nRun ops to review workstation setup, including Git, SSH, and GitHub.\n"
+		if err != nil || string(output) != want {
+			t.Fatalf("installer output=%q, err=%v, want=%q", output, err, want)
 		}
 		data, _ := os.ReadFile(path)
 		if string(data) != "user configuration\n" {
 			t.Fatal("existing configuration was overwritten")
+		}
+		after, err := os.Stat(path)
+		if err != nil || !os.SameFile(before, after) || before.Mode() != after.Mode() || !before.ModTime().Equal(after.ModTime()) {
+			t.Fatalf("existing configuration metadata changed: %v", err)
 		}
 	})
 	t.Run("rejects file symlink", func(t *testing.T) {
@@ -325,4 +347,133 @@ IFS= read -r answer < /dev/tty || fail 'could not read confirmation'`
 		"OPS_TEST_GPG_EXIT="+gpgExit,
 	)
 	return cmd, target, home
+}
+
+// Faults are inserted only into the temporary test copy, at checked boundaries.
+// Production does not expose environment variables that bypass filesystem checks.
+func installerHook(t *testing.T, cmd *exec.Cmd, before, hook string) {
+	t.Helper()
+	path := cmd.Args[1]
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(data), before) != 1 {
+		t.Fatalf("expected one installer boundary %q", before)
+	}
+	if err := os.WriteFile(path, []byte(strings.Replace(string(data), before, hook+"\n"+before, 1)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInstallerConfigPreflightPreservesBinary(t *testing.T) {
+	for _, kind := range []string{"parent file", "ops file", "ops symlink", "config directory", "config symlink", "dangling config symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			fingerprint := strings.Repeat("A", 40)
+			cmd, target, home := installerCommand(t, fingerprint, "[GNUPG:] VALIDSIG "+fingerprint+" 0 0 0 0 0 0 0 0 0\n", "0")
+			if err := os.WriteFile(target, []byte("original binary"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			path := config.Path(home)
+			if kind == "parent file" {
+				if err := os.WriteFile(filepath.Join(home, ".config"), []byte("keep"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				switch kind {
+				case "ops file", "ops symlink":
+					if err := os.Remove(filepath.Dir(path)); err != nil {
+						t.Fatal(err)
+					}
+					if kind == "ops file" {
+						if err := os.WriteFile(filepath.Dir(path), []byte("keep"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+					} else if err := os.Symlink(t.TempDir(), filepath.Dir(path)); err != nil {
+						t.Fatal(err)
+					}
+				case "config directory":
+					if err := os.Mkdir(path, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				default:
+					outside := filepath.Join(home, "outside")
+					if kind == "config symlink" {
+						if err := os.WriteFile(outside, []byte("keep"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := os.Symlink(outside, path); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			output, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), "configuration") || strings.Contains(string(output), "Installed ops") {
+				t.Fatalf("output=%s, err=%v", output, err)
+			}
+			if data, err := os.ReadFile(target); err != nil || string(data) != "original binary" {
+				t.Fatalf("preflight replaced binary: %q, %v", data, err)
+			}
+		})
+	}
+}
+
+func TestInstallerConfigurationFailuresAndRaces(t *testing.T) {
+	tests := []struct {
+		name, boundary, hook, want string
+		preserved                  bool
+	}{
+		{"parent creation failure", "binary_installed=yes", `mkdir() { return 1; }`, "could not create configuration parent", false},
+		{"directory creation failure", "binary_installed=yes", `mkdir() { if [ "$*" = "$config_dir" ]; then return 1; fi; command mkdir "$@"; }`, "could not create configuration directory", false},
+		{"exclusive creation failure", "    if (umask 077; set -C; {", `rmdir "$config_dir"`, "could not create", false},
+		{"write failure", "    if (umask 077; set -C; {", `cat() { printf 'partial'; return 1; }`, "could not write", false},
+		{"raced regular file", "    if (umask 077; set -C; {", `printf 'raced config' > "$config"`, "Preserved existing ~/.config/ops/apps.toml.", true},
+		{"raced symlink", "    if (umask 077; set -C; {", `printf 'keep' > "$HOME/outside"; ln -s "$HOME/outside" "$config"`, "apps.toml is a symlink", false},
+		{"raced dangling symlink", "    if (umask 077; set -C; {", `ln -s "$HOME/outside" "$config"`, "apps.toml is a symlink", false},
+		{"raced config directory", "    if (umask 077; set -C; {", `mkdir "$config"`, "apps.toml is not a regular file", false},
+		{"ops directory changed after preflight", "binary_installed=yes", `mkdir -p "$config_parent"; ln -s "$HOME" "$config_dir"`, "configuration directory ~/.config/ops is a symlink", false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fingerprint := strings.Repeat("A", 40)
+			cmd, target, home := installerCommand(t, fingerprint, "[GNUPG:] VALIDSIG "+fingerprint+" 0 0 0 0 0 0 0 0 0\n", "0")
+			installerHook(t, cmd, test.boundary, test.hook)
+			output, err := cmd.CombinedOutput()
+			if (err == nil) != test.preserved || !strings.Contains(string(output), test.want) {
+				t.Fatalf("output=%s, err=%v", output, err)
+			}
+			binaryOutput, binaryErr := exec.Command(target, "--version").CombinedOutput()
+			if binaryErr != nil || string(binaryOutput) != "ops 1.2.3\n" {
+				t.Fatalf("binary did not remain installed: %q, %v", binaryOutput, binaryErr)
+			}
+			if !test.preserved {
+				want := "Installed ops 1.2.3, but configuration setup failed for " + config.Path(home) + ".\nThe binary remains installed."
+				if !strings.Contains(string(output), want) || strings.Contains(string(output), "Preserved existing") || strings.Contains(string(output), "Created ~/.config") || strings.Contains(string(output), "restored") {
+					t.Fatalf("incorrect partial installation report: %s", output)
+				}
+			}
+			switch test.name {
+			case "raced regular file", "write failure":
+				want := "raced config"
+				if test.name == "write failure" {
+					want = "partial"
+				}
+				if data, err := os.ReadFile(config.Path(home)); err != nil || string(data) != want {
+					t.Fatalf("unexpected config contents: %q, %v", data, err)
+				}
+			case "raced symlink":
+				if data, err := os.ReadFile(filepath.Join(home, "outside")); err != nil || string(data) != "keep" {
+					t.Fatalf("symlink target changed: %q, %v", data, err)
+				}
+			case "raced dangling symlink":
+				if _, err := os.Lstat(filepath.Join(home, "outside")); !os.IsNotExist(err) {
+					t.Fatalf("created dangling symlink target: %v", err)
+				}
+			}
+		})
+	}
 }

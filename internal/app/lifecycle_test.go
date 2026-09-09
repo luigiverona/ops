@@ -141,6 +141,9 @@ func TestMinimalArchDoctorWithoutConfigurationOrTools(t *testing.T) {
 			}
 		}
 		if !withConfig {
+			if !strings.Contains(out.String(), config.Path(a.Home)) || !strings.Contains(out.String(), "is missing; create a file using format 2") {
+				t.Fatalf("missing config guidance: %s", out)
+			}
 			if _, err := os.Stat(config.Path(a.Home)); !os.IsNotExist(err) {
 				t.Fatal("doctor created config")
 			}
@@ -207,5 +210,54 @@ func TestFinalInspectionDoesNotTrustSuccessfulMutations(t *testing.T) {
 	code := a.preparePlan(context.Background(), cfg, p, ui.UI{In: strings.NewReader("y\nUser\nuser@example.com\n"), Out: out})
 	if code != Issues || !strings.Contains(out.String(), "re-inspection found remaining work") || strings.Contains(out.String(), "Workstation ready.") {
 		t.Fatalf("unverified success=%d\n%s", code, out.String())
+	}
+}
+
+func TestInvalidConfigurationStopsBeforeWorkstationInspection(t *testing.T) {
+	for _, command := range []string{"ops", "doctor"} {
+		for _, data := range []string{"pacman=[]", "version=1", "version=0", "version=-1", "version=3", "version=\"2\"", "version=2\nunknown=[]", "version=["} {
+			t.Run(command+"/"+data, func(t *testing.T) {
+				a, runner, out := minimalRuntime(t)
+				path := config.Path(a.Home)
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				run := a.Prepare
+				if command == "doctor" {
+					run = a.Doctor
+				}
+				if code := run(context.Background()); code != Fatal || !strings.Contains(out.String(), path) {
+					t.Fatalf("code=%d, output=%s", code, out)
+				}
+				if got := strings.Join(runner.events, "\n"); got != "uname -m" {
+					t.Fatalf("commands before config rejection: %s", got)
+				}
+				got, err := os.ReadFile(path)
+				if err != nil || string(got) != data {
+					t.Fatalf("configuration changed: %q, %v", got, err)
+				}
+				entries, err := os.ReadDir(a.Home)
+				if err != nil || len(entries) != 1 || entries[0].Name() != ".config" {
+					t.Fatalf("home changed: %v, %v", entries, err)
+				}
+			})
+		}
+	}
+}
+
+func TestPrepareMissingConfigurationDoesNotCreateFiles(t *testing.T) {
+	a, runner, out := minimalRuntime(t)
+	if code := a.Prepare(context.Background()); code != Fatal || !strings.Contains(out.String(), config.Path(a.Home)) || !strings.Contains(out.String(), "is missing; create a file using format 2") {
+		t.Fatalf("code=%d, output=%s", code, out)
+	}
+	if got := strings.Join(runner.events, "\n"); got != "uname -m" {
+		t.Fatalf("commands before config rejection: %s", got)
+	}
+	entries, err := os.ReadDir(a.Home)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("home changed: %v, %v", entries, err)
 	}
 }
