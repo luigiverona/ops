@@ -17,10 +17,10 @@ func (a Runtime) Doctor(ctx context.Context) int {
 	if err := a.detect(ctx); err != nil {
 		return a.fatal(fmt.Errorf("doctor could not inspect the system: %w", err))
 	}
-	cfg, err := config.Load(config.Path(a.Home))
-	missingConfig := errors.Is(err, os.ErrNotExist)
-	if err != nil && !missingConfig {
-		return a.fatal(fmt.Errorf("doctor could not inspect configuration: %w", err))
+	cfg, configErr := config.Load(config.Path(a.Home))
+	missingConfig := errors.Is(configErr, os.ErrNotExist)
+	if configErr != nil && !missingConfig {
+		return a.fatal(fmt.Errorf("doctor could not inspect configuration: %w", configErr))
 	}
 	state, err := a.inspectState(ctx, cfg)
 	if err != nil {
@@ -30,7 +30,7 @@ func (a Runtime) Doctor(ctx context.Context) int {
 	p := plan.Build(cfg, state, facts)
 	actionable := missingConfig
 	if missingConfig {
-		fmt.Fprintln(a.Out, "Configuration missing. Create ~/.config/ops/apps.toml with version = 2; see docs/configuration.md. No files changed.")
+		fmt.Fprintf(a.Out, "%s. No files changed.\n", ui.PrintableASCII(configErr.Error()))
 	}
 
 	for _, component := range plan.CoreOrder {

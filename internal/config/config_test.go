@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -128,6 +129,10 @@ func TestEnsureDefaultPreservesExisting(t *testing.T) {
 	if err := os.WriteFile(path, []byte("mine"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	created, err = EnsureDefault(path)
 	if err != nil || created {
 		t.Fatalf("second create = %v, %v", created, err)
@@ -135,6 +140,10 @@ func TestEnsureDefaultPreservesExisting(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	if string(data) != "mine" {
 		t.Fatal("existing configuration was overwritten")
+	}
+	after, err := os.Stat(path)
+	if err != nil || !os.SameFile(before, after) || before.Mode() != after.Mode() || !before.ModTime().Equal(after.ModTime()) {
+		t.Fatalf("existing configuration metadata changed: %v", err)
 	}
 }
 
@@ -177,4 +186,82 @@ func TestConfigurationPathsRejectSymlinksAndNonRegularFiles(t *testing.T) {
 			t.Fatal("expected non-regular file rejection")
 		}
 	})
+}
+
+func TestFormatDiagnostics(t *testing.T) {
+	tests := []struct {
+		name, data, want string
+	}{
+		{"missing field", "pacman=[]", "missing version field"},
+		{"legacy", "version=1\n[apps]\nbrowser=[]", "manually migrate"},
+		{"zero", "version=0", "unsupported apps.toml format 0 in the version field"},
+		{"negative", "version=-1", "unsupported apps.toml format -1 in the version field"},
+		{"future", "version=3", "unsupported future apps.toml format 3"},
+		{"far future", "version=9223372036854775807", "unsupported future apps.toml format 9223372036854775807"},
+		{"string", "version=\"2\"", "expected an integer format number"},
+		{"float", "version=2.0", "expected an integer format number"},
+		{"boolean", "version=true", "expected an integer format number"},
+		{"array", "version=[2]", "expected an integer format number"},
+		{"table", "[version]", "expected an integer format number"},
+		{"unknown field", "version=2\nunknown=[]", "invalid apps.toml format 2"},
+		{"wrong list type", "version=2\npacman=[1]", "invalid apps.toml format 2"},
+		{"malformed TOML", "version=[", "invalid apps.toml syntax"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := Parse([]byte(test.data))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Parse(%q) = %v, want %q", test.data, err, test.want)
+			}
+			if strings.Contains(err.Error(), "migrate") != (test.name == "legacy") {
+				t.Fatalf("incorrect migration guidance: %v", err)
+			}
+			if strings.Contains(test.name, "future") {
+				for _, want := range []string{"installed ops binary supports format 2", "check for a compatible ops release", "do not simply change the version field"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("missing future-format guidance %q: %v", want, err)
+					}
+				}
+			}
+			if test.name == "legacy" && !strings.Contains(err.Error(), DocumentationURL+"#migration-from-format-1") {
+				t.Fatalf("missing binary-installation documentation link: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadDiagnosticsIncludePathAndPreserveFile(t *testing.T) {
+	path := Path(t.TempDir())
+	for _, data := range []string{"", "version=1", "version=0", "version=3", "version=\"2\"", "version=2\nunknown=[]", "version=["} {
+		if data != "" {
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, err := Load(path)
+		if err == nil || !strings.Contains(err.Error(), path) {
+			t.Fatalf("missing path: %v", err)
+		}
+		if data == "" {
+			if !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), "is missing; create a file using format 2") {
+				t.Fatalf("missing-file diagnostic: %v", err)
+			}
+		} else if got, err := os.ReadFile(path); err != nil || string(got) != data {
+			t.Fatalf("Load changed configuration: %q, %v", got, err)
+		}
+	}
+}
+
+func TestDefaultCommentsDoNotChangeDeclarations(t *testing.T) {
+	minimal, err := Parse([]byte("version=2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	generated, err := Parse([]byte(Default))
+	if err != nil || !reflect.DeepEqual(generated, minimal) {
+		t.Fatalf("default differs from empty format 2: %#v, %v", generated, err)
+	}
 }

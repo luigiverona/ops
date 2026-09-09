@@ -15,9 +15,28 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
+// Version is the supported apps.toml format, independent of the ops program version.
 const Version = 2
 
-const Default = `version = 2
+// DocumentationURL is usable from binary-only installations.
+const DocumentationURL = "https://github.com/luigiverona/ops/blob/main/docs/configuration.md"
+
+const Default = `# Applications managed by ops.
+# Use exact, case-sensitive identifiers from the selected source.
+#
+# Official Arch packages (pacman):
+#   https://archlinux.org/packages/
+#   pacman -Ss SEARCH_TERM
+#
+# AUR packages (aur):
+#   https://aur.archlinux.org/
+#
+# Flatpak application IDs (flatpak):
+#   https://flathub.org/
+#   flatpak search SEARCH_TERM
+
+# apps.toml format version. Independent of the ops program version.
+version = 2
 
 pacman = []
 aur = []
@@ -68,7 +87,14 @@ var flatpakID = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-
 func Path(home string) string { return filepath.Join(home, ".config", "ops", "apps.toml") }
 
 // Load reads and strictly validates a configuration file.
-func Load(path string) (Config, error) {
+func Load(path string) (cfg Config, err error) {
+	defer func() {
+		if errors.Is(err, os.ErrNotExist) {
+			err = fmt.Errorf("apps.toml %q is missing; create a file using format 2 (version = 2); see %s: %w", path, DocumentationURL, err)
+		} else if err != nil {
+			err = fmt.Errorf("apps.toml %q: %w", path, err)
+		}
+	}()
 	if err := validateConfigPath(path, false); err != nil {
 		return Config{}, err
 	}
@@ -79,25 +105,33 @@ func Load(path string) (Config, error) {
 	return Parse(b)
 }
 
-// Parse rejects legacy schemas with migration guidance and never rewrites files.
+// Parse validates the format before decoding source lists and never rewrites files.
 func Parse(data []byte) (Config, error) {
-	var header struct {
-		Version *int `toml:"version"`
-	}
+	var header map[string]any
 	if err := toml.Unmarshal(data, &header); err != nil {
-		return Config{}, fmt.Errorf("invalid configuration: %w", err)
+		return Config{}, fmt.Errorf("invalid apps.toml syntax: %w", err)
 	}
-	if header.Version == nil {
-		return Config{}, errors.New("invalid configuration: missing version")
+	value, present := header["version"]
+	if !present {
+		return Config{}, fmt.Errorf("missing version field; the installed ops binary supports apps.toml format 2 (version = 2); check the file's format before adding the field; see %s", DocumentationURL)
 	}
-	if *header.Version != Version {
-		return Config{}, fmt.Errorf("unsupported configuration version %d; migrate to version 2 source lists (see docs/configuration.md); configuration was not changed", *header.Version)
+	format, ok := value.(int64)
+	if !ok {
+		return Config{}, errors.New("invalid apps.toml version field: expected an integer format number; the installed ops binary supports format 2")
+	}
+	switch {
+	case format == 1:
+		return Config{}, fmt.Errorf("apps.toml format 1 is no longer supported; manually migrate categories and source-prefixed identifiers to format 2 source lists; see %s#migration-from-format-1; configuration was not changed", DocumentationURL)
+	case format < Version:
+		return Config{}, fmt.Errorf("unsupported apps.toml format %d in the version field; the installed ops binary supports format 2; check the file's format against %s; configuration was not changed", format, DocumentationURL)
+	case format > Version:
+		return Config{}, fmt.Errorf("unsupported future apps.toml format %d; the installed ops binary supports format 2; check for a compatible ops release; do not simply change the version field; configuration was not changed", format)
 	}
 	var raw rawConfig
 	dec := toml.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&raw); err != nil {
-		return Config{}, fmt.Errorf("invalid configuration: %w", err)
+		return Config{}, fmt.Errorf("invalid apps.toml format 2: %w", err)
 	}
 	cfg := Config{Version: Version}
 	seen := make(map[Application]bool)
@@ -113,15 +147,15 @@ func Parse(data []byte) (Config, error) {
 		for _, id := range ids {
 			app := Application{Source: group.source, Identifier: id}
 			if !ValidIdentifier(app.Source, id) {
-				return Config{}, fmt.Errorf("invalid configuration: malformed %s identifier %q", app.Source, id)
+				return Config{}, fmt.Errorf("invalid apps.toml format 2: malformed %s identifier %q", app.Source, id)
 			}
 			if seen[app] {
-				return Config{}, fmt.Errorf("invalid configuration: duplicate declaration %s:%s", app.Source, id)
+				return Config{}, fmt.Errorf("invalid apps.toml format 2: duplicate declaration %s:%s", app.Source, id)
 			}
 			seen[app] = true
 			if app.Source != Flatpak {
 				if source, ok := packageSources[id]; ok && source != app.Source {
-					return Config{}, fmt.Errorf("invalid configuration: package %q cannot be both pacman and AUR", id)
+					return Config{}, fmt.Errorf("invalid apps.toml format 2: package %q cannot be both pacman and AUR", id)
 				}
 				packageSources[id] = app.Source
 			}
