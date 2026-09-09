@@ -193,7 +193,7 @@ func TestAURApplicationBuildIsPinnedNoninteractiveAndInstallsOnlySelectedOutput(
 	if makepkgCalls != 2 {
 		t.Fatalf("makepkg calls=%d", makepkgCalls)
 	}
-	if runner.revisionChecks != 2 {
+	if runner.revisionChecks != 3 {
 		t.Fatalf("pinned source revision was not revalidated before build: checks=%d", runner.revisionChecks)
 	}
 	if !fetchedPinnedSource {

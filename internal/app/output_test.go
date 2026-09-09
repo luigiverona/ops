@@ -21,11 +21,11 @@ func TestShowPlanConciseIntent(t *testing.T) {
 		plan plan.Plan
 		want string
 	}{
-		{"mixed", realWorkstationPlan(t), "Workstation setup\n\nInstall\n  bitwarden\n  com.tutanota.Tutanota\n\nConfigure\n  SSH, GitHub\n\nThe system will be updated.\n\n"},
-		{"identity", plan.Plan{ConfigureGit: true, CreateSSHIdentity: true, AuthenticateGitHub: true}, "Workstation setup\n\nConfigure\n  Git, SSH, GitHub\n\n"},
+		{"mixed", realWorkstationPlan(t), "Workstation setup\n\nInstall\n  bitwarden (pacman)\n  com.tutanota.Tutanota (Flatpak)\n\nConfigure\n  SSH for GitHub\n  GitHub authentication\n  Register this workstation's SSH key with GitHub if needed\n\nManage GitHub SSH settings separately; preserve other host configuration.\n\nThe system will be updated.\n\n"},
+		{"identity", plan.Plan{ConfigureGit: true, CreateSSHIdentity: true, AuthenticateGitHub: true}, "Workstation setup\n\nConfigure\n  Git identity\n  SSH for GitHub\n  GitHub authentication\n\n"},
 		{"ready", plan.Plan{Core: readyCore(), Applications: readyApplications()}, ""},
-		{"scope refresh", plan.Plan{RefreshGitHubSSHKeyScope: true}, "Workstation setup\n\nConfigure\n  GitHub\n\n"},
-		{"application configuration", plan.Plan{Applications: []plan.Application{{Declaration: config.Application{Source: "pacman", Identifier: "mullvad-vpn"}, State: "configure", Services: []string{"mullvad-daemon.service"}}}}, "Workstation setup\n\nConfigure\n  mullvad-vpn\n\n"},
+		{"scope refresh", plan.Plan{RefreshGitHubSSHKeyScope: true}, "Workstation setup\n\nConfigure\n  GitHub SSH key access\n\n"},
+		{"application configuration", plan.Plan{Applications: []plan.Application{{Declaration: config.Application{Source: "pacman", Identifier: "mullvad-vpn"}, State: "configure", Services: []string{"mullvad-daemon.service"}}}}, "Workstation setup\n\nConfigure\n  mullvad-vpn (pacman)\n\nEnable and start\n  mullvad-daemon.service\n\n"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -44,7 +44,7 @@ func TestShowPlanHidesImplementationButKeepsExactIdentifiers(t *testing.T) {
 	p.Applications[0].AURSigningKeys = []string{"0123456789ABCDEF0123456789ABCDEF01234567"}
 	var out bytes.Buffer
 	Runtime{Out: &out}.showPlan(p)
-	for _, want := range []string{"  paru\n", "  org.example.AVeryLongIdentifier\n", "Required dependencies"} {
+	for _, want := range []string{"  paru (AUR)\n", "  org.example.AVeryLongIdentifier (Flatpak)\n", "Required dependencies"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %q: %s", want, &out)
 		}
@@ -74,6 +74,78 @@ func TestShowPlanIsDeterministic(t *testing.T) {
 	Runtime{Out: &second}.showPlan(plan.Plan{CorePackages: []string{"openssh", "git"}, FullUpgrade: true})
 	if first.String() != second.String() {
 		t.Fatal("dependency ordering leaked into summary")
+	}
+}
+
+func TestFreshPlanAndKnownAccountConsequences(t *testing.T) {
+	for _, known := range []bool{false, true} {
+		state := plan.State{}
+		if known {
+			state = readyExecutionState()
+			state.ManagedGitHubKey = false
+		}
+		p := plan.Build(config.Config{Version: 2}, state, nil)
+		var out bytes.Buffer
+		Runtime{Out: &out}.showPlan(p)
+		registration := "Register this workstation's SSH key with GitHub"
+		if !known {
+			registration += " if needed"
+			for _, want := range []string{"Git identity", "SSH for GitHub", "GitHub authentication", "Manage GitHub SSH settings separately; preserve other host configuration."} {
+				if !strings.Contains(out.String(), want) {
+					t.Fatalf("missing %q: %s", want, &out)
+				}
+			}
+		}
+		if !strings.Contains(out.String(), registration+"\n") || known && strings.Contains(out.String(), "if needed") {
+			t.Fatalf("misleading registration: %s", &out)
+		}
+		assertConciseOutput(t, out.String())
+	}
+}
+
+func TestMixedSourcesAndServicesUsePlanIdentity(t *testing.T) {
+	p := plan.Plan{EnableMultilib: true, Applications: []plan.Application{
+		{Declaration: config.Application{Source: config.Pacman, Identifier: "firefox"}, State: plan.Install, Services: []string{"z.service", "a.service"}},
+		{Declaration: config.Application{Source: config.AUR, Identifier: "downgrade"}, State: plan.Install, Services: []string{"a.service"}},
+		{Declaration: config.Application{Source: config.Flatpak, Identifier: "org.gimp.GIMP"}, State: plan.Install},
+	}}
+	var out bytes.Buffer
+	Runtime{Out: &out}.showPlan(p)
+	want := "Workstation setup\n\nInstall\n  firefox (pacman)\n  downgrade (AUR)\n  org.gimp.GIMP (Flatpak)\n\nEnable and start\n  a.service\n  z.service\n\nEnable multilib.\n\n"
+	if out.String() != want {
+		t.Fatalf("got %q, want %q", out.String(), want)
+	}
+}
+
+func TestAURApprovalDisclosesOnlyPlannedKeysAndAdditionalOutputs(t *testing.T) {
+	const fingerprint = "0123456789ABCDEF0123456789ABCDEF01234567"
+	for _, extra := range []bool{false, true} {
+		application := plan.Application{Declaration: config.Application{Source: config.AUR, Identifier: "example"}, AURSource: plan.AURSource{Commit: bootstrapCommit, Metadata: aurmeta.Metadata{PackageBase: "example"}}, AUROutputs: []string{"example"}}
+		if extra {
+			application.AURSigningKeys = []string{fingerprint}
+			application.AUROutputs = append(application.AUROutputs, "example-libs")
+		}
+		var out bytes.Buffer
+		err := (Runtime{Out: &out}).reviewAUR(context.Background(), ui.UI{In: strings.NewReader("\n\n"), Out: &out}, application, map[string]string{"PKGBUILD": "source"})
+		if !errors.Is(err, errReviewDeclined) {
+			t.Fatalf("default-no err=%v", err)
+		}
+		text := out.String()
+		approval := strings.Index(text, "Build and install example? [y/N]")
+		for _, want := range []string{"Package: example\n", "Revision: " + bootstrapCommit, "Reviewed build instructions will run as your normal user and can access your files."} {
+			if at := strings.Index(text, want); at < 0 || at >= approval {
+				t.Fatalf("missing before approval %q: %s", want, text)
+			}
+		}
+		if strings.Contains(text, "Package base:") {
+			t.Fatal("redundant base")
+		}
+		for _, want := range []string{"Import public signing keys into your GnuPG keyring:", fingerprint, "Also install required outputs from this package base:", "example-libs"} {
+			at := strings.Index(text, want)
+			if (at >= 0) != extra || extra && at >= approval {
+				t.Fatalf("incorrect consequence %q: %s", want, text)
+			}
+		}
 	}
 }
 
@@ -115,11 +187,11 @@ func TestAURReviewShowsBuildInstructionsAndRequiresOneApproval(t *testing.T) {
 	for _, answer := range []string{"y\n", "\n", "n\n", ""} {
 		t.Run(fmt.Sprintf("%q", answer), func(t *testing.T) {
 			var out, review bytes.Buffer
-			err := (Runtime{Out: &out}).reviewAUR(context.Background(), ui.UI{In: strings.NewReader("\n\n\n\n" + answer), Out: &review}, "example-bin", files)
+			err := (Runtime{Out: &out}).reviewAUR(context.Background(), ui.UI{In: strings.NewReader("\n\n\n\n" + answer), Out: &review}, plan.Application{Declaration: config.Application{Identifier: "example-bin"}, AURSource: plan.AURSource{Commit: bootstrapCommit, Metadata: aurmeta.Metadata{PackageBase: "example"}}}, files)
 			if (err == nil) != (answer == "y\n") {
 				t.Fatalf("answer=%q err=%v", answer, err)
 			}
-			if out.String() != "Reviewing example-bin...\n" || !strings.HasPrefix(review.String(), "AUR source review (1/4) - untrusted build instructions\nPKGBUILD\n\nsource setup.sh\n") {
+			if out.String() != "Reviewing example-bin...\n" || !strings.HasPrefix(review.String(), "AUR source review (1/4) - untrusted build instructions\nPackage: example-bin\nPackage base: example\nRevision: "+bootstrapCommit+"\n\nPKGBUILD\n\nsource setup.sh\n") {
 				t.Fatalf("PKGBUILD not first: %s", &out)
 			}
 			for _, file := range []string{"setup.sh", "package.install", "other-instructions"} {
@@ -127,7 +199,7 @@ func TestAURReviewShowsBuildInstructionsAndRequiresOneApproval(t *testing.T) {
 					t.Fatalf("build instructions hidden: %s", file)
 				}
 			}
-			if strings.Count(review.String(), "?") != 1 || !strings.HasSuffix(review.String(), "Install example-bin? [y/N] ") {
+			if strings.Count(review.String(), "?") != 1 || !strings.HasSuffix(review.String(), "Build and install example-bin? [y/N] ") {
 				t.Fatalf("redundant or unsafe approval: %s", &out)
 			}
 			assertConciseOutput(t, out.String())
@@ -143,7 +215,7 @@ func TestAURReviewShowsBuildInstructionsAndRequiresOneApproval(t *testing.T) {
 		})
 	}
 	var out bytes.Buffer
-	if err := (Runtime{Out: &out}).reviewAUR(context.Background(), ui.UI{}, "example", map[string]string{".SRCINFO": "metadata"}); err == nil {
+	if err := (Runtime{Out: &out}).reviewAUR(context.Background(), ui.UI{}, plan.Application{Declaration: config.Application{Identifier: "example"}}, map[string]string{".SRCINFO": "metadata"}); err == nil {
 		t.Fatal("missing PKGBUILD accepted")
 	}
 }
@@ -157,7 +229,7 @@ func TestFlatpakOnlyPlanDoesNotPromiseSystemWork(t *testing.T) {
 	}
 	var out bytes.Buffer
 	Runtime{Out: &out}.showPlan(p)
-	if out.String() != "Workstation setup\n\nInstall\n  org.example.App\n\n" {
+	if out.String() != "Workstation setup\n\nInstall\n  org.example.App (Flatpak)\n\n" {
 		t.Fatalf("misleading summary: %s", &out)
 	}
 	runner := &prepareRunner{}
@@ -189,7 +261,7 @@ func TestPlanSummaryOnlyAnnouncesPlannedSystemWork(t *testing.T) {
 		Runtime{Out: &out}.showPlan(test.p)
 		if strings.Contains(out.String(), "system will be updated") != test.update ||
 			strings.Contains(out.String(), "Required dependencies") != test.dependencies ||
-			strings.Contains(out.String(), "repositories will be enabled") != test.repositories {
+			strings.Contains(out.String(), "Enable multilib.") != test.repositories {
 			t.Fatalf("plan=%#v output=%s", test.p, &out)
 		}
 	}

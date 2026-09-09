@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 
 	"github.com/luigiverona/ops/internal/arch"
@@ -20,7 +21,12 @@ import (
 )
 
 // Prepare executes the interactive reconciliation lifecycle.
-func (a Runtime) Prepare(ctx context.Context) int {
+func (a Runtime) Prepare(ctx context.Context) (code int) {
+	a, finish := a.withInterruption(ctx, "setup")
+	defer finish(&code)
+	if ctx.Err() != nil {
+		return Fatal
+	}
 	if err := a.detect(ctx); err != nil {
 		return a.fatal(err)
 	}
@@ -34,6 +40,9 @@ func (a Runtime) Prepare(ctx context.Context) int {
 		return a.fatal(fmt.Errorf("inspect workstation: %w", err))
 	}
 	facts := resolve.Applications(ctx, cfg, state, resolve.Resolver{Runner: a.Runner})
+	if ctx.Err() != nil {
+		return Fatal
+	}
 	p := plan.Build(cfg, state, facts)
 	if !p.HasActions() {
 		return a.preparePlan(ctx, cfg, p, ui.UI{})
@@ -45,24 +54,34 @@ func (a Runtime) Prepare(ctx context.Context) int {
 		return a.fatal(err)
 	}
 	defer tty.Close()
-	if _, ok := a.Runner.(run.Exec); ok {
-		a.Runner = run.Exec{In: tty, Out: a.Out, Err: a.Err}
+	if guarded, ok := a.Runner.(cancellationRunner); ok {
+		if _, ok := guarded.Runner.(run.Exec); ok {
+			a.Runner = cancellationRunner{run.Exec{In: tty, Out: a.Out, Err: a.Err}}
+		}
 	}
 	terminal := ui.UI{In: tty, Out: tty}
 	return a.preparePlan(ctx, cfg, p, terminal)
 }
 
 func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (result execution) {
+	a, finish := a.withInterruption(ctx, "setup")
+	defer finish(&result.status)
+	if ctx.Err() != nil {
+		return execution{status: Fatal}
+	}
 	a.showPlan(p)
 	plannedProblems := planIssues(p)
 	if !p.HasActions() {
 		return execution{git: p.GitStatus, ssh: p.SSHStatus, github: p.GitHubStatus, problems: plannedProblems}
 	}
-	confirmed, err := terminal.Confirm("Continue?", true)
+	confirmed, err := terminal.Confirm(ctx, "Continue?", true)
 	if err != nil {
 		return execution{status: a.fatal(err)}
 	}
 	if !confirmed {
+		if !a.claimConclusion() {
+			return execution{status: Fatal}
+		}
 		fmt.Fprintln(a.Out, "No changes made.")
 		return execution{status: Success, skipped: true}
 	}
@@ -76,25 +95,34 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		defer keeper.Close()
 	}
 	defer func() {
-		if result.status == Fatal {
+		if result.status == Fatal && !a.interrupted() && a.interruption.mutation {
 			fmt.Fprintln(a.Err, "Earlier changes may remain. Run ops doctor before retrying.")
 		}
 	}()
 
 	archManager := arch.Manager{Runner: a.Runner}
 	if p.EnableMultilib {
+		if err := a.beginMutation(ctx); err != nil {
+			return execution{status: Fatal}
+		}
 		a.progress("Preparing system...")
 		if err := archManager.EnableMultilib(ctx); err != nil {
 			return execution{status: a.coreFatal("multilib", err, "required repository configuration is unavailable")}
 		}
 	}
 	if p.FullUpgrade {
+		if err := a.beginMutation(ctx); err != nil {
+			return execution{status: Fatal}
+		}
 		a.progress("Updating system...")
 		if err := archManager.FullUpgrade(ctx); err != nil {
 			return execution{status: a.coreFatal("Arch system upgrade", err, "package installation cannot continue safely")}
 		}
 	}
 	if len(p.CorePackages) > 0 {
+		if err := a.beginMutation(ctx); err != nil {
+			return execution{status: Fatal}
+		}
 		a.progress("Installing packages...")
 	}
 	if err := archManager.Install(ctx, p.CorePackages, false); err != nil {
@@ -105,11 +133,12 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		return execution{status: a.coreFatal("core verification", err, "the required core is incomplete")}
 	}
 
-	aurManager := aur.Manager{Runner: a.Runner, Review: func(name string, files map[string]string) error {
-		return a.reviewAUR(ctx, terminal, name, files)
-	}}
+	aurManager := aur.Manager{Runner: a.Runner}
 	flatpakManager := flatpak.Manager{Runner: a.Runner}
 	if p.AddFlathub {
+		if err := a.beginMutation(ctx); err != nil {
+			return execution{status: Fatal}
+		}
 		a.progress("Preparing Flatpak applications...")
 		if err := flatpakManager.AddFlathub(ctx); err != nil {
 			return execution{status: a.coreFatal("flathub", err, "Flatpak application support is unavailable")}
@@ -118,6 +147,9 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 
 	problems := plannedProblems
 	for _, application := range p.Applications {
+		if ctx.Err() != nil {
+			return execution{status: Fatal}
+		}
 		if application.State == "ready" {
 			continue
 		}
@@ -132,6 +164,7 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 			}
 			continue
 		}
+		aurManager.Review = func(_ string, files map[string]string) error { return a.reviewAUR(ctx, terminal, application, files) }
 		if err := a.installApplication(ctx, archManager, aurManager, flatpakManager, application); err != nil {
 			if ctx.Err() != nil {
 				return execution{status: a.fatal(fmt.Errorf("application setup interrupted: %w", err))}
@@ -140,22 +173,31 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 			impact := "application setup is incomplete; installation or configuration may have partially succeeded"
 			if errors.Is(err, errReviewDeclined) {
 				state = "Skipped"
-				impact = "this build's dependencies and artifacts were not installed"
+				impact = "the declared application remains unmet"
 			}
 			problems = append(problems, issue{State: state, Name: application.Declaration.Identifier, Source: string(application.Declaration.Source), Cause: err.Error(), Impact: impact, Action: "run ops doctor, resolve the source error or review decision, then run ops again"})
 			continue
 		}
 	}
 
+	if ctx.Err() != nil {
+		return execution{status: Fatal}
+	}
 	gitStatus := p.GitStatus
 	if p.ConfigureGit {
-		var gitIssue *issue
-		gitStatus, gitIssue = a.configureGit(ctx, terminal)
-		if gitIssue != nil {
-			problems = append(problems, *gitIssue)
+		var gitErr error
+		gitStatus, gitErr = a.configureGit(ctx, terminal)
+		if gitErr != nil {
+			if errors.Is(gitErr, io.EOF) {
+				return execution{status: a.fatal(gitErr)}
+			}
+			problems = append(problems, *setupIssue("Git", gitErr))
 		}
 	}
 
+	if ctx.Err() != nil {
+		return execution{status: Fatal}
+	}
 	sshStatus := p.SSHStatus
 	var managed *sshops.Identity
 	sshWork := p.CreateSSHIdentity || p.ReviewSSHIdentities || p.ReviewSSHAgent || p.LoadSSHAgent || p.ConfigureSSH
@@ -176,6 +218,9 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		}
 	}
 
+	if ctx.Err() != nil {
+		return execution{status: Fatal}
+	}
 	githubStatus := p.GitHubStatus
 	if githubWork && sshStatus != "failed" {
 		var githubIssues []issue
@@ -218,11 +263,12 @@ func (a Runtime) verifyCore(ctx context.Context, p plan.Plan) error {
 	return nil
 }
 
-var errReviewDeclined = errors.New("AUR build intentionally skipped by user; build dependencies and artifacts were not installed")
+var errReviewDeclined = errors.New("AUR build skipped by user")
 
 // reviewAUR hides only declarative metadata from presentation. The AUR manager
 // still validates it and compares every tracked file before executing the build.
-func (a Runtime) reviewAUR(ctx context.Context, terminal ui.UI, name string, files map[string]string) error {
+func (a Runtime) reviewAUR(ctx context.Context, terminal ui.UI, application plan.Application, files map[string]string) error {
+	name := application.Declaration.Identifier
 	if _, ok := files["PKGBUILD"]; !ok {
 		return errors.New("AUR source does not track PKGBUILD; cannot review build instructions")
 	}
@@ -238,7 +284,7 @@ func (a Runtime) reviewAUR(ctx context.Context, terminal ui.UI, name string, fil
 	for _, filename := range names {
 		review = append(review, ui.ReviewFile{Name: filename, Contents: files[filename]})
 	}
-	if err := terminal.Review(ctx, review); err != nil {
+	if err := terminal.Review(ctx, ui.ReviewSource{Package: name, PackageBase: application.AURSource.Metadata.PackageBase, Revision: application.AURSource.Commit}, review); err != nil {
 		if errors.Is(err, ui.ErrReviewCancelled) {
 			return errReviewDeclined
 		}
@@ -247,7 +293,36 @@ func (a Runtime) reviewAUR(ctx context.Context, terminal ui.UI, name string, fil
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	ok, err := terminal.Confirm("Install "+ui.PrintableASCII(name)+"?", false)
+	if _, err := fmt.Fprintln(terminal.Out, "Reviewed build instructions will run as your normal user and can access your files."); err != nil {
+		return err
+	}
+	if len(application.AURSigningKeys) > 0 {
+		if _, err := fmt.Fprintln(terminal.Out, "Import public signing keys into your GnuPG keyring:"); err != nil {
+			return err
+		}
+		for _, key := range application.AURSigningKeys {
+			if _, err := fmt.Fprintf(terminal.Out, "  %s\n", ui.PrintableASCII(key)); err != nil {
+				return err
+			}
+		}
+	}
+	var additional []string
+	for _, output := range application.AUROutputs {
+		if output != name {
+			additional = append(additional, output)
+		}
+	}
+	if len(additional) > 0 {
+		if _, err := fmt.Fprintln(terminal.Out, "Also install required outputs from this package base:"); err != nil {
+			return err
+		}
+		for _, output := range additional {
+			if _, err := fmt.Fprintf(terminal.Out, "  %s\n", ui.PrintableASCII(output)); err != nil {
+				return err
+			}
+		}
+	}
+	ok, err := terminal.Confirm(ctx, "Build and install "+ui.PrintableASCII(name)+"?", false)
 	if err != nil {
 		return err
 	}

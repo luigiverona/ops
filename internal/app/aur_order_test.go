@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -21,6 +22,7 @@ const bootstrapCommit = "0123456789012345678901234567890123456789"
 const bootstrapSRCINFO = "pkgbase = paru\n\tpkgver = 2.1.0\n\tpkgrel = 2\n\tmakedepends = cargo\n\npkgname = paru\n"
 
 type aurOrderRunner struct {
+	srcinfo                          string
 	calls                            []run.Spec
 	events                           []string
 	output                           *bytes.Buffer
@@ -48,7 +50,7 @@ func (f *aurOrderRunner) Run(_ context.Context, spec run.Spec) (run.Result, erro
 			return run.Result{}, nil
 		case strings.HasPrefix(args, "-n pacman -S --needed --noconfirm --asdeps -- "):
 			f.events = append(f.events, "dependencies")
-			f.reviewVisibleAtDependencyInstall = strings.Contains(f.output.String(), "Install paru?")
+			f.reviewVisibleAtDependencyInstall = strings.Contains(f.output.String(), "Build and install paru?")
 			if f.failDependencies {
 				return run.Result{}, errors.New("sudo timestamp unavailable")
 			}
@@ -145,7 +147,11 @@ func (f *aurOrderRunner) Run(_ context.Context, spec run.Spec) (run.Result, erro
 			return run.Result{}, os.MkdirAll(spec.Args[len(spec.Args)-1], 0o700)
 		case len(spec.Args) >= 3 && spec.Args[0] == "-C" && spec.Args[2] == "checkout":
 			repo := spec.Args[1]
-			if err := os.WriteFile(filepath.Join(repo, ".SRCINFO"), []byte(bootstrapSRCINFO), 0o600); err != nil {
+			metadata := f.srcinfo
+			if metadata == "" {
+				metadata = bootstrapSRCINFO
+			}
+			if err := os.WriteFile(filepath.Join(repo, ".SRCINFO"), []byte(metadata), 0o600); err != nil {
 				return run.Result{}, err
 			}
 			return run.Result{}, os.WriteFile(filepath.Join(repo, "PKGBUILD"), []byte("pkgname=paru\n"), 0o600)
@@ -250,7 +256,7 @@ func TestDeclaredAURReviewDependencyBuildOrder(t *testing.T) {
 		t.Fatalf("progress=%v, want=%v\n%s", got, wantProgress, output.String())
 	}
 	assertConciseOutput(t, output.String())
-	if strings.Count(output.String(), "Install paru? [y/N]") != 1 || strings.Count(output.String(), "Continue? [Y/n]") != 1 {
+	if strings.Count(output.String(), "Build and install paru? [y/N]") != 1 || strings.Count(output.String(), "Continue? [Y/n]") != 1 {
 		t.Fatalf("unexpected approval boundaries: %s", &output)
 	}
 }
@@ -280,11 +286,55 @@ func TestPreparePlanDeclinedParuReviewDoesNotMutateBuildPackages(t *testing.T) {
 	}
 }
 
+func TestSigningKeyPreparationRequiresBuildApproval(t *testing.T) {
+	const fingerprint = "0123456789ABCDEF0123456789ABCDEF01234567"
+	t.Setenv("GNUPGHOME", filepath.Join(t.TempDir(), "gnupg"))
+	for _, answer := range []string{"q\n", "\n\n", "\nn\n", "\ny\n"} {
+		p := declaredParuPlan(t)
+		metadata := strings.Replace(bootstrapSRCINFO, "\npkgname", "\nvalidpgpkeys = "+fingerprint+"\npkgname", 1)
+		p.Applications[0].AURSource.Metadata = paruSigningMetadata(t, metadata)
+		p.Applications[0].AURSigningKeys = []string{fingerprint}
+		var out bytes.Buffer
+		runner := &aurOrderRunner{srcinfo: metadata, output: &out}
+		code := (Runtime{Runner: runner, Out: &out, Err: &out}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n" + answer), Out: &out})
+		if code != Issues {
+			t.Fatalf("code=%d output=%s", code, &out)
+		}
+		keyPreparation := false
+		for _, call := range runner.calls {
+			keyPreparation = keyPreparation || call.Name == "gpg"
+		}
+		if keyPreparation != (answer == "\ny\n") {
+			t.Fatalf("unapproved key preparation: answer=%q calls=%v", answer, runner.calls)
+		}
+		if answer != "q\n" {
+			keyAt, approvalAt := strings.Index(out.String(), fingerprint), strings.Index(out.String(), "Build and install paru? [y/N]")
+			if keyAt < 0 || approvalAt <= keyAt {
+				t.Fatalf("key not disclosed before approval: %s", &out)
+			}
+		}
+		for _, event := range runner.events {
+			if event == "dependencies" || event == "makepkg" || event == "artifact" {
+				t.Fatalf("failed/unapproved key allowed build: %v", runner.events)
+			}
+		}
+	}
+}
+
+func paruSigningMetadata(t *testing.T, text string) aurmeta.Metadata {
+	t.Helper()
+	metadata, err := aurmeta.Parse([]byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return metadata
+}
+
 func TestCancelledAURSourceViewDoesNotAuthorizeBuild(t *testing.T) {
 	var output bytes.Buffer
 	runner := &aurOrderRunner{output: &output}
 	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), declaredParuPlan(t), ui.UI{In: strings.NewReader("y\nq\ny\n"), Out: &output})
-	if code != Issues || strings.Contains(output.String(), "Install paru?") {
+	if code != Issues || strings.Contains(output.String(), "Build and install paru?") {
 		t.Fatalf("code=%d output=%s", code, &output)
 	}
 	for _, event := range runner.events {
@@ -294,17 +344,65 @@ func TestCancelledAURSourceViewDoesNotAuthorizeBuild(t *testing.T) {
 	}
 }
 
-type cancelAtReview struct {
-	approval *strings.Reader
-	cancel   context.CancelFunc
+type skippedAURRunner struct {
+	*aurOrderRunner
+	workstation *lifecycleRunner
 }
 
-func (r cancelAtReview) Read(p []byte) (int, error) {
-	if r.approval.Len() > 0 {
-		return r.approval.Read(p)
+func (r skippedAURRunner) Run(ctx context.Context, s run.Spec) (run.Result, error) {
+	if s.Name == "git" && len(s.Args) > 0 && (s.Args[0] == "init" || s.Args[0] == "-C") {
+		return r.aurOrderRunner.Run(ctx, s)
 	}
-	r.cancel()
-	return 0, context.Canceled
+	return r.workstation.Run(ctx, s)
+}
+
+func TestIntentionalAURSkipContinuesAndReinspects(t *testing.T) {
+	for _, answer := range []string{"q\n", "\nn\n", "\n\n"} {
+		t.Run(fmt.Sprintf("%q", answer), func(t *testing.T) {
+			a, workstation, out := minimalRuntime(t)
+			ctx := context.Background()
+			cfg := config.Config{Version: 2}
+			if code := a.preparePlan(ctx, cfg, plan.Build(cfg, plan.State{}, nil), ui.UI{In: strings.NewReader("y\nUser\nuser@example.com\n"), Out: out}); code != Success {
+				t.Fatalf("fixture=%d: %s", code, out)
+			}
+			p := declaredParuPlan(t)
+			// A separate declared pacman app must still be installed after skip.
+			p.Applications = append(p.Applications, plan.Application{Declaration: config.Application{Source: config.Pacman, Identifier: "firefox"}, State: plan.Install})
+			for _, app := range p.Applications {
+				cfg.Applications = append(cfg.Applications, app.Declaration)
+			}
+			ar := &aurOrderRunner{output: out}
+			a.Runner = skippedAURRunner{aurOrderRunner: ar, workstation: workstation}
+			out.Reset()
+			workstation.events = nil
+			code := a.preparePlan(ctx, cfg, p, ui.UI{In: strings.NewReader("y\n" + answer), Out: out})
+			if code != Issues || !workstation.installed["firefox"] || !strings.Contains(strings.Join(workstation.events, "\n"), "pacman -Qq") {
+				t.Fatalf("code=%d events=%v\n%s", code, workstation.events, out)
+			}
+			if strings.Count(out.String(), "Skipped paru.") != 1 || !strings.Contains(out.String(), "final verification") || !strings.Contains(out.String(), "Workstation setup incomplete.") {
+				t.Fatalf("missing skip or established reinspection conclusion: %s", out)
+			}
+			for _, call := range ar.calls {
+				if call.Name == "makepkg" || call.Name == "gpg" || call.Name == "sudo" {
+					t.Fatalf("unapproved AUR mutation: %#v", call)
+				}
+			}
+		})
+	}
+}
+
+type cancelOnOutput struct {
+	io.Writer
+	cancel context.CancelFunc
+	marker string
+}
+
+func (w cancelOnOutput) Write(p []byte) (int, error) {
+	n, err := w.Writer.Write(p)
+	if strings.Contains(string(p), w.marker) {
+		w.cancel()
+	}
+	return n, err
 }
 
 func TestInterruptedAURReviewStopsBeforeLaterPromptsOrBuild(t *testing.T) {
@@ -315,9 +413,9 @@ func TestInterruptedAURReviewStopsBeforeLaterPromptsOrBuild(t *testing.T) {
 	p := declaredParuPlan(t)
 	p.ConfigureGit = true
 	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(ctx, p, ui.UI{
-		In: cancelAtReview{approval: strings.NewReader("y\n"), cancel: cancel}, Out: &output,
+		In: strings.NewReader("y\n"), Out: cancelOnOutput{Writer: &output, cancel: cancel, marker: "AUR source review"},
 	})
-	if code != Fatal || strings.Contains(output.String(), "Git name:") || strings.Contains(output.String(), "Install paru?") {
+	if code != Fatal || strings.Contains(output.String(), "Git name:") || strings.Contains(output.String(), "Build and install paru?") {
 		t.Fatalf("code=%d output=%s", code, &output)
 	}
 	if strings.Join(runner.events, ",") != "sudo-v,upgrade" || !strings.Contains(output.String(), "Earlier changes may remain") {

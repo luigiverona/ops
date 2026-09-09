@@ -31,6 +31,9 @@ func packageSubset(current, planned []string) bool {
 func (a Runtime) installApplication(ctx context.Context, am arch.Manager, au aur.Manager, fm flatpak.Manager, application plan.Application) error {
 	name := application.Declaration.Identifier
 	if application.Declaration.Source != "aur" {
+		if err := a.beginMutation(ctx); err != nil {
+			return err
+		}
 		a.progress("Installing " + name + "...")
 	}
 	switch application.Declaration.Source {
@@ -83,6 +86,9 @@ func (a Runtime) markApplicationExplicit(ctx context.Context, am arch.Manager, a
 	if _, err := a.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{query, name}}); err != nil {
 		return fmt.Errorf("application source changed after planning; rerun ops: expected %s package: %w", application.Declaration.Source, err)
 	}
+	if err := a.beginMutation(ctx); err != nil {
+		return err
+	}
 	if err := am.MarkExplicit(ctx, []string{name}); err != nil {
 		return fmt.Errorf("preserve explicit install reason: %w", err)
 	}
@@ -101,6 +107,9 @@ func (a Runtime) installAURApplication(ctx context.Context, am arch.Manager, au 
 	}
 	resolver := resolve.Resolver{Runner: a.Runner}
 	afterReview := func() error {
+		if err := a.beginMutation(ctx); err != nil {
+			return err
+		}
 		keys := pgp.Manager{Runner: a.Runner}
 		if len(application.AURSigningKeys) > 0 {
 			for _, fingerprint := range application.AURSigningKeys {
@@ -214,6 +223,9 @@ func (a Runtime) configureServices(ctx context.Context, application plan.Applica
 		a.progress("Configuring services for " + application.Declaration.Identifier + "...")
 	}
 	for _, service := range application.Services {
+		if err := a.beginMutation(ctx); err != nil {
+			return err
+		}
 		if _, err := a.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "systemctl", "enable", "--now", service}}); err != nil {
 			return err
 		}

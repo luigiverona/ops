@@ -94,6 +94,29 @@ func TestBuildRejectsUnsafePlannedSourceIdentityBeforeFilesystemUse(t *testing.T
 	}
 }
 
+func TestReviewProvenanceMustMatchBeforeApprovalAndBeforeMutation(t *testing.T) {
+	const commit = "0123456789012345678901234567890123456789"
+	const srcinfo = "pkgbase = paru\npkgver = 1\npkgrel = 1\npkgname = paru\n"
+	for _, phase := range []string{"before review", "during review"} {
+		t.Run(phase, func(t *testing.T) {
+			runner := &bootstrapRunner{commit: commit, srcinfo: srcinfo}
+			if phase == "before review" {
+				runner.srcinfo = strings.Replace(srcinfo, "pkgbase = paru", "pkgbase = other", 1)
+			}
+			reviewed, mutated := false, false
+			manager := Manager{Runner: runner, Review: func(string, map[string]string) error {
+				reviewed = true
+				runner.commit = strings.Repeat("f", 40)
+				return nil
+			}}
+			err := manager.Build(context.Background(), plan.AURSource{Commit: commit, Metadata: paruMetadata(t, srcinfo)}, "paru", []string{"paru"}, func() error { mutated = true; return nil }, func(string, []string) error { mutated = true; return nil })
+			if err == nil || mutated || reviewed != (phase == "during review") {
+				t.Fatalf("reviewed=%v mutated=%v err=%v", reviewed, mutated, err)
+			}
+		})
+	}
+}
+
 func TestPinnedBuildReviewDriftBuildAndInstallOrder(t *testing.T) {
 	const commit = "0123456789012345678901234567890123456789"
 	const srcinfo = "pkgbase = paru\n\tpkgver = 1\n\tpkgrel = 1\n\tmakedepends = cargo\n\npkgname = paru\n"

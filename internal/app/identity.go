@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 )
 
-func (a Runtime) configureGit(ctx context.Context, terminal ui.UI) (string, *issue) {
+func (a Runtime) configureGit(ctx context.Context, terminal ui.UI) (string, error) {
 	m := gitops.Manager{Runner: a.Runner}
 	current := m.Inspect(ctx)
 	if gitops.ValidName(current.Name) && gitops.ValidEmail(current.Email) {
@@ -22,19 +22,22 @@ func (a Runtime) configureGit(ctx context.Context, terminal ui.UI) (string, *iss
 	a.progress("Git identity")
 	var err error
 	if !gitops.ValidName(name) {
-		name, err = terminal.Ask("Git name:")
+		name, err = terminal.Ask(ctx, "Git name:")
 		if err != nil {
-			return "failed", setupIssue("Git", err)
+			return "failed", err
 		}
 	}
 	if !gitops.ValidEmail(email) {
-		email, err = terminal.Ask("Git email:")
+		email, err = terminal.Ask(ctx, "Git email:")
 		if err != nil {
-			return "failed", setupIssue("Git", err)
+			return "failed", err
 		}
 	}
+	if err := a.beginMutation(ctx); err != nil {
+		return "failed", err
+	}
 	if err := m.SetMissing(ctx, current, name, email); err != nil {
-		return "failed", setupIssue("Git", err)
+		return "failed", err
 	}
 	return "ready", nil
 }
@@ -56,6 +59,9 @@ func (a Runtime) configureSSH(ctx context.Context, _ ui.UI, p plan.Plan) (string
 	}
 	// Unrelated local identities are preserved; setup never deletes user keys.
 	if p.CreateSSHIdentity && managed == nil {
+		if err := a.beginMutation(ctx); err != nil {
+			return "failed", nil, nil, err
+		}
 		a.progress("Creating SSH key...")
 		identity, err := m.EnsureIdentity(ctx)
 		if err != nil {
@@ -80,6 +86,9 @@ func (a Runtime) configureSSH(ctx context.Context, _ ui.UI, p plan.Plan) (string
 				}
 			}
 			if p.LoadSSHAgent && !loaded {
+				if err := a.beginMutation(ctx); err != nil {
+					return "failed", managed, nil, err
+				}
 				a.progress("Loading SSH key...")
 				if err := m.Load(ctx, managed.PrivatePath); err != nil {
 					return "failed", managed, []issue{*setupIssue("ssh-agent", err)}, nil
@@ -88,6 +97,9 @@ func (a Runtime) configureSSH(ctx context.Context, _ ui.UI, p plan.Plan) (string
 		}
 	}
 	if p.ConfigureSSH {
+		if err := a.beginMutation(ctx); err != nil {
+			return "failed", managed, nil, err
+		}
 		a.progress("Configuring SSH...")
 		if err := m.ConfigureGitHub(ctx); err != nil {
 			return "failed", managed, nil, fmt.Errorf("unsafe required SSH configuration: %w", err)
@@ -120,6 +132,9 @@ func (a Runtime) configureGitHub(ctx context.Context, _ ui.UI, managed *sshops.I
 	if p.AuthenticateGitHub {
 		lateAuthenticated = m.Authenticated(ctx)
 		if !lateAuthenticated {
+			if err := a.beginMutation(ctx); err != nil {
+				return "failed", nil
+			}
 			a.progress("Signing in to GitHub...")
 			if err := m.Login(ctx); err != nil {
 				return "failed", []issue{*setupIssue("GitHub authentication", err)}
@@ -128,6 +143,9 @@ func (a Runtime) configureGitHub(ctx context.Context, _ ui.UI, managed *sshops.I
 	}
 	refreshedSSHKeyScope := false
 	refreshSSHKeyScope := func() error {
+		if err := a.beginMutation(ctx); err != nil {
+			return err
+		}
 		a.progress("Authorizing GitHub SSH key access...")
 		return m.RefreshSSHKeyScope(ctx)
 	}
@@ -160,6 +178,9 @@ func (a Runtime) configureGitHub(ctx context.Context, _ ui.UI, managed *sshops.I
 	// Existing account keys are never removed by workstation setup.
 	added := false
 	if p.ConfigureGitHubKey && !registered {
+		if err := a.beginMutation(ctx); err != nil {
+			return "failed", nil
+		}
 		added, err = m.AddManaged(ctx, managed.PublicPath)
 		if err != nil {
 			return "failed", []issue{*setupIssue("GitHub SSH key", err)}

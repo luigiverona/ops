@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -44,10 +43,6 @@ func main() {
 		code = runtime.Update(ctx)
 	default:
 		fmt.Fprintln(os.Stderr, "ops: invalid command; run 'ops --help'")
-	}
-	if errors.Is(ctx.Err(), context.Canceled) {
-		fmt.Fprintln(os.Stderr, "\nInterrupted. Completed operations were preserved; rerun ops to rediscover workstation state.")
-		code = app.Fatal
 	}
 	os.Exit(code)
 }

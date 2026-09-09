@@ -14,6 +14,9 @@ import (
 
 // Replace atomically installs a pre-verified binary and restores the prior target on postcondition failure.
 func Replace(ctx context.Context, runner run.Runner, verified, target, version string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	random := make([]byte, 8)
 	if _, err := rand.Read(random); err != nil {
 		return err
@@ -48,6 +51,10 @@ func Replace(ctx context.Context, runner run.Runner, verified, target, version s
 		return err
 	}
 	if _, err := runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "mv", "--", staged, target}}); err != nil {
+		if hadTarget {
+			keepBackup = true
+			return fmt.Errorf("update replacement did not complete; backup retained at %s: %w", backup, err)
+		}
 		return err
 	}
 	result, err = runner.Run(ctx, run.Spec{Name: target, Args: []string{"--version"}})
@@ -55,12 +62,15 @@ func Replace(ctx context.Context, runner run.Runner, verified, target, version s
 		return nil
 	}
 	if hadTarget {
-		if _, restoreErr := runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "mv", "--", backup, target}}); restoreErr != nil {
+		if _, restoreErr := runner.Run(context.WithoutCancel(ctx), run.Spec{Name: "sudo", Args: []string{"-n", "mv", "--", backup, target}}); restoreErr != nil {
 			keepBackup = true
 			return fmt.Errorf("update verification failed and prior binary restoration failed; backup retained at %s: %v", backup, restoreErr)
 		}
 	} else {
-		_, _ = runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "rm", "-f", "--", target}})
+		if _, removeErr := runner.Run(context.WithoutCancel(ctx), run.Spec{Name: "sudo", Args: []string{"-n", "rm", "-f", "--", target}}); removeErr != nil {
+			return fmt.Errorf("update verification failed and removal of the new binary failed: %w", removeErr)
+		}
+		return errors.New("installed update verification failed; new binary was removed")
 	}
 	return errors.New("installed update verification failed; prior binary was restored")
 }
