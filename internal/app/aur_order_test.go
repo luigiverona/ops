@@ -344,6 +344,31 @@ func TestCancelledAURSourceViewDoesNotAuthorizeBuild(t *testing.T) {
 	}
 }
 
+func TestAUREOFStopsBeforeLaterApplicationsAndPrompts(t *testing.T) {
+	for _, answer := range []string{"", "\n"} {
+		var output bytes.Buffer
+		runner := &aurOrderRunner{output: &output}
+		p := declaredParuPlan(t)
+		p.ConfigureGit = true
+		p.Applications = append(p.Applications, plan.Application{Declaration: config.Application{Source: config.Flatpak, Identifier: "org.example.Later"}, State: plan.Install})
+		code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n" + answer), Out: &output})
+		if code != Fatal || strings.Contains(output.String(), "Git name:") || strings.Contains(output.String(), "Installing org.example.Later") {
+			t.Fatalf("EOF continued work: code=%d output=%s", code, &output)
+		}
+		if strings.Join(runner.events, ",") != "sudo-v,upgrade" {
+			t.Fatalf("EOF allowed AUR mutation: %v", runner.events)
+		}
+		for _, call := range runner.calls {
+			if call.Name == "flatpak" || call.Name == "makepkg" || call.Name == "gpg" || call.Name == "git" && len(call.Args) > 0 && call.Args[0] == "config" {
+				t.Fatalf("EOF allowed later command: %#v", call)
+			}
+		}
+		if strings.Contains(output.String(), "Interrupted.") || !strings.Contains(output.String(), "EOF") {
+			t.Fatalf("EOF misreported: %s", &output)
+		}
+	}
+}
+
 type skippedAURRunner struct {
 	*aurOrderRunner
 	workstation *lifecycleRunner

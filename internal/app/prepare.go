@@ -169,6 +169,9 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 			if ctx.Err() != nil {
 				return execution{status: a.fatal(fmt.Errorf("application setup interrupted: %w", err))}
 			}
+			if errors.Is(err, io.EOF) {
+				return execution{status: a.fatal(err)}
+			}
 			state := "Failed"
 			impact := "application setup is incomplete; installation or configuration may have partially succeeded"
 			if errors.Is(err, errReviewDeclined) {
