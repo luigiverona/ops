@@ -18,8 +18,13 @@ type execution struct {
 }
 
 // preparePlan always rediscovers actual state after applying an approved plan.
-func (a Runtime) preparePlan(ctx context.Context, cfg config.Config, p plan.Plan, terminal ui.UI) int {
+func (a Runtime) preparePlan(ctx context.Context, cfg config.Config, p plan.Plan, terminal ui.UI) (code int) {
+	a, finish := a.withInterruption(ctx, "setup")
+	defer finish(&code)
 	result := a.executePlan(ctx, p, terminal)
+	if ctx.Err() != nil {
+		return Fatal
+	}
 	if result.applied {
 		observed, err := a.inspectState(ctx, cfg)
 		if err != nil {
@@ -31,12 +36,18 @@ func (a Runtime) preparePlan(ctx context.Context, cfg config.Config, p plan.Plan
 			result.problems = append(result.problems, issue{State: "Failed", Name: "final verification", Cause: "re-inspection found remaining work", Impact: "workstation has not converged", Action: "run ops doctor, resolve the reported issues, then run ops again"})
 		}
 	}
+	if ctx.Err() != nil {
+		return Fatal
+	}
 	return a.reportExecution(result)
 }
 
 func (a Runtime) reportExecution(result execution) int {
 	if result.status != Success || result.skipped {
 		return result.status
+	}
+	if !a.claimConclusion() {
+		return Fatal
 	}
 	if !result.applied && len(result.problems) == 0 && result.git == "ready" && result.ssh == "ready" && result.github == "ready" {
 		fmt.Fprintln(a.Out, "Workstation already ready.")

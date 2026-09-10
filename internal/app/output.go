@@ -2,8 +2,10 @@ package app
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
+	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/ui"
 )
@@ -29,13 +31,23 @@ func (a Runtime) showPlan(p plan.Plan) {
 		return
 	}
 	fmt.Fprintln(a.Out, "Workstation setup")
-	var install, configure []string
+	var install, configure, services []string
+	seenServices := map[string]bool{}
 	for _, application := range p.Applications {
+		if application.State.Actionable() {
+			for _, service := range application.Services {
+				if !seenServices[service] {
+					services = append(services, service)
+					seenServices[service] = true
+				}
+			}
+		}
+		label := application.Declaration.Identifier + " (" + sourceLabel(application.Declaration.Source) + ")"
 		switch application.State {
 		case "install":
-			install = append(install, application.Declaration.Identifier)
+			install = append(install, label)
 		case "configure":
-			configure = append(configure, application.Declaration.Identifier)
+			configure = append(configure, label)
 		}
 	}
 	if len(install) > 0 {
@@ -45,22 +57,48 @@ func (a Runtime) showPlan(p plan.Plan) {
 		}
 	}
 	if p.ConfigureGit {
-		configure = append(configure, "Git")
+		configure = append(configure, "Git identity")
 	}
 	if p.CreateSSHIdentity || p.ConfigureSSH || p.LoadSSHAgent || p.ReviewSSHIdentities || p.ReviewSSHAgent {
-		configure = append(configure, "SSH")
+		configure = append(configure, "SSH for GitHub")
 	}
-	if p.AuthenticateGitHub || p.RefreshGitHubSSHKeyScope || p.ConfigureGitHubKey || p.ReviewGitHubKeys {
-		configure = append(configure, "GitHub")
+	if p.AuthenticateGitHub {
+		configure = append(configure, "GitHub authentication")
 	}
+	if p.RefreshGitHubSSHKeyScope {
+		configure = append(configure, "GitHub SSH key access")
+	}
+	if p.ConfigureGitHubKey {
+		if p.GitHubKeyStateUnknown {
+			configure = append(configure, "Register this workstation's SSH key with GitHub if needed")
+		} else {
+			configure = append(configure, "Register this workstation's SSH key with GitHub")
+		}
+	} else if p.ReviewGitHubKeys {
+		configure = append(configure, "GitHub SSH keys")
+	}
+
 	if p.AddFlathub {
-		configure = append(configure, "Flatpak applications")
+		configure = append(configure, "Flathub for user Flatpak applications")
 	}
 	if len(configure) > 0 {
-		fmt.Fprintf(a.Out, "\nConfigure\n  %s\n", ui.PrintableASCII(strings.Join(configure, ", ")))
+		fmt.Fprintln(a.Out, "\nConfigure")
+		for _, item := range configure {
+			fmt.Fprintf(a.Out, "  %s\n", ui.PrintableASCII(item))
+		}
+	}
+	if len(services) > 0 {
+		sort.Strings(services)
+		fmt.Fprintln(a.Out, "\nEnable and start")
+		for _, service := range services {
+			fmt.Fprintf(a.Out, "  %s\n", ui.PrintableASCII(service))
+		}
+	}
+	if p.ConfigureSSH {
+		fmt.Fprintln(a.Out, "\nManage GitHub SSH settings separately; preserve other host configuration.")
 	}
 	if p.EnableMultilib {
-		fmt.Fprintln(a.Out, "\nRequired system repositories will be enabled.")
+		fmt.Fprintln(a.Out, "\nEnable multilib.")
 	}
 	if p.FullUpgrade {
 		fmt.Fprintln(a.Out, "\nThe system will be updated.")
@@ -102,9 +140,15 @@ func (a Runtime) report(gitStatus, sshStatus, githubStatus string, problems []is
 			if !found {
 				continue
 			}
-			fmt.Fprintf(a.Out, "\n%s\n", state)
+			if state != "Skipped" {
+				fmt.Fprintf(a.Out, "\n%s\n", state)
+			}
 			for _, problem := range problems {
 				if problem.State != state {
+					continue
+				}
+				if state == "Skipped" {
+					fmt.Fprintf(a.Out, "Skipped %s.\n", ui.PrintableASCII(problem.Name))
 					continue
 				}
 				fmt.Fprintf(a.Out, "\n%s\n", ui.PrintableASCII(problem.Name))
@@ -146,6 +190,9 @@ func (a Runtime) coreFatal(name string, err error, impact string) int {
 }
 
 func (a Runtime) renderFatal(name, stage string, err error, impact string) {
+	if !a.claimConclusion() {
+		return
+	}
 	fmt.Fprint(a.Err, "Issues\n\nFailed\n\n")
 	fmt.Fprintln(a.Err, ui.PrintableASCII(name))
 	fields := []ui.Field{}
@@ -183,4 +230,15 @@ func titleState(value string) string {
 		return value
 	}
 	return strings.ToUpper(value[:1]) + value[1:]
+}
+
+func sourceLabel(source config.Source) string {
+	switch source {
+	case config.AUR:
+		return "AUR"
+	case config.Flatpak:
+		return "Flatpak"
+	default:
+		return string(source)
+	}
 }

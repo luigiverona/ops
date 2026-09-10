@@ -13,7 +13,12 @@ import (
 )
 
 // Doctor performs the same detection and planning inspections without mutation or sudo.
-func (a Runtime) Doctor(ctx context.Context) int {
+func (a Runtime) Doctor(ctx context.Context) (code int) {
+	a, finish := a.withInterruption(ctx, "doctor")
+	defer finish(&code)
+	if ctx.Err() != nil {
+		return Fatal
+	}
 	if err := a.detect(ctx); err != nil {
 		return a.fatal(fmt.Errorf("doctor could not inspect the system: %w", err))
 	}
@@ -27,7 +32,13 @@ func (a Runtime) Doctor(ctx context.Context) int {
 		return a.fatal(fmt.Errorf("doctor could not inspect workstation: %w", err))
 	}
 	facts := resolve.Applications(ctx, cfg, state, resolve.Resolver{Runner: a.Runner})
+	if ctx.Err() != nil {
+		return Fatal
+	}
 	p := plan.Build(cfg, state, facts)
+	if !a.claimConclusion() {
+		return Fatal
+	}
 	actionable := missingConfig
 	if missingConfig {
 		fmt.Fprintf(a.Out, "%s. No files changed.\n", ui.PrintableASCII(configErr.Error()))

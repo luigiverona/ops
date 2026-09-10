@@ -14,13 +14,19 @@ type ReviewFile struct {
 	Name, Contents string
 }
 
+// ReviewSource identifies the pinned source whose files are being displayed.
+type ReviewSource struct{ Package, PackageBase, Revision string }
+
 var ErrReviewCancelled = errors.New("source review cancelled")
 
 // Review keeps build instructions in a separate, line-oriented terminal view.
 // No shell, editor, pager hooks, temporary files, or additional packages are
 // needed. Every page must be visited before returning to the install approval.
 // Plain/dumb terminals retain pagination without screen-control sequences.
-func (u UI) Review(ctx context.Context, files []ReviewFile) (returnErr error) {
+func (u UI) Review(ctx context.Context, source ReviewSource, files []ReviewFile) (returnErr error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	type page struct{ name, text string }
 	var pages []page
 	for _, file := range files {
@@ -33,8 +39,8 @@ func (u UI) Review(ctx context.Context, files []ReviewFile) (returnErr error) {
 			}
 			lines = append(lines, line)
 		}
-		for start := 0; start < len(lines); start += 16 {
-			pages = append(pages, page{printableASCII(file.Name), strings.Join(lines[start:min(start+16, len(lines))], "\n")})
+		for start := 0; start < len(lines); start += 12 {
+			pages = append(pages, page{printableASCII(file.Name), strings.Join(lines[start:min(start+12, len(lines))], "\n")})
 		}
 	}
 	if len(pages) == 0 {
@@ -55,13 +61,21 @@ func (u UI) Review(ctx context.Context, files []ReviewFile) (returnErr error) {
 		}
 	}
 	for index := 0; index < len(pages); {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if alternate {
 			if _, err := io.WriteString(u.Out, "\x1b[H\x1b[2J"); err != nil {
 				return err
 			}
 		}
 		page := pages[index]
-		if _, err := fmt.Fprintf(u.Out, "AUR source review (%d/%d) - untrusted build instructions\n%s\n\n%s\n\n", index+1, len(pages), page.name, page.text); err != nil {
+		provenance := "Package: " + printableASCII(source.Package) + "\n"
+		if source.PackageBase != source.Package {
+			provenance += "Package base: " + printableASCII(source.PackageBase) + "\n"
+		}
+		provenance += "Revision: " + printableASCII(source.Revision) + "\n"
+		if _, err := fmt.Fprintf(u.Out, "AUR source review (%d/%d) - untrusted build instructions\n%s\n%s\n\n%s\n\n", index+1, len(pages), provenance, page.name, page.text); err != nil {
 			return err
 		}
 		next := "next page"
@@ -71,7 +85,7 @@ func (u UI) Review(ctx context.Context, files []ReviewFile) (returnErr error) {
 		if _, err := fmt.Fprintf(u.Out, "Enter: %s; b: back; q: cancel build > ", next); err != nil {
 			return err
 		}
-		answer, err := reviewLine(ctx, u.In)
+		answer, err := readLine(ctx, u.In)
 		if err != nil {
 			return fmt.Errorf("source review interrupted: %w", err)
 		}
@@ -89,30 +103,4 @@ func (u UI) Review(ctx context.Context, files []ReviewFile) (returnErr error) {
 		}
 	}
 	return nil
-}
-
-// A cancelled review must restore the screen immediately. At most one read is
-// pending; the caller owns and closes the controlling TTY when the run ends.
-func reviewLine(ctx context.Context, in io.Reader) (string, error) {
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	if ctx.Done() == nil {
-		return readLine(in)
-	}
-	type result struct {
-		line string
-		err  error
-	}
-	done := make(chan result, 1)
-	go func() {
-		line, err := readLine(in)
-		done <- result{line, err}
-	}()
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	case result := <-done:
-		return result.line, result.err
-	}
 }

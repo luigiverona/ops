@@ -22,6 +22,7 @@ const (
 
 // Runtime holds process-scoped dependencies.
 type Runtime struct {
+	interruption   *interruption
 	Runner         run.Runner
 	Out            io.Writer
 	Err            io.Writer

@@ -522,7 +522,7 @@ func TestPreparePlanPreservesDeferredAndKnownGitHubKeys(t *testing.T) {
 		p := resolveAndPlan(context.Background(), config.Config{Version: 2}, state, outputResolver{})
 		var planOutput bytes.Buffer
 		Runtime{Out: &planOutput}.showPlan(p)
-		if !strings.Contains(planOutput.String(), "Configure\n  GitHub") {
+		if !strings.Contains(planOutput.String(), "Register this workstation's SSH key with GitHub") {
 			t.Fatalf("known keys were not planned as review:\n%s", planOutput.String())
 		}
 		var output bytes.Buffer

@@ -66,7 +66,11 @@ printf 'n\n' | script -q -e -c /usr/local/bin/ops /dev/null >plan.out 2>&1
 tr -d '\r' <plan.out >plan.clean
 cat plan.clean
 grep -q '^Workstation setup$' plan.clean
-grep -q '^  Git, SSH, GitHub$' plan.clean
+grep -q '^Configure$' plan.clean
+grep -Eq '^[[:blank:]]+Git identity$' plan.clean
+grep -Eq '^[[:blank:]]+SSH for GitHub$' plan.clean
+grep -Eq '^[[:blank:]]+GitHub authentication$' plan.clean
+grep -Eq "^[[:blank:]]+Register this workstation's SSH key with GitHub if needed$" plan.clean
 grep -Fq 'The system will be updated.' plan.clean
 grep -Fq 'Continue? [Y/n]' plan.clean
 grep -Fq 'No changes made.' plan.clean

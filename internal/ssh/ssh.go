@@ -156,6 +156,9 @@ func (m Manager) verifyFingerprint(ctx context.Context, path, want string) error
 
 // EnsureIdentity creates the managed Ed25519 identity through ssh-keygen's normal passphrase interaction.
 func (m Manager) EnsureIdentity(ctx context.Context) (Identity, error) {
+	if err := ctx.Err(); err != nil {
+		return Identity{}, err
+	}
 	if err := secureDir(m.dir()); err != nil {
 		return Identity{}, err
 	}
@@ -171,6 +174,9 @@ func (m Manager) EnsureIdentity(ctx context.Context) (Identity, error) {
 	}
 	for _, identity := range identities {
 		if identity.PrivatePath == path && identity.PublicPath == path+".pub" {
+			if err := ctx.Err(); err != nil {
+				return Identity{}, err
+			}
 			_ = os.Chmod(path, 0o600)
 			_ = os.Chmod(path+".pub", 0o644)
 			return identity, nil
@@ -220,6 +226,9 @@ func (m Manager) Load(ctx context.Context, path string) error {
 // ConfigureGitHub isolates GitHub from additive user IdentityFile directives while
 // preserving the user's configuration for every other host.
 func (m Manager) ConfigureGitHub(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := secureDir(m.dir()); err != nil {
 		return err
 	}
@@ -279,18 +288,30 @@ func (m Manager) ConfigureGitHub(ctx context.Context) error {
 	if err := checkManagedTarget(knownHostsPath); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := atomicManagedWrite(knownHostsPath, knownHosts, 0o600); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := atomicManagedWrite(includePath, managed, 0o600, legacy); err != nil {
 		return err
 	}
 	if !preservedExists {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := atomicRegularWrite(userConfigPath, preserved, 0o600); err != nil {
 			return err
 		}
 	}
 	if !dispatcherCurrent {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := atomicRegularWrite(configPath, dispatcher, 0o600); err != nil {
 			return err
 		}

@@ -140,6 +140,25 @@ func TestUpdateVerificationFailureKeepsActionableDetailAndNeverUsesSudo(t *testi
 	}
 }
 
+func TestUpdateDownloadCancellationHasOnlyUpdateConclusion(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { cancel(); <-r.Context().Done() }))
+	defer server.Close()
+	var output bytes.Buffer
+	runner := &updateRunner{}
+	client := release.Client{HTTP: server.Client(), BaseURL: server.URL, Runner: runner, Trust: release.DefaultTrust()}
+	code := (Runtime{Runner: runner, Out: &output, Err: &output}).installUpdate(ctx, client, "9.0.0", ui.UI{In: strings.NewReader("y\n"), Out: &output})
+	if code != Fatal || len(runner.calls) != 0 || !strings.HasSuffix(output.String(), "Update interrupted.\n") {
+		t.Fatalf("code=%d calls=%v output=%s", code, runner.calls, &output)
+	}
+	for _, unwanted := range []string{"Workstation", "Update stopped.", "Issues", "ops --version", "restored"} {
+		if strings.Contains(output.String(), unwanted) {
+			t.Fatalf("unjustified %q: %s", unwanted, &output)
+		}
+	}
+}
+
 func setStableVersion(t *testing.T) {
 	t.Helper()
 	previous := version.Value

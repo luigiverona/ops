@@ -4,7 +4,9 @@
 
 Detection, configuration validation, inspection, resolution, and planning do
 not install prerequisites. The top-level plan is approved before sudo is
-requested. EOF is not approval. Pacman owns the interactive full-upgrade
+requested. Ops-owned prompts stop on Ctrl-C; cancellation and EOF never grant
+approval. Cancellation stops subsequent work without rolling back completed
+operations. Pacman owns the interactive full-upgrade
 transaction, including replacement/provider/key-import decisions. Later
 privileged commands use the acquired noninteractive sudo authorization;
 normal-user Git, Flatpak, SSH, GitHub, and makepkg operations do not use sudo.
@@ -28,7 +30,10 @@ never silently substituted.
 The built-in line-oriented source view uses a separate terminal screen where
 supported, keeping patches and helpers out of the normal run transcript. Enter
 advances through every page, `b` revisits a page, and `q` cancels this build;
-completion returns to one default-no install approval. No external pager,
+completion returns to one default-no build-and-install approval. The view names
+the declared package, differing package base, and pinned revision. Before
+approval, ops discloses normal-user execution and file access, any planned public
+signing-key imports, and selected sibling outputs. No external pager,
 shell hooks, or temporary review files are used. Dumb terminals retain a plain
 paginated view. Source controls are escaped before display; cancellation, EOF,
 or a failed review display cannot approve a build.

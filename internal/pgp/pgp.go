@@ -115,6 +115,9 @@ func (m Manager) Import(ctx context.Context, fingerprint string) (returnErr erro
 		}
 		return errors.New("export verified signing key: no public key data")
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := ensureGnuPGHome(home); err != nil {
 		return fmt.Errorf("prepare GnuPG home for signing key import: %w", err)
 	}

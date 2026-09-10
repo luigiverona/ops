@@ -40,6 +40,9 @@ func (m Manager) Build(ctx context.Context, source plan.AURSource, target string
 		}
 		seenOutputs[output] = true
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	dir, err := os.MkdirTemp("", "ops-aur-*")
 	if err != nil {
 		return err
@@ -67,12 +70,7 @@ func (m Manager) Build(ctx context.Context, source plan.AURSource, target string
 	if _, ok := files[".SRCINFO"]; !ok {
 		return errors.New("reviewed AUR source does not track .SRCINFO")
 	}
-	if m.Review == nil {
-		return fmt.Errorf("AUR review is unavailable")
-	}
-	if err := m.Review(target, sanitizedFiles(files)); err != nil {
-		return err
-	}
+
 	srcinfo, err := safeFile(repo, filepath.Join(repo, ".SRCINFO"))
 	if err != nil {
 		return err
@@ -91,6 +89,24 @@ func (m Manager) Build(ctx context.Context, source plan.AURSource, target string
 	if err != nil || strings.Join(reviewedOutputs, "\x00") != strings.Join(outputs, "\x00") {
 		return errors.New("reviewed AUR output set changed after planning; rerun ops")
 	}
+	if m.Review == nil {
+		return fmt.Errorf("AUR review is unavailable")
+	}
+	if err := m.Review(target, sanitizedFiles(files)); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	result, err = m.Runner.Run(ctx, run.Spec{Name: "git", Args: []string{"-C", repo, "rev-parse", "HEAD"}})
+	if err != nil || strings.TrimSpace(result.Stdout) != source.Commit {
+		return errors.New("reviewed AUR source changed during review")
+	}
+	reviewFiles, err := trackedFiles(ctx, m.Runner, repo)
+	if err != nil || !sameFiles(files, reviewFiles) {
+		return errors.New("reviewed AUR files changed during review")
+	}
+
 	if afterReview == nil || install == nil {
 		return errors.New("AUR build mutation hooks are unavailable")
 	}

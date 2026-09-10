@@ -2,6 +2,7 @@
 package ui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,7 +11,8 @@ import (
 	"strings"
 )
 
-// UI is a line-oriented terminal user interface.
+// UI is a line-oriented terminal user interface. Input must be an *os.File
+// or an in-memory strings/bytes reader; arbitrary blocking readers are refused.
 type UI struct {
 	In  io.Reader
 	Out io.Writer
@@ -86,16 +88,19 @@ func OpenTTY() (*os.File, error) {
 }
 
 // Confirm asks a yes/no question and returns the supplied default on blank input.
-func (u UI) Confirm(question string, defaultYes bool) (bool, error) {
+func (u UI) Confirm(ctx context.Context, question string, defaultYes bool) (bool, error) {
 	suffix := " [y/N] "
 	if defaultYes {
 		suffix = " [Y/n] "
 	}
 	for {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		if _, err := fmt.Fprint(u.Out, question+suffix); err != nil {
 			return false, err
 		}
-		line, err := readLine(u.In)
+		line, err := readLine(ctx, u.In)
 		if err != nil {
 			return false, fmt.Errorf("confirmation not received; no approval granted: %w", err)
 		}
@@ -115,12 +120,15 @@ func (u UI) Confirm(question string, defaultYes bool) (bool, error) {
 }
 
 // Ask reads a required trimmed value.
-func (u UI) Ask(question string) (string, error) {
+func (u UI) Ask(ctx context.Context, question string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if _, err := fmt.Fprint(u.Out, question+" "); err != nil {
 		return "", err
 	}
-	line, err := readLine(u.In)
-	if err != nil && !errors.Is(err, io.EOF) {
+	line, err := readLine(ctx, u.In)
+	if err != nil {
 		return "", err
 	}
 	value := strings.TrimSpace(line)
@@ -128,21 +136,4 @@ func (u UI) Ask(question string) (string, error) {
 		return "", errors.New("a value is required")
 	}
 	return value, nil
-}
-
-func readLine(reader io.Reader) (string, error) {
-	var b strings.Builder
-	buffer := []byte{0}
-	for {
-		n, err := reader.Read(buffer)
-		if n == 1 {
-			if buffer[0] == '\n' {
-				return b.String(), nil
-			}
-			b.WriteByte(buffer[0])
-		}
-		if err != nil {
-			return b.String(), err
-		}
-	}
 }
