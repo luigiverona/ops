@@ -82,15 +82,15 @@ func (m Manager) EnableMultilib(ctx context.Context) error {
 	}
 	remoteTemp := filepath.Join(filepath.Dir(path), ".pacman.conf.ops-"+hex.EncodeToString(random))
 	defer func() {
-		_, _ = m.Runner.Run(context.Background(), run.Spec{Name: "sudo", Args: []string{"-n", "rm", "-f", "--", remoteTemp}})
+		_, _ = m.Runner.Run(context.Background(), run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "rm", "-f", "--", remoteTemp}})
 	}()
-	if _, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "install", "-m", "0644", "-o", "root", "-g", "root", "--", localPath, remoteTemp}}); err != nil {
+	if _, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "install", "-m", "0644", "-o", "root", "-g", "root", "--", localPath, remoteTemp}}); err != nil {
 		return fmt.Errorf("stage pacman.conf: %w", err)
 	}
-	if _, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "pacman-conf", "--config", remoteTemp}}); err != nil {
+	if _, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "pacman-conf", "--config", remoteTemp}}); err != nil {
 		return fmt.Errorf("validate pacman.conf with pacman-conf: %w", err)
 	}
-	if _, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "mv", "--", remoteTemp, path}}); err != nil {
+	if _, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "mv", "--", remoteTemp, path}}); err != nil {
 		return fmt.Errorf("replace pacman.conf: %w", err)
 	}
 	verified, err := os.ReadFile(path)
@@ -105,7 +105,7 @@ func (m Manager) EnableMultilib(ctx context.Context) error {
 }
 
 func (m Manager) FullUpgrade(ctx context.Context) error {
-	_, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "pacman", "-Syu"}, Interactive: true, Interaction: "pacman transaction decisions"})
+	_, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "pacman", "-Syu"}, Interactive: true, Interaction: "pacman transaction decisions"})
 	return err
 }
 
@@ -119,7 +119,7 @@ func (m Manager) Install(ctx context.Context, packages []string, asDeps bool) er
 	}
 	args = append(args, "--")
 	args = append(args, packages...)
-	_, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: args, StreamOutput: true, AllowTruncatedOutput: true})
+	_, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: args, StreamOutput: true, AllowTruncatedOutput: true})
 	return err
 }
 
@@ -157,7 +157,7 @@ func (m Manager) InstallArtifacts(ctx context.Context, buildDir string, artifact
 	if err := m.validateStageParent(ctx); err != nil {
 		return err
 	}
-	result, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "mktemp", "--directory", "--tmpdir=" + artifactStageParent, "ops-paru-XXXXXXXXXXXX"}})
+	result, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "mktemp", "--directory", "--tmpdir=" + artifactStageParent, "ops-paru-XXXXXXXXXXXX"}})
 	if err != nil {
 		return fmt.Errorf("create protected package staging directory: %w", err)
 	}
@@ -196,7 +196,7 @@ func (m Manager) InstallArtifacts(ctx context.Context, buildDir string, artifact
 
 	found := make(map[string]string, len(targets))
 	for _, stagedPath := range staged {
-		result, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "pacman", "-Qpq", "--", stagedPath}})
+		result, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "pacman", "-Qpq", "--", stagedPath}})
 		if err != nil {
 			return fmt.Errorf("inspect protected package artifact: %w", err)
 		}
@@ -227,7 +227,7 @@ func (m Manager) InstallArtifacts(ctx context.Context, buildDir string, artifact
 		return err
 	}
 	for _, target := range explicit {
-		if _, err := m.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qe", target}}); err != nil {
+		if _, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Qe", target}}); err != nil {
 			return fmt.Errorf("verify explicit package artifact %q: %w", target, err)
 		}
 	}
@@ -246,7 +246,7 @@ func (m Manager) installArtifacts(ctx context.Context, paths []string, asDeps bo
 	}
 	args = append(args, "--")
 	args = append(args, paths...)
-	if _, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: args, StreamOutput: true, AllowTruncatedOutput: true}); err != nil {
+	if _, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: args, StreamOutput: true, AllowTruncatedOutput: true}); err != nil {
 		return err
 	}
 	return nil
@@ -322,7 +322,7 @@ func insidePath(root, path string) bool {
 }
 
 func (m Manager) validateStageParent(ctx context.Context) error {
-	result, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "stat", "--format=%u\t%f\t%h", "--", artifactStageParent}})
+	result, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "stat", "--format=%u\t%f\t%h", "--", artifactStageParent}})
 	if err != nil {
 		return fmt.Errorf("inspect protected staging parent: %w", err)
 	}
@@ -334,7 +334,7 @@ func (m Manager) validateStageParent(ctx context.Context) error {
 }
 
 func (m Manager) validateProtectedPath(ctx context.Context, path string, directory bool) error {
-	result, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "stat", "--format=%u\t%f\t%h", "--", path}})
+	result, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "stat", "--format=%u\t%f\t%h", "--", path}})
 	if err != nil {
 		return err
 	}
@@ -394,11 +394,11 @@ func (m Manager) cleanupArtifactStage(stageDir string, staged []string) error {
 	if len(staged) > 0 {
 		args := []string{"-n", "rm", "-f", "--"}
 		args = append(args, staged...)
-		if _, err := m.Runner.Run(context.Background(), run.Spec{Name: "sudo", Args: args}); err != nil {
+		if _, err := m.Runner.Run(context.Background(), run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: args}); err != nil {
 			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove protected staged artifacts: %w", err))
 		}
 	}
-	if _, err := m.Runner.Run(context.Background(), run.Spec{Name: "sudo", Args: []string{"-n", "rmdir", "--", stageDir}}); err != nil {
+	if _, err := m.Runner.Run(context.Background(), run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "rmdir", "--", stageDir}}); err != nil {
 		cleanupErrors = append(cleanupErrors, fmt.Errorf("remove protected package staging directory: %w", err))
 	}
 	return errors.Join(cleanupErrors...)
@@ -411,6 +411,6 @@ func (m Manager) MarkExplicit(ctx context.Context, packages []string) error {
 	}
 	args := []string{"-n", "pacman", "-D", "--asexplicit", "--"}
 	args = append(args, packages...)
-	_, err := m.Runner.Run(ctx, run.Spec{Name: "sudo", Args: args})
+	_, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: args})
 	return err
 }

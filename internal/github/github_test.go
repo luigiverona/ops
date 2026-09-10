@@ -203,16 +203,19 @@ func TestVerifySSHIsStrictlyNoninteractive(t *testing.T) {
 
 func TestVerifySSHReturnsActionableAuthenticationFailure(t *testing.T) {
 	f := &fakeRunner{fn: func(spec run.Spec) (run.Result, error) {
+		if spec.FailureOutput != run.FailureStderr {
+			t.Fatal("SSH diagnostic evidence not enabled")
+		}
+		// Model Exec's structured failure, keeping raw output out of Error().
 		return run.Result{Stderr: "git@github.com: Permission denied (publickey)."}, &run.Error{
-			Name:   spec.Name,
-			Args:   spec.Args,
-			Stderr: "git@github.com: Permission denied (publickey).",
-			Err:    errors.New("exit status 255"),
+			Name: spec.Name, Args: spec.Args, Stderr: "git@github.com: Permission denied (publickey).",
+			Evidence: "git@github.com: Permission denied (publickey).", Err: errors.New("exit status 255"),
 		}
 	}}
 	err := (Manager{Runner: f}).VerifySSH(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "Permission denied (publickey)") {
-		t.Fatalf("VerifySSH() error = %v, want actionable authentication failure", err)
+	var failure *run.Error
+	if !errors.As(err, &failure) || !strings.Contains(failure.Evidence, "Permission denied (publickey)") {
+		t.Fatalf("VerifySSH() error = %v, want structured authentication evidence", err)
 	}
 }
 

@@ -251,7 +251,7 @@ func TestPreparePlanReportsExplicitReasonFailureAsApplicationIssue(t *testing.T)
 	var output bytes.Buffer
 	runner := &prepareRunner{failMarkExplicit: true}
 	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
-	if code != Issues || !strings.Contains(output.String(), "application configuration is incomplete") || strings.Contains(output.String(), "Workstation ready.") {
+	if code != Issues || !strings.Contains(output.String(), "application configuration did not complete normally") || strings.Contains(output.String(), "Workstation ready.") {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}
 	if !strings.Contains(output.String(), "Earlier changes may remain. Run ops doctor") {

@@ -208,7 +208,7 @@ func TestFinalInspectionDoesNotTrustSuccessfulMutations(t *testing.T) {
 	cfg := config.Config{Version: 2}
 	p := plan.Build(cfg, plan.State{}, nil)
 	code := a.preparePlan(context.Background(), cfg, p, ui.UI{In: strings.NewReader("y\nUser\nuser@example.com\n"), Out: out})
-	if code != Issues || !strings.Contains(out.String(), "re-inspection found remaining work") || strings.Contains(out.String(), "Workstation ready.") {
+	if code != Issues || !strings.Contains(out.String(), "required component is missing") || strings.Contains(out.String(), "Workstation ready.") {
 		t.Fatalf("unverified success=%d\n%s", code, out.String())
 	}
 }

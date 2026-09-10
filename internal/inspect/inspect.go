@@ -36,28 +36,34 @@ func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 		Installed: map[string]bool{}, Explicit: map[string]bool{}, Foreign: map[string]bool{}, Flatpaks: map[string]bool{},
 		SSHHostKeyFreshness: plan.SSHHostKeyFreshnessUnknown,
 	}
-	if result, err := w.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qq"}}); err == nil {
+	if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Qq"}}); err == nil {
 		addLines(state.Installed, result.Stdout)
 	} else {
 		return state, err
 	}
-	if result, err := w.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qqm"}}); err == nil {
+	if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Qqm"}}); err == nil {
 		addLines(state.Foreign, result.Stdout)
 	}
-	if result, err := w.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qeq"}}); err == nil {
+	if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Qeq"}}); err == nil {
 		addLines(state.Explicit, result.Stdout)
 	} else {
 		return state, err
 	}
 	if state.Installed["flatpak"] {
-		if result, err := w.Runner.Run(ctx, run.Spec{Name: "flatpak", Args: []string{"list", "--user", "--app", "--columns=application"}}); err == nil {
+		if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "flatpak", Args: []string{"list", "--user", "--app", "--columns=application"}}); err == nil {
 			addLines(state.Flatpaks, result.Stdout)
+		} else {
+			return state, fmt.Errorf("inspect installed Flatpak applications: %w", err)
 		}
-		if result, err := w.Runner.Run(ctx, run.Spec{Name: "flatpak", Args: []string{"remotes", "--user", "--columns=name"}}); err == nil {
+
+		if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "flatpak", Args: []string{"remotes", "--user", "--columns=name"}}); err == nil {
 			for _, line := range strings.Fields(result.Stdout) {
 				state.Flathub = state.Flathub || line == "flathub"
 			}
+		} else {
+			return state, fmt.Errorf("inspect Flatpak remotes: %w", err)
 		}
+
 	}
 	path := w.PacmanConf
 	if path == "" {
@@ -72,10 +78,10 @@ func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 		return state, fmt.Errorf("read pacman configuration: %w", err)
 	}
 	if state.Installed["git"] {
-		if result, err := w.Runner.Run(ctx, run.Spec{Name: "git", Args: []string{"config", "--global", "--get", "user.name"}}); err == nil {
+		if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "git", Args: []string{"config", "--global", "--get", "user.name"}}); err == nil {
 			state.GitName = strings.TrimSpace(result.Stdout)
 		}
-		if result, err := w.Runner.Run(ctx, run.Spec{Name: "git", Args: []string{"config", "--global", "--get", "user.email"}}); err == nil {
+		if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "git", Args: []string{"config", "--global", "--get", "user.email"}}); err == nil {
 			state.GitEmail = strings.TrimSpace(result.Stdout)
 		}
 		if !gitops.ValidName(state.GitName) {
@@ -123,8 +129,8 @@ func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 		if service == "" || !plan.IsInstalled(app, state) {
 			continue
 		}
-		enabled, e1 := w.Runner.Run(ctx, run.Spec{Name: "systemctl", Args: []string{"is-enabled", service}})
-		active, e2 := w.Runner.Run(ctx, run.Spec{Name: "systemctl", Args: []string{"is-active", service}})
+		enabled, e1 := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "systemctl", Args: []string{"is-enabled", service}})
+		active, e2 := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "systemctl", Args: []string{"is-active", service}})
 		state.Services[service] = e1 == nil && e2 == nil && strings.TrimSpace(enabled.Stdout) == "enabled" && strings.TrimSpace(active.Stdout) == "active"
 	}
 

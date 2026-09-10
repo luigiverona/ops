@@ -114,7 +114,7 @@ func (c Client) DownloadVerified(ctx context.Context, version string) (*Verified
 	}
 	baseArgs := []string{"--homedir", gpgHome, "--no-options", "--batch", "--no-tty"}
 	showArgs := append(append([]string{}, baseArgs...), "--with-colons", "--show-keys", keyPath)
-	show, err := c.Runner.Run(ctx, run.Spec{Name: "gpg", Args: showArgs})
+	show, err := c.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "gpg", Args: showArgs})
 	if err != nil {
 		return nil, fmt.Errorf("inspect release signing key: %w", err)
 	}
@@ -122,11 +122,11 @@ func (c Client) DownloadVerified(ctx context.Context, version string) (*Verified
 		return nil, errors.New("pinned release-signing subkey is absent, expired, revoked, or not signing-capable")
 	}
 	importArgs := append(append([]string{}, baseArgs...), "--status-fd", "1", "--import-options", "import-minimal", "--import", keyPath)
-	if _, err := c.Runner.Run(ctx, run.Spec{Name: "gpg", Args: importArgs}); err != nil {
+	if _, err := c.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "gpg", Args: importArgs}); err != nil {
 		return nil, fmt.Errorf("import isolated release key: %w", err)
 	}
 	verifyArgs := append(append([]string{}, baseArgs...), "--status-fd", "1", "--trust-model", "always", "--no-auto-key-retrieve", "--verify", filepath.Join(dir, SignatureName), filepath.Join(dir, ChecksumsName))
-	verifiedSignature, verifyErr := c.Runner.Run(ctx, run.Spec{Name: "gpg", Args: verifyArgs})
+	verifiedSignature, verifyErr := c.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "gpg", Args: verifyArgs})
 	if err := validateSignatureStatus(verifiedSignature.Stdout, trust.Fingerprint, verifyErr); err != nil {
 		return nil, fmt.Errorf("release signature verification failed: %w", err)
 	}

@@ -280,3 +280,32 @@ func TestMetadataAndAuxiliaryFilesRemainAuthoritativeAfterReview(t *testing.T) {
 		})
 	}
 }
+
+type failingBuildRunner struct{ *bootstrapRunner }
+
+func (r failingBuildRunner) Run(ctx context.Context, s run.Spec) (run.Result, error) {
+	if s.Name == "makepkg" {
+		if len(s.Args) != 0 || s.FailureOutput != run.FailureCombined || s.Interactive || s.StreamOutput {
+			return run.Result{}, errors.New("incorrect build evidence boundary")
+		}
+		// Exercise the real command boundary without running external build code.
+		s.Name = "sh"
+		s.Args = []string{"-c", "printf 'src/main.c:42: undefined reference to symbol\n'; printf '==> ERROR: A failure occurred in build().\n    Aborting...\n' >&2; exit 4"}
+		s.Dir = ""
+		return (run.Exec{}).Run(ctx, s)
+	}
+	return r.bootstrapRunner.Run(ctx, s)
+}
+
+func TestBuildFailureRetainsCompilerAndMakepkgEvidence(t *testing.T) {
+	const commit = "0123456789012345678901234567890123456789"
+	const metadata = "pkgbase = paru\npkgver = 1\npkgrel = 1\npkgname = paru\n"
+	runner := failingBuildRunner{&bootstrapRunner{commit: commit, srcinfo: metadata}}
+	installed := false
+	manager := Manager{Runner: runner, Review: func(string, map[string]string) error { return nil }}
+	err := manager.Build(context.Background(), plan.AURSource{Commit: commit, Metadata: paruMetadata(t, metadata)}, "paru", []string{"paru"}, func() error { return nil }, func(string, []string) error { installed = true; return nil })
+	var failure *run.Error
+	if installed || !errors.As(err, &failure) || !strings.Contains(failure.Evidence, "undefined reference") || !strings.Contains(failure.Evidence, "A failure occurred in build()") {
+		t.Fatalf("installed=%v err=%v", installed, err)
+	}
+}

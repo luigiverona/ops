@@ -49,18 +49,21 @@ func (m Manager) Build(ctx context.Context, source plan.AURSource, target string
 	}
 	defer os.RemoveAll(dir)
 	repo := filepath.Join(dir, source.Metadata.PackageBase)
-	if _, err := m.Runner.Run(ctx, run.Spec{Name: "git", Args: []string{"init", "--quiet", repo}}); err != nil {
+	if _, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "git", Args: []string{"init", "--quiet", repo}}); err != nil {
 		return err
 	}
 	repository := "https://aur.archlinux.org/" + source.Metadata.PackageBase + ".git"
-	if _, err := m.Runner.Run(ctx, run.Spec{Name: "git", Args: []string{"-C", repo, "fetch", "--quiet", "--depth", "1", repository, source.Commit}}); err != nil {
+	if _, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "git", Args: []string{"-C", repo, "fetch", "--quiet", "--depth", "1", repository, source.Commit}}); err != nil {
 		return err
 	}
-	if _, err := m.Runner.Run(ctx, run.Spec{Name: "git", Args: []string{"-C", repo, "checkout", "--quiet", "--detach", "FETCH_HEAD"}}); err != nil {
+	if _, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "git", Args: []string{"-C", repo, "checkout", "--quiet", "--detach", "FETCH_HEAD"}}); err != nil {
 		return err
 	}
-	result, err := m.Runner.Run(ctx, run.Spec{Name: "git", Args: []string{"-C", repo, "rev-parse", "HEAD"}})
-	if err != nil || strings.TrimSpace(result.Stdout) != source.Commit {
+	result, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "git", Args: []string{"-C", repo, "rev-parse", "HEAD"}})
+	if err != nil {
+		return fmt.Errorf("verify reviewed AUR revision: %w", err)
+	}
+	if strings.TrimSpace(result.Stdout) != source.Commit {
 		return errors.New("reviewed AUR source does not match the planned commit")
 	}
 	files, err := trackedFiles(ctx, m.Runner, repo)
@@ -86,7 +89,10 @@ func (m Manager) Build(ctx context.Context, source plan.AURSource, target string
 		return (resolve.Resolver{Runner: m.Runner}).CompareVersions(ctx, left, right)
 	}
 	reviewedOutputs, err := reviewed.OutputClosure(target, compareVersions)
-	if err != nil || strings.Join(reviewedOutputs, "\x00") != strings.Join(outputs, "\x00") {
+	if err != nil {
+		return fmt.Errorf("verify reviewed AUR outputs: %w", err)
+	}
+	if strings.Join(reviewedOutputs, "\x00") != strings.Join(outputs, "\x00") {
 		return errors.New("reviewed AUR output set changed after planning; rerun ops")
 	}
 	if m.Review == nil {
@@ -98,12 +104,18 @@ func (m Manager) Build(ctx context.Context, source plan.AURSource, target string
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	result, err = m.Runner.Run(ctx, run.Spec{Name: "git", Args: []string{"-C", repo, "rev-parse", "HEAD"}})
-	if err != nil || strings.TrimSpace(result.Stdout) != source.Commit {
+	result, err = m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "git", Args: []string{"-C", repo, "rev-parse", "HEAD"}})
+	if err != nil {
+		return fmt.Errorf("verify reviewed AUR revision: %w", err)
+	}
+	if strings.TrimSpace(result.Stdout) != source.Commit {
 		return errors.New("reviewed AUR source changed during review")
 	}
 	reviewFiles, err := trackedFiles(ctx, m.Runner, repo)
-	if err != nil || !sameFiles(files, reviewFiles) {
+	if err != nil {
+		return fmt.Errorf("verify reviewed AUR files during review: %w", err)
+	}
+	if !sameFiles(files, reviewFiles) {
 		return errors.New("reviewed AUR files changed during review")
 	}
 
@@ -113,18 +125,24 @@ func (m Manager) Build(ctx context.Context, source plan.AURSource, target string
 	if err := afterReview(); err != nil {
 		return err
 	}
-	result, err = m.Runner.Run(ctx, run.Spec{Name: "git", Args: []string{"-C", repo, "rev-parse", "HEAD"}})
-	if err != nil || strings.TrimSpace(result.Stdout) != source.Commit {
+	result, err = m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "git", Args: []string{"-C", repo, "rev-parse", "HEAD"}})
+	if err != nil {
+		return fmt.Errorf("verify reviewed AUR revision: %w", err)
+	}
+	if strings.TrimSpace(result.Stdout) != source.Commit {
 		return errors.New("reviewed AUR source changed before build")
 	}
 	currentFiles, err := trackedFiles(ctx, m.Runner, repo)
-	if err != nil || !sameFiles(files, currentFiles) {
+	if err != nil {
+		return fmt.Errorf("verify reviewed AUR files before build: %w", err)
+	}
+	if !sameFiles(files, currentFiles) {
 		return errors.New("reviewed AUR files changed before build")
 	}
-	if _, err := m.Runner.Run(ctx, run.Spec{Name: "makepkg", Dir: repo, AllowTruncatedOutput: true, Stdin: strings.NewReader("")}); err != nil {
+	if _, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureCombined, Name: "makepkg", Dir: repo, AllowTruncatedOutput: true, Stdin: strings.NewReader("")}); err != nil {
 		return err
 	}
-	result, err = m.Runner.Run(ctx, run.Spec{Name: "makepkg", Args: []string{"--packagelist"}, Dir: repo, Stdin: strings.NewReader("")})
+	result, err = m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "makepkg", Args: []string{"--packagelist"}, Dir: repo, Stdin: strings.NewReader("")})
 	if err != nil {
 		return err
 	}
@@ -191,7 +209,7 @@ func gitObject(value string) bool {
 }
 
 func trackedFiles(ctx context.Context, runner run.Runner, dir string) (map[string]string, error) {
-	result, err := runner.Run(ctx, run.Spec{Name: "git", Args: []string{"-C", dir, "ls-files", "-z"}})
+	result, err := runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "git", Args: []string{"-C", dir, "ls-files", "-z"}})
 	if err != nil {
 		return nil, err
 	}

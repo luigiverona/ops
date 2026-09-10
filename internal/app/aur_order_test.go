@@ -404,8 +404,11 @@ func TestIntentionalAURSkipContinuesAndReinspects(t *testing.T) {
 			if code != Issues || !workstation.installed["firefox"] || !strings.Contains(strings.Join(workstation.events, "\n"), "pacman -Qq") {
 				t.Fatalf("code=%d events=%v\n%s", code, workstation.events, out)
 			}
-			if strings.Count(out.String(), "Skipped paru.") != 1 || !strings.Contains(out.String(), "final verification") || !strings.Contains(out.String(), "Workstation setup incomplete.") {
+			if strings.Count(out.String(), "Skipped paru.") != 1 || !strings.Contains(out.String(), "After setup: the declared application is not installed") || !strings.Contains(out.String(), "Workstation setup incomplete.") {
 				t.Fatalf("missing skip or established reinspection conclusion: %s", out)
+			}
+			if strings.Contains(out.String(), "\nFailed\n") {
+				t.Fatalf("skip became an operation failure: %s", out)
 			}
 			for _, call := range ar.calls {
 				if call.Name == "makepkg" || call.Name == "gpg" || call.Name == "sudo" {

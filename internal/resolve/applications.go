@@ -2,7 +2,6 @@ package resolve
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 
@@ -61,13 +60,15 @@ func Applications(ctx context.Context, cfg config.Config, state plan.State, reso
 			found, err = resolver.Flatpak(ctx, declaration.Identifier)
 		}
 		if err != nil {
-			app.State = resolutionState(err)
-			app.Cause = "source resolution failed: " + err.Error()
+			app.State = plan.Unavailable
+			app.Err = err
+			app.Cause = "could not query the declared source: " + err.Error()
 			facts[declaration] = app
 			continue
 		}
 		if !found {
 			app.State = "unresolved"
+			app.ConfirmedAbsent = true
 			app.Cause = "exact identifier was not found in the declared source"
 			facts[declaration] = app
 			continue
@@ -84,7 +85,8 @@ func Applications(ctx context.Context, cfg config.Config, state plan.State, reso
 			}
 			source, sourceFound, sourceErr := pinned.source, pinned.found, pinned.err
 			if sourceErr != nil || !sourceFound || source.Commit == "" || source.Metadata.PackageBase != metadata.PackageBase {
-				app.State = resolutionState(sourceErr)
+				app.State = plan.Unavailable
+				app.Err = sourceErr
 				if sourceErr != nil {
 					app.Cause = "pinned AUR source resolution failed: " + sourceErr.Error()
 				} else {
@@ -96,6 +98,7 @@ func Applications(ctx context.Context, cfg config.Config, state plan.State, reso
 			outputs, dependencies, packages, buildErr := resolveAURBuild(ctx, resolver, source, declaration.Identifier, declaredPacman, state.Installed, state.Explicit, state.Foreign)
 			if buildErr != nil {
 				app.State = "failed"
+				app.Err = buildErr
 				app.Cause = "AUR build dependency resolution failed: " + buildErr.Error()
 				facts[declaration] = app
 				continue
@@ -104,6 +107,7 @@ func Applications(ctx context.Context, cfg config.Config, state plan.State, reso
 				present, keyErr := resolver.UserPGPKey(ctx, fingerprint)
 				if keyErr != nil {
 					app.State = "failed"
+					app.Err = keyErr
 					app.Cause = "AUR signing-key inspection failed: " + keyErr.Error()
 					break
 				}
@@ -225,17 +229,4 @@ func appendUnique(values []string, value string) []string {
 		}
 	}
 	return append(values, value)
-}
-
-// unavailableError is retryable remote I/O, not invalid user intent or metadata.
-type unavailableError struct{ err error }
-
-func (e unavailableError) Error() string { return e.err.Error() }
-func (e unavailableError) Unwrap() error { return e.err }
-func resolutionState(err error) plan.ApplicationState {
-	var unavailable unavailableError
-	if errors.As(err, &unavailable) {
-		return plan.Unavailable
-	}
-	return plan.Failed
 }

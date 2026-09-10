@@ -30,12 +30,16 @@ type Runtime struct {
 	EUID           func() int
 	OSRelease      string
 	PacmanConf     string
+	SourceHTTP     *http.Client
 	SSHHTTP        *http.Client
 	SSHMetadataURL string
 }
 
 type issue struct {
 	State, Name, Source, Stage, Cause, Impact, Action string
+	Err                                               error
+	Observed                                          string
+	Component                                         string
 }
 
 func (a Runtime) detect(ctx context.Context) error {

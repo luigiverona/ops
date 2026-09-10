@@ -39,7 +39,7 @@ func (a Runtime) Prepare(ctx context.Context) (code int) {
 	if err != nil {
 		return a.fatal(fmt.Errorf("inspect workstation: %w", err))
 	}
-	facts := resolve.Applications(ctx, cfg, state, resolve.Resolver{Runner: a.Runner})
+	facts := resolve.Applications(ctx, cfg, state, resolve.Resolver{Runner: a.Runner, Client: a.SourceHTTP})
 	if ctx.Err() != nil {
 		return Fatal
 	}
@@ -94,9 +94,13 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		}
 		defer keeper.Close()
 	}
+	problems := plannedProblems
+	stop := func(name, stage string, err error, impact string) execution {
+		return execution{status: Fatal, stopInspection: errors.Is(err, io.EOF), problems: append(problems, issue{State: "Failed", Name: name, Stage: stage, Cause: err.Error(), Err: err, Impact: impact, Action: "Run ops doctor before retrying."})}
+	}
 	defer func() {
-		if result.status == Fatal && !a.interrupted() && a.interruption.mutation {
-			fmt.Fprintln(a.Err, "Earlier changes may remain. Run ops doctor before retrying.")
+		if a.interruption.mutation && !a.interruption.concluded {
+			result.applied = true
 		}
 	}()
 
@@ -107,7 +111,7 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		}
 		a.progress("Preparing system...")
 		if err := archManager.EnableMultilib(ctx); err != nil {
-			return execution{status: a.coreFatal("multilib", err, "required repository configuration is unavailable")}
+			return stop("multilib", "core", err, "required repository configuration is unavailable")
 		}
 	}
 	if p.FullUpgrade {
@@ -116,7 +120,7 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		}
 		a.progress("Updating system...")
 		if err := archManager.FullUpgrade(ctx); err != nil {
-			return execution{status: a.coreFatal("Arch system upgrade", err, "package installation cannot continue safely")}
+			return stop("Arch system upgrade", "core", err, "package installation cannot continue safely")
 		}
 	}
 	if len(p.CorePackages) > 0 {
@@ -126,11 +130,11 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		a.progress("Installing packages...")
 	}
 	if err := archManager.Install(ctx, p.CorePackages, false); err != nil {
-		return execution{status: a.coreFatal("core packages", err, "required workstation capabilities are unavailable")}
+		return stop("core packages", "core", err, "required workstation capabilities are unavailable")
 	}
 
 	if err := a.verifyCore(ctx, p); err != nil {
-		return execution{status: a.coreFatal("core verification", err, "the required core is incomplete")}
+		return stop("core verification", "core", err, "the required core is incomplete")
 	}
 
 	aurManager := aur.Manager{Runner: a.Runner}
@@ -141,11 +145,10 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		}
 		a.progress("Preparing Flatpak applications...")
 		if err := flatpakManager.AddFlathub(ctx); err != nil {
-			return execution{status: a.coreFatal("flathub", err, "Flatpak application support is unavailable")}
+			return stop("flathub", "core", err, "Flatpak application support is unavailable")
 		}
 	}
 
-	problems := plannedProblems
 	for _, application := range p.Applications {
 		if ctx.Err() != nil {
 			return execution{status: Fatal}
@@ -159,7 +162,7 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		if application.State == "configure" {
 			a.progress("Configuring " + application.Declaration.Identifier + "...")
 			if err := a.configureApplication(ctx, archManager, application); err != nil {
-				problems = append(problems, issue{State: "Failed", Name: application.Declaration.Identifier, Source: string(application.Declaration.Source), Cause: err.Error(), Impact: "application configuration is incomplete", Action: "run ops doctor, resolve the error, then run ops again"})
+				problems = append(problems, issue{State: "Failed", Name: application.Declaration.Identifier, Source: string(application.Declaration.Source), Cause: err.Error(), Err: err, Impact: "application configuration did not complete normally", Action: "Run ops doctor before retrying."})
 				continue
 			}
 			continue
@@ -170,15 +173,19 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 				return execution{status: a.fatal(fmt.Errorf("application setup interrupted: %w", err))}
 			}
 			if errors.Is(err, io.EOF) {
-				return execution{status: a.fatal(err)}
+				return stop("application input", "setup", err, "no further work was approved")
 			}
 			state := "Failed"
-			impact := "application setup is incomplete; installation or configuration may have partially succeeded"
+			impact := "application setup did not complete normally; changes may have partially succeeded"
 			if errors.Is(err, errReviewDeclined) {
 				state = "Skipped"
 				impact = "the declared application remains unmet"
 			}
-			problems = append(problems, issue{State: state, Name: application.Declaration.Identifier, Source: string(application.Declaration.Source), Cause: err.Error(), Impact: impact, Action: "run ops doctor, resolve the source error or review decision, then run ops again"})
+			action := "Run ops doctor before retrying."
+			if state == "Skipped" {
+				action = "Run ops again when ready to build the declared application."
+			}
+			problems = append(problems, issue{State: state, Name: application.Declaration.Identifier, Source: string(application.Declaration.Source), Cause: err.Error(), Err: err, Impact: impact, Action: action})
 			continue
 		}
 	}
@@ -192,7 +199,7 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		gitStatus, gitErr = a.configureGit(ctx, terminal)
 		if gitErr != nil {
 			if errors.Is(gitErr, io.EOF) {
-				return execution{status: a.fatal(gitErr)}
+				return stop("Git input", "setup", gitErr, "no further work was approved")
 			}
 			problems = append(problems, *setupIssue("Git", gitErr))
 		}
@@ -211,13 +218,13 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		sshStatus, managed, sshIssues, fatalErr = a.configureSSH(ctx, terminal, p)
 		problems = append(problems, sshIssues...)
 		if fatalErr != nil {
-			return execution{status: a.fatal(fatalErr)}
+			return stop("SSH", "setup", fatalErr, "SSH configuration could not safely continue")
 		}
 	} else if githubWork {
 		var err error
 		managed, err = a.managedSSHIdentity(ctx)
 		if err != nil {
-			return execution{status: a.fatal(fmt.Errorf("SSH state changed after planning: %w", err))}
+			return stop("SSH", "setup", fmt.Errorf("SSH state changed after planning: %w", err), "GitHub setup could not safely continue")
 		}
 	}
 
@@ -259,7 +266,7 @@ func (a Runtime) verifyCore(ctx context.Context, p plan.Plan) error {
 		packages = append(packages, "flatpak")
 	}
 	for _, pkg := range packages {
-		if _, err := a.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Q", pkg}}); err != nil {
+		if _, err := a.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Q", pkg}}); err != nil {
 			return fmt.Errorf("verify prerequisite %s: %w", pkg, err)
 		}
 	}

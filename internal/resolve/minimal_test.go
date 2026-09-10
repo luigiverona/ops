@@ -31,10 +31,10 @@ func TestMinimalAURAndFlatpakResolutionHasNoBootstrapCommandCycle(t *testing.T) 
 	cfg, _ := config.Parse([]byte("version=2\naur=[\"example\"]\nflatpak=[\"org.example.App\"]"))
 	runner := &minimalResolverRunner{}
 	client := &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
-		body := "{}"
+		body := `{"id":"org.example.App"}`
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/rpc/"):
-			body = `{"resultcount":1,"results":[{"Name":"example","PackageBase":"example"}]}`
+			body = `{"version":5,"type":"multiinfo","resultcount":1,"results":[{"Name":"example","PackageBase":"example"}]}`
 		case strings.HasSuffix(r.URL.Path, "/info/refs"):
 			body = "001e# service=git-upload-pack\n0000" + packet(oid+" HEAD\x00object-format=sha1\n") + "0000"
 		case strings.Contains(r.URL.Path, ".SRCINFO"):
