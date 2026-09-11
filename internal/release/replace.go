@@ -25,12 +25,12 @@ func Replace(ctx context.Context, runner run.Runner, verified, target, version s
 	staged, backup := target+".ops-new-"+suffix, target+".ops-backup-"+suffix
 	keepBackup := false
 	defer func() {
-		_, _ = runner.Run(context.Background(), run.Spec{Name: "sudo", Args: []string{"-n", "rm", "-f", "--", staged}})
+		_, _ = runner.Run(context.Background(), run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "rm", "-f", "--", staged}})
 		if !keepBackup {
-			_, _ = runner.Run(context.Background(), run.Spec{Name: "sudo", Args: []string{"-n", "rm", "-f", "--", backup}})
+			_, _ = runner.Run(context.Background(), run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "rm", "-f", "--", backup}})
 		}
 	}()
-	if _, err := runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "install", "-m", "0755", "-o", "root", "-g", "root", "--", verified, staged}}); err != nil {
+	if _, err := runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "install", "-m", "0755", "-o", "root", "-g", "root", "--", verified, staged}}); err != nil {
 		return err
 	}
 	result, err := runner.Run(ctx, run.Spec{Name: staged, Args: []string{"--version"}})
@@ -44,13 +44,13 @@ func Replace(ctx context.Context, runner run.Runner, verified, target, version s
 		if statErr != nil || !info.Mode().IsRegular() {
 			return errors.New("existing ops target is not a regular file")
 		}
-		if _, err := runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "cp", "--preserve=mode,ownership,timestamps", "--", target, backup}}); err != nil {
+		if _, err := runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "cp", "--preserve=mode,ownership,timestamps", "--", target, backup}}); err != nil {
 			return fmt.Errorf("backup installed binary: %w", err)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if _, err := runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "mv", "--", staged, target}}); err != nil {
+	if _, err := runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "mv", "--", staged, target}}); err != nil {
 		if hadTarget {
 			keepBackup = true
 			return fmt.Errorf("update replacement did not complete; backup retained at %s: %w", backup, err)
@@ -62,12 +62,12 @@ func Replace(ctx context.Context, runner run.Runner, verified, target, version s
 		return nil
 	}
 	if hadTarget {
-		if _, restoreErr := runner.Run(context.WithoutCancel(ctx), run.Spec{Name: "sudo", Args: []string{"-n", "mv", "--", backup, target}}); restoreErr != nil {
+		if _, restoreErr := runner.Run(context.WithoutCancel(ctx), run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "mv", "--", backup, target}}); restoreErr != nil {
 			keepBackup = true
-			return fmt.Errorf("update verification failed and prior binary restoration failed; backup retained at %s: %v", backup, restoreErr)
+			return fmt.Errorf("update verification failed and prior binary restoration failed; backup retained at %s: %w", backup, restoreErr)
 		}
 	} else {
-		if _, removeErr := runner.Run(context.WithoutCancel(ctx), run.Spec{Name: "sudo", Args: []string{"-n", "rm", "-f", "--", target}}); removeErr != nil {
+		if _, removeErr := runner.Run(context.WithoutCancel(ctx), run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "rm", "-f", "--", target}}); removeErr != nil {
 			return fmt.Errorf("update verification failed and removal of the new binary failed: %w", removeErr)
 		}
 		return errors.New("installed update verification failed; new binary was removed")

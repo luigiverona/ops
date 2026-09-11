@@ -85,7 +85,8 @@ func TestExecInteractiveErrorDoesNotRepeatPresentedStderr(t *testing.T) {
 
 func TestExecNoninteractiveErrorRetainsCapturedStderr(t *testing.T) {
 	_, err := (Exec{}).Run(context.Background(), Spec{Name: "sh", Args: []string{"-c", "printf diagnostic >&2; exit 1"}})
-	if err == nil || !strings.Contains(err.Error(), "diagnostic") {
+	var command *Error
+	if !errors.As(err, &command) || command.Stderr != "diagnostic" || strings.Contains(err.Error(), "diagnostic") {
 		t.Fatalf("noninteractive diagnostic was lost: %v", err)
 	}
 }
@@ -122,5 +123,95 @@ func TestStreamingDoesNotAuthorizeTruncatedInspection(t *testing.T) {
 		if (err == nil) != allow || len(result.Stdout) != captureLimit {
 			t.Fatalf("allow=%v len=%d err=%v", allow, len(result.Stdout), err)
 		}
+	}
+}
+
+func TestFailureEvidenceOptInAndStreams(t *testing.T) {
+	for _, mode := range []FailureOutput{FailureNone, FailureStderr, FailureCombined} {
+		for _, streamed := range []bool{false, true} {
+			_, err := (Exec{Out: io.Discard, Err: io.Discard}).Run(context.Background(), Spec{
+				Name: "sh", Args: []string{"-c", "printf 'src/main.c: undefined reference to symbol\n'; printf '==> ERROR: A failure occurred in build().\n' >&2; exit 1"},
+				FailureOutput: mode, StreamOutput: streamed,
+			})
+			var failure *Error
+			if !errors.As(err, &failure) {
+				t.Fatal(err)
+			}
+			if strings.Contains(failure.Error(), "reference") || strings.Contains(failure.Error(), "ERROR") {
+				t.Fatal("evidence embedded in cause")
+			}
+			if mode == FailureNone || streamed {
+				if failure.Evidence != "" {
+					t.Fatal("unapproved replay")
+				}
+				continue
+			}
+			if !strings.Contains(failure.Evidence, "A failure occurred") {
+				t.Fatal("lost stderr")
+			}
+			if strings.Contains(failure.Evidence, "undefined reference") != (mode == FailureCombined) {
+				t.Fatal("incorrect stdout policy")
+			}
+		}
+	}
+}
+
+func TestDiagnosticRetentionIsBoundedAndKeepsTail(t *testing.T) {
+	_, err := (Exec{}).Run(context.Background(), Spec{Name: "sh", Args: []string{"-c", "head -c 2097153 /dev/zero; printf 'final build error'; exit 1"}, AllowTruncatedOutput: true, FailureOutput: FailureCombined})
+	var failure *Error
+	if !errors.As(err, &failure) || len(failure.Evidence) != diagnosticLimit || !failure.EvidenceTruncated || !strings.HasSuffix(failure.Evidence, "final build error") {
+		t.Fatalf("incorrect retained evidence: %v", err)
+	}
+}
+
+func TestEvidenceDoesNotExposeUnapprovedOutputOrArguments(t *testing.T) {
+	_, err := (Exec{}).Run(context.Background(), Spec{Name: "sh", Args: []string{"-c", "printf 'secret-token-from-stdout'; printf 'ordinary diagnostic' >&2; exit 1", "private-argument"}, FailureOutput: FailureStderr})
+	var failure *Error
+	if !errors.As(err, &failure) || failure.Evidence != "ordinary diagnostic" {
+		t.Fatalf("evidence=%v", err)
+	}
+	if strings.Contains(err.Error(), "private-argument") || strings.Contains(failure.Evidence, "secret-token") {
+		t.Fatal("private command context exposed")
+	}
+}
+
+func TestEvidenceWithholdsSecretsBeforeTailTruncation(t *testing.T) {
+	for _, marker := range []string{
+		"-----BEGIN OPENSSH PRIVATE KEY-----\n", "Authorization: Bearer opaque\n", "export SESSION_SECRET=opaque\n",
+		"Author\x1b[31mization\x1b[0m: Bearer opaque\n", "--password opaque\n",
+		"Author" + strings.Repeat("\x1b[0m", 300) + "ization: Bearer opaque\n",
+		"pass" + strings.Repeat("\r", 1200) + "word: opaque\n",
+		"Author\x1b]0;" + strings.Repeat("title ", 300) + "\aization: Bearer opaque\n",
+	} {
+		for _, chunkSize := range []int{1, 7, 512, 32768} {
+			var b diagnosticBuffer
+			value := marker + strings.Repeat("private material with spaces\n", 2000) + "final build error"
+			for len(value) > 0 {
+				n := min(chunkSize, len(value))
+				_, _ = b.Write([]byte(value[:n]))
+				value = value[n:]
+			}
+			if b.String() != WithheldDiagnostic || len(b.data) != 0 {
+				t.Fatalf("chunk size %d disclosed sensitive tail", chunkSize)
+			}
+		}
+	}
+}
+
+func TestEvidenceRetentionDoesNotDependOnWriteChunks(t *testing.T) {
+	value := strings.Repeat("compiling ordinary source file\n", 900) + "last compiler error\n"
+	var want string
+	for _, size := range []int{1, 17, 512, 4096, len(value)} {
+		var b diagnosticBuffer
+		for start := 0; start < len(value); start += size {
+			_, _ = b.Write([]byte(value[start:min(start+size, len(value))]))
+		}
+		if !b.truncated || !strings.HasSuffix(b.String(), "last compiler error\n") {
+			t.Fatal("missing diagnostic tail")
+		}
+		if want != "" && b.String() != want {
+			t.Fatalf("write size %d changed retained evidence", size)
+		}
+		want = b.String()
 	}
 }

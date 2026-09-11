@@ -20,7 +20,7 @@ func TestAllOperationsAreUserScoped(t *testing.T) {
 	m := Manager{Runner: f}
 	_ = m.AddFlathub(context.Background())
 	_ = m.Install(context.Background(), "org.example.App")
-	_ = m.Ready(context.Background(), "org.example.App")
+	_ = m.Verify(context.Background(), "org.example.App")
 	for _, call := range f.calls {
 		if !strings.Contains(" "+strings.Join(call.Args, " ")+" ", " --user ") {
 			t.Fatalf("not user scoped: %#v", call.Args)

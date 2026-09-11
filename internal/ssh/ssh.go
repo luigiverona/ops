@@ -237,11 +237,7 @@ func (m Manager) ConfigureGitHub(ctx context.Context) error {
 	userConfigPath := filepath.Join(m.dir(), "ops_user_config")
 	knownHostsPath := filepath.Join(m.dir(), "ops_known_hosts")
 	legacy := []byte("Host github.com\n    HostName github.com\n    User git\n    IdentityFile ~/.ssh/ops\n    IdentitiesOnly yes\n")
-	identityPath, err := sshConfigArgument(filepath.Join(m.dir(), "ops"))
-	if err != nil {
-		return err
-	}
-	knownHostsArgument, err := sshConfigArgument(knownHostsPath)
+	managed, err := m.managedGitHubConfiguration()
 	if err != nil {
 		return err
 	}
@@ -249,7 +245,6 @@ func (m Manager) ConfigureGitHub(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	managed := []byte(fmt.Sprintf("%s\nHost github.com\n    HostName github.com\n    User git\n    IdentityFile %s\n    IdentitiesOnly yes\n    UserKnownHostsFile %s\n    StrictHostKeyChecking yes\n", managedMarker, identityPath, knownHostsArgument))
 	var existing []byte
 	if info, err := os.Lstat(configPath); err == nil {
 		if !info.Mode().IsRegular() {
@@ -328,25 +323,50 @@ func (m Manager) ConfigureGitHub(ctx context.Context) error {
 
 // GitHubConfigured verifies effective configuration without changing files.
 func (m Manager) GitHubConfigured(ctx context.Context) bool {
-	if !recognizedManagedFile(filepath.Join(m.dir(), "ops_config")) || !validManagedKnownHosts(filepath.Join(m.dir(), "ops_known_hosts")) {
-		return false
+	ready, _ := m.InspectLocalGitHubConfiguration(ctx)
+	return ready
+}
+
+// InspectLocalGitHubConfiguration distinguishes incomplete managed files from
+// an inability to inspect effective SSH settings. It never contacts a server.
+func (m Manager) InspectLocalGitHubConfiguration(ctx context.Context) (bool, error) {
+	managed, err := m.managedGitHubConfiguration()
+	if err != nil {
+		return false, err
+	}
+	// ssh -G can execute Match exec and resolve canonical hostnames. Only
+	// pass our exact inert configuration to it, not merely a marked file.
+	if !recognizedExactFile(filepath.Join(m.dir(), "ops_config"), managed) || !validManagedKnownHosts(filepath.Join(m.dir(), "ops_known_hosts")) {
+		return false, nil
 	}
 	configPath := filepath.Join(m.dir(), "config")
 	dispatcher, err := renderGitHubDispatcher(filepath.Join(m.dir(), "ops_config"), filepath.Join(m.dir(), "ops_user_config"))
 	if err != nil {
-		return false
+		return false, err
 	}
 	if !recognizedExactFile(configPath, dispatcher) {
-		return false
+		return false, nil
 	}
 	if _, exists, err := readSafeUserConfig(filepath.Join(m.dir(), "ops_user_config")); err != nil || !exists {
-		return false
+		return false, err
 	}
 	result, err := m.Runner.Run(ctx, run.Spec{Name: "ssh", Args: []string{"-G", "github.com", "-F", configPath}})
 	if err != nil {
-		return false
+		return false, fmt.Errorf("inspect effective GitHub SSH configuration: %w", err)
 	}
-	return effectiveGitHubConfig(result.Stdout, m.Home)
+	return effectiveGitHubConfig(result.Stdout, m.Home), nil
+}
+
+func (m Manager) managedGitHubConfiguration() ([]byte, error) {
+	identityPath, err := sshConfigArgument(filepath.Join(m.dir(), "ops"))
+	if err != nil {
+		return nil, err
+	}
+	knownHosts, err := sshConfigArgument(filepath.Join(m.dir(), "ops_known_hosts"))
+	if err != nil {
+		return nil, err
+	}
+	return []byte(fmt.Sprintf("%s\nHost github.com\n    HostName github.com\n    User git\n    IdentityFile %s\n    IdentitiesOnly yes\n    UserKnownHostsFile %s\n    StrictHostKeyChecking yes\n", managedMarker, identityPath, knownHosts)), nil
 }
 
 // HostKeyFreshness records whether recognized managed host keys match current
@@ -370,7 +390,11 @@ type GitHubConfigurationStatus struct {
 // InspectGitHubConfiguration performs read-only local verification and, only
 // for recognized configuration, compares host keys with official metadata.
 func (m Manager) InspectGitHubConfiguration(ctx context.Context) (GitHubConfigurationStatus, error) {
-	if !m.GitHubConfigured(ctx) {
+	ready, err := m.InspectLocalGitHubConfiguration(ctx)
+	if err != nil {
+		return GitHubConfigurationStatus{}, err
+	}
+	if !ready {
 		return GitHubConfigurationStatus{Freshness: HostKeyFreshnessUnknown}, nil
 	}
 	hostKeys, err := m.fetchGitHubHostKeys(ctx)

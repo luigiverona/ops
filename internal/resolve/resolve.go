@@ -27,6 +27,13 @@ type Resolver struct {
 	Client *http.Client
 }
 
+// QueryError marks an inconclusive repository operation at its origin, before
+// dependency/build context wraps it. Display text never determines recovery.
+type QueryError struct{ Err error }
+
+func (e *QueryError) Error() string { return "could not query official repositories: " + e.Err.Error() }
+func (e *QueryError) Unwrap() error { return e.Err }
+
 // UserPGPKey reports whether the normal user's keyring has exactly fingerprint.
 func (r Resolver) UserPGPKey(ctx context.Context, fingerprint string) (bool, error) {
 	return (pgp.Manager{Runner: r.Runner}).Has(ctx, fingerprint)
@@ -36,13 +43,16 @@ var gitObject = regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$`)
 var packageName = regexp.MustCompile(`^[A-Za-z0-9@._+][A-Za-z0-9@._+-]*$`)
 
 func (r Resolver) Pacman(ctx context.Context, name string) (plan.Package, bool, error) {
-	result, err := r.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Si", "--", name}})
+	result, err := r.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Si", "--", name}})
 	if err != nil {
-		message := strings.ToLower(result.Stderr)
-		if strings.Contains(message, "target not found") || strings.Contains(message, "was not found") {
-			return r.archPackage(ctx, name)
+		// pacman's exit status does not distinguish absence from a broken
+		// local repository. Query the same official source's exact-name API;
+		// only its complete valid response can establish absence.
+		pkg, found, lookupErr := r.archPackage(ctx, name)
+		if lookupErr != nil {
+			return pkg, false, errors.Join(err, lookupErr)
 		}
-		return plan.Package{}, false, err
+		return pkg, found, nil
 	}
 	fields := parsePacmanInfo(result.Stdout)
 	if fields["Name"] != name {
@@ -53,6 +63,10 @@ func (r Resolver) Pacman(ctx context.Context, name string) (plan.Package, bool, 
 
 func (r Resolver) archPackage(ctx context.Context, name string) (plan.Package, bool, error) {
 	var response struct {
+		Version int  `json:"version"`
+		Count   *int `json:"count"`
+		Page    int  `json:"page"`
+		Pages   int  `json:"num_pages"`
 		Valid   bool `json:"valid"`
 		Results []struct {
 			Name         string `json:"pkgname"`
@@ -60,22 +74,22 @@ func (r Resolver) archPackage(ctx context.Context, name string) (plan.Package, b
 			Architecture string `json:"arch"`
 		} `json:"results"`
 	}
-	endpoint := "https://archlinux.org/packages/search/json/?name=" + url.QueryEscape(name) + "&arch=x86_64"
+	endpoint := "https://archlinux.org/packages/search/json/?name=" + url.QueryEscape(name) + "&arch=x86_64&arch=any&repo=Core&repo=Extra&repo=Multilib"
 	status, err := r.getJSON(ctx, endpoint, &response)
 	if err != nil {
 		return plan.Package{}, false, err
 	}
-	if status != http.StatusOK || !response.Valid {
-		return plan.Package{}, false, nil
+	if status != http.StatusOK || response.Version != 2 || !response.Valid || response.Results == nil || response.Count == nil || *response.Count != len(response.Results) || response.Page != 1 || response.Pages != 1 {
+		return plan.Package{}, false, errors.New("official repository query returned an invalid response")
 	}
 	for _, result := range response.Results {
 		if result.Name != name || (result.Architecture != "x86_64" && result.Architecture != "any") {
-			continue
+			return plan.Package{}, false, errors.New("official repository query returned unexpected package metadata")
 		}
 		switch result.Repository {
 		case "core", "extra", "multilib":
 		default:
-			continue
+			return plan.Package{}, false, errors.New("official repository query returned an unexpected repository")
 		}
 		return plan.Package{Name: name, Repository: result.Repository}, true, nil
 	}
@@ -84,7 +98,9 @@ func (r Resolver) archPackage(ctx context.Context, name string) (plan.Package, b
 
 func (r Resolver) AUR(ctx context.Context, name string) (plan.Package, bool, error) {
 	var response struct {
-		ResultCount int `json:"resultcount"`
+		Version     int    `json:"version"`
+		Type        string `json:"type"`
+		ResultCount *int   `json:"resultcount"`
 		Results     []struct {
 			Name, PackageBase string
 		} `json:"results"`
@@ -94,14 +110,17 @@ func (r Resolver) AUR(ctx context.Context, name string) (plan.Package, bool, err
 	if err != nil {
 		return plan.Package{}, false, err
 	}
-	if status == http.StatusNotFound {
-		return plan.Package{}, false, nil
+	if status != http.StatusOK || response.Version != 5 || response.Type != "multiinfo" || response.Results == nil || response.ResultCount == nil {
+		return plan.Package{}, false, errors.New("AUR query returned an invalid response")
 	}
-	if response.ResultCount != len(response.Results) || response.ResultCount > 1 {
+	if *response.ResultCount != len(response.Results) || *response.ResultCount > 1 {
 		return plan.Package{}, false, errors.New("malformed AUR response count")
 	}
-	if response.ResultCount != 1 || response.Results[0].Name != name {
+	if *response.ResultCount == 0 {
 		return plan.Package{}, false, nil
+	}
+	if response.Results[0].Name != name {
+		return plan.Package{}, false, errors.New("AUR query returned a different identifier")
 	}
 	p := response.Results[0]
 	if !aurmeta.ValidPackageName(p.PackageBase) {
@@ -148,7 +167,7 @@ func (r Resolver) AURSource(ctx context.Context, name string) (plan.AURSource, b
 // if not, materializes the concrete package selected by pacman's own resolver.
 func (r Resolver) OfficialDependency(ctx context.Context, requirement string) (plan.OfficialDependency, error) {
 	binding := plan.OfficialDependency{Requirement: requirement}
-	result, err := r.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-T", "--", requirement}})
+	result, err := r.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-T", "--", requirement}})
 	if err == nil {
 		if strings.TrimSpace(result.Stdout) != "" {
 			return binding, errors.New("pacman dependency test returned contradictory output")
@@ -156,13 +175,13 @@ func (r Resolver) OfficialDependency(ctx context.Context, requirement string) (p
 		binding.Satisfied = true
 		return binding, nil
 	}
-	if strings.TrimSpace(result.Stdout) != requirement {
+	if !run.Exited(err, 127) || strings.TrimSpace(result.Stdout) != requirement || strings.TrimSpace(result.Stderr) != "" {
 		return binding, fmt.Errorf("inspect installed dependency: %w", err)
 	}
 	format := "%n\t%P"
-	result, err = r.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Sp", "--needed", "--noconfirm", "--print-format", format, "--", requirement}})
+	result, err = r.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Sp", "--needed", "--noconfirm", "--print-format", format, "--", requirement}})
 	if err != nil {
-		return binding, err
+		return binding, &QueryError{Err: err}
 	}
 	want := aurmeta.DependencyName(requirement)
 	if want == "" {
@@ -172,11 +191,11 @@ func (r Resolver) OfficialDependency(ctx context.Context, requirement string) (p
 	packages := make(map[string]bool)
 	records, err := parseProviderTransaction(result.Stdout)
 	if err != nil {
-		return binding, fmt.Errorf("pacman returned invalid transaction metadata for %q: %w", requirement, err)
+		return binding, &QueryError{Err: fmt.Errorf("pacman returned invalid transaction metadata for %q: %w", requirement, err)}
 	}
 	for _, record := range records {
 		if packages[record.Name] {
-			return binding, fmt.Errorf("pacman returned invalid or duplicate transaction metadata for %q", requirement)
+			return binding, &QueryError{Err: fmt.Errorf("pacman returned invalid or duplicate transaction metadata for %q", requirement)}
 		}
 		packages[record.Name] = true
 		if record.Name == want || providesName(record.Provides, want) {
@@ -184,7 +203,7 @@ func (r Resolver) OfficialDependency(ctx context.Context, requirement string) (p
 		}
 	}
 	if len(candidates) != 1 {
-		return binding, fmt.Errorf("pacman selected %d concrete providers for %q", len(candidates), requirement)
+		return binding, &QueryError{Err: fmt.Errorf("pacman selected %d concrete providers for %q", len(candidates), requirement)}
 	}
 	for name := range candidates {
 		binding.Provider = name
@@ -245,9 +264,9 @@ func (r Resolver) OfficialTransaction(ctx context.Context, packages []string) ([
 	}
 	args := []string{"-Sp", "--needed", "--noconfirm", "--print-format", "%n", "--"}
 	args = append(args, packages...)
-	result, err := r.Runner.Run(ctx, run.Spec{Name: "pacman", Args: args})
+	result, err := r.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: args})
 	if err != nil {
-		return nil, err
+		return nil, &QueryError{Err: err}
 	}
 	seen := make(map[string]bool)
 	var transaction []string
@@ -257,7 +276,7 @@ func (r Resolver) OfficialTransaction(ctx context.Context, packages []string) ([
 			continue
 		}
 		if !packageName.MatchString(name) || seen[name] {
-			return nil, errors.New("pacman returned invalid or duplicate concrete transaction metadata")
+			return nil, &QueryError{Err: errors.New("pacman returned invalid or duplicate concrete transaction metadata")}
 		}
 		seen[name] = true
 		transaction = append(transaction, name)
@@ -293,11 +312,26 @@ func (r Resolver) CompareVersions(ctx context.Context, left, right string) (int,
 }
 
 func (r Resolver) Flatpak(ctx context.Context, id string) (bool, error) {
-	status, err := r.getJSON(ctx, "https://flathub.org/api/v2/appstream/"+url.PathEscape(id), &struct{}{})
+	data, status, err := r.getBytes(ctx, "https://flathub.org/api/v2/appstream/"+url.PathEscape(id))
 	if err != nil {
 		return false, err
 	}
-	return status == http.StatusOK, nil
+	var response struct {
+		ID     string `json:"id"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return false, fmt.Errorf("malformed Flathub response: %w", err)
+	}
+	// Flathub also returns this 404 for missing AppStream metadata and EOL
+	// entries. It does not prove that the exact Flatpak ref is absent.
+	if status == http.StatusNotFound && response.Detail == "App not found" {
+		return false, errors.New("Flathub has no current application metadata; exact availability could not be confirmed")
+	}
+	if status != http.StatusOK || response.ID != id {
+		return false, errors.New("Flathub query returned an invalid response")
+	}
+	return true, nil
 }
 
 func (r Resolver) getJSON(ctx context.Context, endpoint string, target any) (int, error) {
@@ -325,18 +359,15 @@ func (r Resolver) getBytes(ctx context.Context, endpoint string) ([]byte, int, e
 	req.Header.Set("User-Agent", "ops/1")
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, 0, unavailableError{err}
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, resp.StatusCode, nil
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, resp.StatusCode, unavailableError{fmt.Errorf("service returned HTTP %d; retry later", resp.StatusCode)}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
+		return nil, resp.StatusCode, fmt.Errorf("service returned HTTP %d", resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024+1))
 	if err != nil {
-		return nil, resp.StatusCode, unavailableError{err}
+		return nil, resp.StatusCode, err
 	}
 	if len(data) > 2*1024*1024 {
 		return nil, resp.StatusCode, errors.New("service response exceeds size limit")

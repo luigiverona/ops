@@ -56,16 +56,16 @@ func (a Runtime) installApplication(ctx context.Context, am arch.Manager, au aur
 
 	switch application.Declaration.Source {
 	case "pacman":
-		if _, err := a.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qn", name}}); err != nil {
+		if _, err := a.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Qn", name}}); err != nil {
 			return err
 		}
 		return a.markApplicationExplicit(ctx, am, application)
 	case "aur":
-		_, err := a.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qm", name}})
+		_, err := a.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Qm", name}})
 		return err
 	case "flatpak":
-		if !fm.Ready(ctx, name) {
-			return errors.New("Flatpak postcondition verification failed")
+		if err := fm.Verify(ctx, name); err != nil {
+			return fmt.Errorf("verify Flatpak application: %w", err)
 		}
 	}
 	return nil
@@ -83,7 +83,7 @@ func (a Runtime) markApplicationExplicit(ctx context.Context, am arch.Manager, a
 	case "aur":
 		query = "-Qm"
 	}
-	if _, err := a.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{query, name}}); err != nil {
+	if _, err := a.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{query, name}}); err != nil {
 		return fmt.Errorf("application source changed after planning; rerun ops: expected %s package: %w", application.Declaration.Source, err)
 	}
 	if err := a.beginMutation(ctx); err != nil {
@@ -92,7 +92,7 @@ func (a Runtime) markApplicationExplicit(ctx context.Context, am arch.Manager, a
 	if err := am.MarkExplicit(ctx, []string{name}); err != nil {
 		return fmt.Errorf("preserve explicit install reason: %w", err)
 	}
-	if _, err := a.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qe", name}}); err != nil {
+	if _, err := a.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Qe", name}}); err != nil {
 		return fmt.Errorf("verify explicit install reason: %w", err)
 	}
 	return nil
@@ -178,7 +178,7 @@ func (a Runtime) installAURApplication(ctx context.Context, am arch.Manager, au 
 				return fmt.Errorf("preserve explicit AUR dependency install reason: %w", err)
 			}
 			for _, name := range explicitPackages {
-				if _, err := a.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qe", name}}); err != nil {
+				if _, err := a.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Qe", name}}); err != nil {
 					return fmt.Errorf("verify explicit AUR dependency install reason %q: %w", name, err)
 				}
 			}
@@ -226,12 +226,15 @@ func (a Runtime) configureServices(ctx context.Context, application plan.Applica
 		if err := a.beginMutation(ctx); err != nil {
 			return err
 		}
-		if _, err := a.Runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-n", "systemctl", "enable", "--now", service}}); err != nil {
+		if _, err := a.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "systemctl", "enable", "--now", service}}); err != nil {
 			return err
 		}
 		for _, check := range []struct{ arg, want string }{{"is-enabled", "enabled"}, {"is-active", "active"}} {
-			result, err := a.Runner.Run(ctx, run.Spec{Name: "systemctl", Args: []string{check.arg, service}})
-			if err != nil || strings.TrimSpace(result.Stdout) != check.want {
+			result, err := a.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "systemctl", Args: []string{check.arg, service}})
+			if err != nil {
+				return fmt.Errorf("verify required service %s: %w", service, err)
+			}
+			if strings.TrimSpace(result.Stdout) != check.want {
 				return fmt.Errorf("required service %s is not %s after configuration", service, check.want)
 			}
 		}

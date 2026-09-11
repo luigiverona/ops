@@ -18,7 +18,7 @@ type minimalResolverRunner struct{ calls []run.Spec }
 func (r *minimalResolverRunner) Run(_ context.Context, s run.Spec) (run.Result, error) {
 	r.calls = append(r.calls, s)
 	if s.Name == "pacman" && s.Args[0] == "-T" {
-		return run.Result{Stdout: "base-devel\n"}, errors.New("unsatisfied")
+		return run.Result{Stdout: "base-devel\n"}, &run.Error{Name: "pacman", Err: dependencyExit(127)}
 	}
 	if s.Name == "pacman" && s.Args[0] == "-Sp" {
 		return run.Result{Stdout: "base-devel\t\ngcc\t\nmake\t\n"}, nil
@@ -31,10 +31,10 @@ func TestMinimalAURAndFlatpakResolutionHasNoBootstrapCommandCycle(t *testing.T) 
 	cfg, _ := config.Parse([]byte("version=2\naur=[\"example\"]\nflatpak=[\"org.example.App\"]"))
 	runner := &minimalResolverRunner{}
 	client := &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
-		body := "{}"
+		body := `{"id":"org.example.App"}`
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/rpc/"):
-			body = `{"resultcount":1,"results":[{"Name":"example","PackageBase":"example"}]}`
+			body = `{"version":5,"type":"multiinfo","resultcount":1,"results":[{"Name":"example","PackageBase":"example"}]}`
 		case strings.HasSuffix(r.URL.Path, "/info/refs"):
 			body = "001e# service=git-upload-pack\n0000" + packet(oid+" HEAD\x00object-format=sha1\n") + "0000"
 		case strings.Contains(r.URL.Path, ".SRCINFO"):

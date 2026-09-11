@@ -27,7 +27,7 @@ func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f
 
 func TestDisabledMultilibPackageResolvesThroughOfficialAPI(t *testing.T) {
 	client := &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
-		body := `{"valid":true,"results":[{"pkgname":"steam","repo":"multilib","arch":"x86_64","depends":["lib32-glibc"],"optdepends":[],"conflicts":[]}]}`
+		body := `{"version":2,"valid":true,"count":1,"page":1,"num_pages":1,"results":[{"pkgname":"steam","repo":"multilib","arch":"x86_64","depends":["lib32-glibc"],"optdepends":[],"conflicts":[]}]}`
 		return &http.Response{StatusCode: 200, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
 	})}
 	resolver := Resolver{Runner: missingRunner{}, Client: client}
@@ -87,7 +87,7 @@ func (f *dependencyRunner) Run(_ context.Context, spec run.Spec) (run.Result, er
 		if f.satisfied {
 			return run.Result{}, nil
 		}
-		return run.Result{Stdout: spec.Args[len(spec.Args)-1] + "\n"}, errors.New("exit 127")
+		return run.Result{Stdout: spec.Args[len(spec.Args)-1] + "\n"}, &run.Error{Name: "pacman", Err: dependencyExit(127)}
 	}
 	if len(spec.Args) > 0 && spec.Args[0] == "-Sp" {
 		return run.Result{Stdout: f.transaction}, nil

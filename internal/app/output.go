@@ -1,12 +1,15 @@
 package app
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/plan"
+	"github.com/luigiverona/ops/internal/run"
 	"github.com/luigiverona/ops/internal/ui"
 )
 
@@ -16,7 +19,7 @@ func planIssues(p plan.Plan) []issue {
 		if !application.State.Problem() {
 			continue
 		}
-		problems = append(problems, issue{State: titleState(string(application.State)), Name: application.Declaration.Identifier, Source: string(application.Declaration.Source), Cause: application.Cause, Impact: "application was not installed", Action: "check the declared identifier and source, then run ops again"})
+		problems = append(problems, issue{State: titleState(string(application.State)), Name: application.Declaration.Identifier, Source: string(application.Declaration.Source), Cause: application.Cause, Err: application.Err, Impact: "the declared application remains unmet", Action: applicationAction(application)})
 	}
 	return problems
 }
@@ -113,7 +116,7 @@ func (a Runtime) showPlan(p plan.Plan) {
 		fmt.Fprintln(a.Out, "\nRequired dependencies will be installed.")
 	}
 	for _, problem := range planIssues(p) {
-		fmt.Fprintf(a.Out, "\nCannot install %s: %s\n", ui.PrintableASCII(problem.Name), ui.PrintableASCII(problem.Cause))
+		fmt.Fprintf(a.Out, "\nCannot install %s: %s\n", ui.PrintableASCII(problem.Name), ui.PrintableASCII(ui.DiagnosticExcerpt(problem.Cause, false)))
 	}
 	if p.SSHHostKeyFreshness == plan.SSHHostKeyFreshnessUnavailable {
 		fmt.Fprintln(a.Out, "\nGitHub SSH host-key freshness unavailable; retry later.")
@@ -126,44 +129,7 @@ func (a Runtime) progress(message string) {
 }
 
 func (a Runtime) report(gitStatus, sshStatus, githubStatus string, problems []issue) {
-	if len(problems) > 0 {
-		fmt.Fprint(a.Out, "\nIssues\n")
-		states := []string{"Unresolved", "Unavailable", "Skipped", "Failed"}
-		for _, state := range states {
-			found := false
-			for _, problem := range problems {
-				if problem.State == state {
-					found = true
-					break
-				}
-			}
-			if !found {
-				continue
-			}
-			if state != "Skipped" {
-				fmt.Fprintf(a.Out, "\n%s\n", state)
-			}
-			for _, problem := range problems {
-				if problem.State != state {
-					continue
-				}
-				if state == "Skipped" {
-					fmt.Fprintf(a.Out, "Skipped %s.\n", ui.PrintableASCII(problem.Name))
-					continue
-				}
-				fmt.Fprintf(a.Out, "\n%s\n", ui.PrintableASCII(problem.Name))
-				fields := make([]ui.Field, 0, 5)
-				if problem.Source != "" {
-					fields = append(fields, ui.Field{Name: "source", Value: problem.Source})
-				}
-				if problem.Stage != "" {
-					fields = append(fields, ui.Field{Name: "stage", Value: problem.Stage})
-				}
-				fields = append(fields, ui.Field{Name: "cause", Value: problem.Cause}, ui.Field{Name: "impact", Value: problem.Impact}, ui.Field{Name: "action", Value: problem.Action})
-				fmt.Fprint(a.Out, ui.RenderFields(fields))
-			}
-		}
-	}
+	a.reportProblems(a.Out, problems)
 	if len(problems) > 0 {
 		fmt.Fprintln(a.Out, "Workstation setup incomplete.")
 		return
@@ -179,13 +145,67 @@ func (a Runtime) report(gitStatus, sshStatus, githubStatus string, problems []is
 	fmt.Fprintln(a.Out, "Workstation ready.")
 }
 
-func (a Runtime) fatal(err error) int {
-	a.renderFatal("ops", "", err, "workstation preparation could not safely continue")
-	return Fatal
+func (a Runtime) reportProblems(out io.Writer, problems []issue) {
+	if len(problems) > 0 {
+		fmt.Fprint(out, "\nIssues\n")
+		states := []string{"Unresolved", "Unavailable", "Skipped", "Failed", "Unmet"}
+		for _, state := range states {
+			found := false
+			for _, problem := range problems {
+				if problem.State == state {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+			if state != "Skipped" {
+				fmt.Fprintf(out, "\n%s\n", state)
+			}
+			for _, problem := range problems {
+				if problem.State != state {
+					continue
+				}
+				if state == "Skipped" {
+					fmt.Fprintf(out, "Skipped %s.\n", ui.PrintableASCII(problem.Name))
+					if problem.Observed != "" {
+						fmt.Fprintf(out, "  After setup: %s\n", ui.PrintableASCII(problem.Observed))
+						if problem.Action != "" {
+							fmt.Fprintf(out, "  %s\n", ui.PrintableASCII(problem.Action))
+						}
+					}
+					continue
+				}
+				fmt.Fprintf(out, "\n%s\n", ui.PrintableASCII(problem.Name))
+				fields := make([]ui.Field, 0, 5)
+				if problem.Source != "" {
+					fields = append(fields, ui.Field{Name: "source", Value: problem.Source})
+				}
+				if problem.Stage != "" {
+					fields = append(fields, ui.Field{Name: "stage", Value: problem.Stage})
+				}
+				fields = append(fields, ui.Field{Name: "cause", Value: ui.DiagnosticExcerpt(problem.Cause, false)})
+				if problem.Impact != "" {
+					fields = append(fields, ui.Field{Name: "impact", Value: problem.Impact})
+				}
+				fmt.Fprint(out, ui.RenderFields(fields))
+				reportEvidence(out, problem.Err)
+				fields = nil
+				if problem.Observed != "" {
+					fields = append(fields, ui.Field{Name: "after setup", Value: problem.Observed})
+				}
+				if problem.Action != "" {
+					fields = append(fields, ui.Field{Name: "action", Value: problem.Action})
+				}
+				fmt.Fprint(out, ui.RenderFields(fields))
+			}
+		}
+	}
 }
 
-func (a Runtime) coreFatal(name string, err error, impact string) int {
-	a.renderFatal(name, "core", err, impact)
+func (a Runtime) fatal(err error) int {
+	a.renderFatal("ops", "", err, "workstation preparation could not safely continue")
 	return Fatal
 }
 
@@ -203,8 +223,9 @@ func (a Runtime) renderFatal(name, stage string, err error, impact string) {
 	if name == "ops update" {
 		action = "resolve the error and run ops update again"
 	}
-	fields = append(fields, ui.Field{Name: "cause", Value: err.Error()}, ui.Field{Name: "impact", Value: impact}, ui.Field{Name: "action", Value: action})
+	fields = append(fields, ui.Field{Name: "cause", Value: ui.DiagnosticExcerpt(err.Error(), false)}, ui.Field{Name: "impact", Value: impact}, ui.Field{Name: "action", Value: action})
 	fmt.Fprint(a.Err, ui.RenderFields(fields))
+	reportEvidence(a.Err, err)
 	if name == "ops update" {
 		fmt.Fprintln(a.Err, "Update stopped.")
 	} else {
@@ -213,7 +234,7 @@ func (a Runtime) renderFatal(name, stage string, err error, impact string) {
 }
 
 func setupIssue(name string, err error) *issue {
-	return &issue{State: "Failed", Name: name, Stage: "setup", Cause: err.Error(), Impact: "setup is incomplete", Action: "resolve the error and run ops again"}
+	return &issue{State: "Failed", Name: name, Stage: "setup", Cause: err.Error(), Err: err, Component: setupComponent(name), Impact: "setup is incomplete", Action: "resolve the error and run ops again"}
 }
 
 func linePresent(output, want string) bool {
@@ -241,4 +262,59 @@ func sourceLabel(source config.Source) string {
 	default:
 		return string(source)
 	}
+}
+
+func setupComponent(name string) string {
+	switch name {
+	case "ssh-agent", "SSH":
+		return "SSH"
+	case "GitHub authentication", "GitHub authorization", "GitHub SSH keys", "GitHub SSH key", "GitHub SSH verification":
+		return "GitHub"
+	default:
+		return name
+	}
+}
+
+func applicationAction(application plan.Application) string {
+	if application.ConfirmedAbsent {
+		return "Check ~/.config/ops/apps.toml."
+	}
+	if application.State == plan.Unavailable {
+		return "Retry later."
+	}
+	if application.State.Actionable() {
+		return "Run ops again."
+	}
+	return "Resolve the reported prerequisite or build error, then run ops again."
+}
+
+func reportEvidence(out io.Writer, err error) {
+	seen := make(map[*run.Error]bool)
+	var report func(error)
+	report = func(err error) {
+		if command, ok := err.(*run.Error); ok {
+			if seen[command] || command.Presented {
+				return
+			}
+			seen[command] = true
+			excerpt := ui.DiagnosticExcerpt(command.Evidence, command.EvidenceTruncated)
+			if excerpt != "" {
+				fmt.Fprintln(out, "  Recent output:")
+				for _, line := range strings.Split(excerpt, "\n") {
+					fmt.Fprintf(out, "    %s\n", line)
+				}
+			}
+			return
+		}
+		if joined, ok := err.(interface{ Unwrap() []error }); ok {
+			for _, cause := range joined.Unwrap() {
+				report(cause)
+			}
+		} else {
+			if cause := errors.Unwrap(err); cause != nil {
+				report(cause)
+			}
+		}
+	}
+	report(err)
 }

@@ -53,8 +53,11 @@ func (f *doctorRunner) Run(_ context.Context, spec run.Spec) (run.Result, error)
 		return run.Result{Stdout: "user@example.com\n"}, nil
 	}
 	if spec.Name == "gh" {
+		if strings.Join(spec.Args, " ") == "config get user --host github.com" {
+			return run.Result{Stdout: "User\n"}, nil
+		}
 		if len(spec.Args) > 1 && spec.Args[0] == "auth" && spec.Args[1] == "status" {
-			return run.Result{}, nil
+			return run.Result{Stdout: `{"hosts":{"github.com":[{"host":"github.com","active":true,"state":"success"}]}}`}, nil
 		}
 		if len(spec.Args) > 0 && spec.Args[0] == "api" {
 			if f.managedKey != "" {
@@ -77,7 +80,7 @@ func (f *doctorRunner) Run(_ context.Context, spec run.Spec) (run.Result, error)
 	return run.Result{}, fmt.Errorf("unavailable")
 }
 
-func TestDoctorReportsUnavailableHostKeyFreshnessWithoutMutation(t *testing.T) {
+func TestDoctorHealthyOfflineWithoutMutation(t *testing.T) {
 	home := t.TempDir()
 	path := config.Path(home)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -119,7 +122,7 @@ func TestDoctorReportsUnavailableHostKeyFreshnessWithoutMutation(t *testing.T) {
 		SSHHTTP: metadata.Client(), SSHMetadataURL: metadata.URL,
 	}
 	code := runtime.Doctor(context.Background())
-	if code != Issues || !strings.Contains(out.String(), "GitHub SSH host-key freshness unavailable; retry later.") {
+	if code != Success || out.String() != "Workstation healthy.\n" {
 		t.Fatalf("code=%d\n%s", code, out.String())
 	}
 	after := readDoctorSSHFiles(t, sshDir)
@@ -131,7 +134,7 @@ func TestDoctorReportsUnavailableHostKeyFreshnessWithoutMutation(t *testing.T) {
 	for _, call := range fake.calls {
 		args := strings.Join(call.Args, " ")
 		if call.Name == "sudo" || strings.Contains(args, "enable --now") || call.Interactive ||
-			(call.Name == "gh" && !strings.HasPrefix(args, "auth status ") && !strings.HasPrefix(args, "api ")) ||
+			(call.Name == "gh" && args != "config get user --host github.com") ||
 			(call.Name == "ssh-add" && args != "-L") {
 			t.Fatalf("doctor mutated state: %#v", call)
 		}
@@ -173,7 +176,7 @@ func TestDoctorIsReadOnlyAndNeverUsesSudo(t *testing.T) {
 	for _, call := range fake.calls {
 		args := strings.Join(call.Args, " ")
 		if call.Name == "sudo" || strings.Contains(args, "enable --now") || call.Interactive ||
-			(call.Name == "gh" && !strings.HasPrefix(args, "auth status ") && !strings.HasPrefix(args, "api ")) ||
+			(call.Name == "gh" && args != "config get user --host github.com") ||
 			(call.Name == "ssh-add" && args != "-L") {
 			t.Fatalf("doctor mutated state: %#v", call)
 		}

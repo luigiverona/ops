@@ -26,6 +26,8 @@ type Workstation struct {
 	Home           string
 	SSHHTTP        *http.Client
 	SSHMetadataURL string
+	// SkipAgent keeps doctor focused on persisted managed configuration.
+	SkipAgent bool
 }
 
 // Local inspects package and user state without network calls or mutations.
@@ -36,28 +38,36 @@ func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 		Installed: map[string]bool{}, Explicit: map[string]bool{}, Foreign: map[string]bool{}, Flatpaks: map[string]bool{},
 		SSHHostKeyFreshness: plan.SSHHostKeyFreshnessUnknown,
 	}
-	if result, err := w.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qq"}}); err == nil {
+	if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Qq"}}); err == nil {
 		addLines(state.Installed, result.Stdout)
 	} else {
 		return state, err
 	}
-	if result, err := w.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qqm"}}); err == nil {
+	if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Qqm"}}); err == nil {
 		addLines(state.Foreign, result.Stdout)
+	} else if !run.Exited(err, 1) || strings.TrimSpace(result.Stdout+result.Stderr) != "" {
+		return state, fmt.Errorf("inspect foreign packages: %w", err)
 	}
-	if result, err := w.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qeq"}}); err == nil {
+	if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Qeq"}}); err == nil {
 		addLines(state.Explicit, result.Stdout)
 	} else {
 		return state, err
 	}
 	if state.Installed["flatpak"] {
-		if result, err := w.Runner.Run(ctx, run.Spec{Name: "flatpak", Args: []string{"list", "--user", "--app", "--columns=application"}}); err == nil {
+		if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "flatpak", Args: []string{"list", "--user", "--app", "--columns=application"}}); err == nil {
 			addLines(state.Flatpaks, result.Stdout)
+		} else {
+			return state, fmt.Errorf("inspect installed Flatpak applications: %w", err)
 		}
-		if result, err := w.Runner.Run(ctx, run.Spec{Name: "flatpak", Args: []string{"remotes", "--user", "--columns=name"}}); err == nil {
+
+		if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "flatpak", Args: []string{"remotes", "--user", "--columns=name"}}); err == nil {
 			for _, line := range strings.Fields(result.Stdout) {
 				state.Flathub = state.Flathub || line == "flathub"
 			}
+		} else {
+			return state, fmt.Errorf("inspect Flatpak remotes: %w", err)
 		}
+
 	}
 	path := w.PacmanConf
 	if path == "" {
@@ -72,11 +82,15 @@ func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 		return state, fmt.Errorf("read pacman configuration: %w", err)
 	}
 	if state.Installed["git"] {
-		if result, err := w.Runner.Run(ctx, run.Spec{Name: "git", Args: []string{"config", "--global", "--get", "user.name"}}); err == nil {
+		if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "git", Args: []string{"config", "--global", "--get", "user.name"}}); err == nil {
 			state.GitName = strings.TrimSpace(result.Stdout)
+		} else if !run.Exited(err, 1) || strings.TrimSpace(result.Stdout+result.Stderr) != "" {
+			return state, fmt.Errorf("inspect Git user.name: %w", err)
 		}
-		if result, err := w.Runner.Run(ctx, run.Spec{Name: "git", Args: []string{"config", "--global", "--get", "user.email"}}); err == nil {
+		if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "git", Args: []string{"config", "--global", "--get", "user.email"}}); err == nil {
 			state.GitEmail = strings.TrimSpace(result.Stdout)
+		} else if !run.Exited(err, 1) || strings.TrimSpace(result.Stdout+result.Stderr) != "" {
+			return state, fmt.Errorf("inspect Git user.email: %w", err)
 		}
 		if !gitops.ValidName(state.GitName) {
 			state.GitName = ""
@@ -102,8 +116,13 @@ func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 		}
 		state.UnrelatedSSHIdentities++
 	}
-	state.SSHConfigurationReady = state.ManagedSSHIdentity && sshManager.GitHubConfigured(ctx)
-	if state.Installed["openssh"] && (!state.ManagedSSHIdentity || !state.SSHConfigurationReady) {
+	if state.ManagedSSHIdentity {
+		state.SSHConfigurationReady, err = sshManager.InspectLocalGitHubConfiguration(ctx)
+		if err != nil {
+			return state, err
+		}
+	}
+	if !w.SkipAgent && state.Installed["openssh"] && (!state.ManagedSSHIdentity || !state.SSHConfigurationReady) {
 		agentIdentities, available, err := sshManager.AgentIdentities(ctx)
 		if err != nil {
 			return state, fmt.Errorf("inspect ssh-agent identities: %w", err)
@@ -123,12 +142,31 @@ func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 		if service == "" || !plan.IsInstalled(app, state) {
 			continue
 		}
-		enabled, e1 := w.Runner.Run(ctx, run.Spec{Name: "systemctl", Args: []string{"is-enabled", service}})
-		active, e2 := w.Runner.Run(ctx, run.Spec{Name: "systemctl", Args: []string{"is-active", service}})
+		enabled, e1 := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "systemctl", Args: []string{"is-enabled", service}})
+		knownDisabled := run.Exited(e1, 1) && serviceState(enabled.Stdout, "disabled", "masked", "masked-runtime", "linked", "linked-runtime")
+		knownMissing := run.Exited(e1, 4) && serviceState(enabled.Stdout, "not-found")
+		if e1 != nil && !(enabled.Stderr == "" && (knownDisabled || knownMissing)) {
+			return state, fmt.Errorf("inspect whether %s is enabled: %w", service, e1)
+		}
+		active, e2 := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "systemctl", Args: []string{"is-active", service}})
+		if e2 != nil && !((run.Exited(e2, 3) || run.Exited(e2, 4)) && active.Stderr == "" && serviceState(active.Stdout, "inactive", "failed", "activating", "deactivating", "maintenance", "unknown")) {
+			return state, fmt.Errorf("inspect whether %s is active: %w", service, e2)
+		}
 		state.Services[service] = e1 == nil && e2 == nil && strings.TrimSpace(enabled.Stdout) == "enabled" && strings.TrimSpace(active.Stdout) == "active"
 	}
 
 	return state, nil
+}
+
+// Match systemctl's fixed state output along with its documented exit status,
+// never a substring of a diagnostic such as a failed connection to the bus.
+func serviceState(value string, states ...string) bool {
+	for _, state := range states {
+		if strings.TrimSpace(value) == state {
+			return true
+		}
+	}
+	return false
 }
 
 // External resolves authenticated account state and host-key freshness read-only.
@@ -153,7 +191,13 @@ func (w Workstation) External(ctx context.Context, state plan.State) (plan.State
 		}
 	}
 	githubManager := githubops.Manager{Runner: w.Runner}
-	state.GitHubAuth = state.Installed["github-cli"] && githubManager.Authenticated(ctx)
+	if state.Installed["github-cli"] {
+		var err error
+		state.GitHubAuth, err = githubManager.InspectAuthentication(ctx)
+		if err != nil {
+			return state, err
+		}
+	}
 	if state.GitHubAuth {
 		keys, err := githubManager.Keys(ctx)
 		if err != nil {

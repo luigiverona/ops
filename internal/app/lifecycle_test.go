@@ -90,6 +90,12 @@ func (r *lifecycleRunner) Run(ctx context.Context, s run.Spec) (run.Result, erro
 		r.remoteKeys = fmt.Sprintf(`[{"id":1,"title":"managed","key":%q}]`, r.sshPublicKey)
 		return run.Result{}, nil
 	}
+	if s.Name == "gh" && args == "config get user --host github.com" {
+		if r.authenticated {
+			return run.Result{Stdout: "User\n"}, nil
+		}
+		return run.Result{}, nil
+	}
 	return r.prepareRunner.Run(ctx, s)
 }
 
@@ -208,14 +214,14 @@ func TestFinalInspectionDoesNotTrustSuccessfulMutations(t *testing.T) {
 	cfg := config.Config{Version: 2}
 	p := plan.Build(cfg, plan.State{}, nil)
 	code := a.preparePlan(context.Background(), cfg, p, ui.UI{In: strings.NewReader("y\nUser\nuser@example.com\n"), Out: out})
-	if code != Issues || !strings.Contains(out.String(), "re-inspection found remaining work") || strings.Contains(out.String(), "Workstation ready.") {
+	if code != Issues || !strings.Contains(out.String(), "required component is missing") || strings.Contains(out.String(), "Workstation ready.") {
 		t.Fatalf("unverified success=%d\n%s", code, out.String())
 	}
 }
 
 func TestInvalidConfigurationStopsBeforeWorkstationInspection(t *testing.T) {
 	for _, command := range []string{"ops", "doctor"} {
-		for _, data := range []string{"pacman=[]", "version=1", "version=0", "version=-1", "version=3", "version=\"2\"", "version=2\nunknown=[]", "version=["} {
+		for _, data := range []string{"pacman=[]", "version=1", "version=0", "version=-1", "version=3", "version=\"2\"", "version=2\nunknown=[]", "version=[", "version=2\nflatpak=[\"invalid\"]", "version=2\npacman=[\"--option\"]"} {
 			t.Run(command+"/"+data, func(t *testing.T) {
 				a, runner, out := minimalRuntime(t)
 				path := config.Path(a.Home)

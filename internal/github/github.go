@@ -28,9 +28,60 @@ type Manager struct{ Runner run.Runner }
 
 const sshKeyScope = "admin:public_key"
 
+// Configured checks the persisted account name without contacting GitHub or
+// requesting tokens. It does not verify remote key registration or live auth.
+func (m Manager) Configured(ctx context.Context) (bool, error) {
+	result, err := m.Runner.Run(ctx, run.Spec{Name: "gh", Args: []string{"config", "get", "user", "--host", "github.com"}})
+	if err != nil {
+		// gh exposes no structured missing-key result. Accept only its fixed
+		// local diagnostic with exit 1, never arbitrary config/parser errors.
+		if run.Exited(err, 1) && result.Stdout == "" && strings.TrimSpace(result.Stderr) == `could not find key "user"` {
+			return false, nil
+		}
+		return false, fmt.Errorf("read local GitHub account configuration: %w", err)
+	}
+	return strings.TrimSpace(result.Stdout) != "", nil
+}
+
 func (m Manager) Authenticated(ctx context.Context) bool {
 	_, err := m.Runner.Run(ctx, run.Spec{Name: "gh", Args: []string{"auth", "status", "--hostname", "github.com", "--active"}})
 	return err == nil
+}
+
+// InspectAuthentication preserves uncertainty: gh's plain exit status conflates
+// missing credentials, failed authentication, and network errors. Its JSON
+// response distinguishes an unconfigured host from a failed account check.
+func (m Manager) InspectAuthentication(ctx context.Context) (bool, error) {
+	result, err := m.Runner.Run(ctx, run.Spec{Name: "gh", Args: []string{"auth", "status", "--hostname", "github.com", "--active", "--json", "hosts"}})
+	if err != nil {
+		return false, fmt.Errorf("GitHub authentication query failed; retry later or run gh auth status to diagnose: %w", err)
+	}
+	var status struct {
+		Hosts map[string][]struct {
+			Host   string
+			Active bool
+			State  string
+		} `json:"hosts"`
+	}
+	if err := json.Unmarshal([]byte(result.Stdout), &status); err != nil || status.Hosts == nil {
+		return false, errors.New("GitHub authentication query returned invalid metadata; retry later or run gh auth status to diagnose")
+	}
+	entries := status.Hosts["github.com"]
+	if len(status.Hosts) == 0 {
+		return false, nil
+	}
+	if len(status.Hosts) != 1 || len(entries) != 1 || entries[0].Host != "github.com" || !entries[0].Active {
+		return false, errors.New("GitHub authentication query returned unexpected accounts; run gh auth status to diagnose")
+	}
+	if entries[0].State == "success" {
+		return true, nil
+	}
+	if entries[0].State == "timeout" {
+		return false, errors.New("GitHub authentication query timed out; retry later or run gh auth status to diagnose")
+	}
+	// Even gh's 'error' state includes transport failures. Do not blame the
+	// stored credentials or repeat its potentially private error text.
+	return false, errors.New("GitHub authentication could not be verified; retry later or run gh auth status to diagnose")
 }
 
 func (m Manager) Login(ctx context.Context) error {
@@ -143,9 +194,12 @@ func (m Manager) AddManaged(ctx context.Context, path string) (bool, error) {
 // VerifySSH accepts GitHub's intentional exit 1 when its success message proves authentication.
 func (m Manager) VerifySSH(ctx context.Context) error {
 	result, err := m.Runner.Run(ctx, run.Spec{
-		Name:  "ssh",
-		Args:  []string{"-o", "BatchMode=yes", "-T", "git@github.com"},
-		Stdin: strings.NewReader(""),
+		// This fixed BatchMode probe emits connection/authentication diagnostics,
+		// never key material or a passphrase prompt. gh auth/API output stays private.
+		FailureOutput: run.FailureStderr,
+		Name:          "ssh",
+		Args:          []string{"-o", "BatchMode=yes", "-T", "git@github.com"},
+		Stdin:         strings.NewReader(""),
 	})
 	combined := strings.ToLower(result.Stdout + "\n" + result.Stderr)
 	if strings.Contains(combined, "successfully authenticated") {

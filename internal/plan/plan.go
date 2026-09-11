@@ -96,6 +96,8 @@ type Application struct {
 	AURSigningKeys     []string // missing exact validpgpkeys planned for import
 	Services           []string
 	Cause              string
+	Err                error
+	ConfirmedAbsent    bool
 }
 
 // Plan is a complete, immutable plan presented before authorization.
