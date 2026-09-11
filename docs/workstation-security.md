@@ -3,8 +3,9 @@
 ## Approval and privilege
 
 Detection, configuration validation, inspection, resolution, and planning do
-not install prerequisites. The top-level plan is approved before sudo is
-requested. Ops-owned prompts stop on Ctrl-C; cancellation and EOF never grant
+not install prerequisites. One top-level setup approval precedes sudo;
+each AUR package has an additional default-no build/install approval after
+source review. Ops-owned prompts stop on Ctrl-C; cancellation and EOF never grant
 approval. Cancellation stops subsequent work without rolling back completed
 operations. Pacman owns the interactive full-upgrade
 transaction, including replacement/provider/key-import decisions. Later
@@ -29,14 +30,21 @@ declarative metadata and file contents before execution. The current source is
 never silently substituted.
 The built-in line-oriented source view uses a separate terminal screen where
 supported, keeping patches and helpers out of the normal run transcript. Enter
-advances through every page, `b` revisits a page, and `q` cancels this build;
-completion returns to one default-no build-and-install approval. The view names
+advances through every page and `b` revisits a page. `q` skips this application;
+completing review returns to one default-no build/install approval. The view names
 the declared package, differing package base, and pinned revision. Before
 approval, ops discloses normal-user execution and file access, any planned public
 signing-key imports, and selected sibling outputs. No external pager,
 shell hooks, or temporary review files are used. Dumb terminals retain a plain
 paginated view. Source controls are escaped before display; cancellation, EOF,
 or a failed review display cannot approve a build.
+
+Skipping with `q` or declining build/install approval allows other approved
+work to continue. The skipped declaration may remain unmet, so the final run
+can report incomplete setup. Ctrl-C cancels the entire process, stops subsequent
+work, and restores the source view's terminal screen. Earlier changes may remain;
+EOF also stops further work and never counts as approval.
+
 Normal-user makepkg receives EOF stdin and cannot delegate package installation
 through an interactive helper. Providers, version expressions, output closure,
 and concrete official dependency transactions are revalidated before mutation.
@@ -80,6 +88,13 @@ registration. Setup never deletes unrelated remote keys. The key summary is
 shown only when this run actually adds the managed key.
 The managed key has a fingerprint-derived title; duplicates are avoided and
 SSH access is verified after setup.
+
+This boundary manages GitHub SSH access, not arbitrary SSH hosts. Doctor checks
+persistent managed configuration without loading agent identities, unlocking
+keys, requesting credentials, querying account keys, refreshing host trust, or
+testing live GitHub SSH authentication. A healthy Doctor result does not certify
+the current network or authentication session. Setup checks the remote state
+needed for its work and may register the managed workstation key when absent.
 
 ## Releases
 

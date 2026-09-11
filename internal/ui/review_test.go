@@ -20,7 +20,7 @@ func TestReviewVisitsEveryPageAndKeepsApprovalInputSeparate(t *testing.T) {
 	if err := (UI{In: input, Out: &output}).Review(context.Background(), ReviewSource{Package: "example", PackageBase: "example", Revision: "abc"}, files); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"PKGBUILD", "fix.patch", "+patched", "helper\\x1b", "unsafe\\r\\x1b[31m\\u2603", "finish review"} {
+	for _, want := range []string{"PKGBUILD", "fix.patch", "+patched", "helper\\x1b", "unsafe\\r\\x1b[31m\\u2603", "finish review", "q: skip application"} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("missing %q: %s", want, &output)
 		}

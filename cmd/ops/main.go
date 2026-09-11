@@ -11,14 +11,17 @@ import (
 	"github.com/luigiverona/ops/internal/version"
 )
 
-const help = `ops prepares an official Arch Linux x86_64 workstation.
+const help = `ops reconciles an official Arch Linux x86_64 workstation.
 
 Usage:
-  ops
-  ops doctor
-  ops update
-  ops --help
-  ops --version`
+  ops                 Reconcile declared applications and managed configuration
+  ops doctor          Check persistent workstation readiness without changes
+  ops update          Update ops itself from a verified signed stable release
+  ops --help, -h       Show this help
+  ops --version, -v    Show the installed ops version
+
+Applications: ~/.config/ops/apps.toml
+Run as your normal user. Setup changes and updates require terminal approval.`
 
 func main() {
 	args := os.Args[1:]

@@ -82,7 +82,7 @@ func (u UI) Review(ctx context.Context, source ReviewSource, files []ReviewFile)
 		if index == len(pages)-1 {
 			next = "finish review"
 		}
-		if _, err := fmt.Fprintf(u.Out, "Enter: %s; b: back; q: cancel build > ", next); err != nil {
+		if _, err := fmt.Fprintf(u.Out, "Enter: %s; b: back; q: skip application > ", next); err != nil {
 			return err
 		}
 		answer, err := readLine(ctx, u.In)

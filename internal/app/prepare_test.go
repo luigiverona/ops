@@ -163,6 +163,9 @@ func TestPreparePlanDeclineRendersBeforeConfirmationAndDoesNotMutate(t *testing.
 	if !strings.Contains(text, "The system will be updated.") {
 		t.Fatalf("plan did not disclose pacman's transaction boundary:\n%s", text)
 	}
+	if !strings.HasSuffix(text, "No changes made.\n") {
+		t.Fatalf("missing decline ending:\n%s", text)
+	}
 }
 
 func TestPreparePlanProgressMatchesMutationOrder(t *testing.T) {

@@ -5,20 +5,54 @@ file only when absent. Existing files, including their comments, remain untouche
 Ops never rewrites or automatically migrates them.
 
 The `version` field identifies the apps.toml format, independently of the ops
-program version: `version = 2` means format 2, including when running ops 2.1.0.
+binary version: `version = 2` means format 2. Updating ops does not by itself
+change this format number.
 
 The generated default has empty application lists and comments explaining exact
 identifiers, the three sources, and where to find names. Git, SSH, and GitHub
-setup remains managed even with no declared applications. See the small current
-example in [README](../README.md#configuration); a file containing only
-`version = 2` is also valid.
+setup remains managed even with no declared applications. The path is relative
+to your home directory; ops does not use `XDG_CONFIG_HOME` to relocate it.
 
-Lists may be omitted or empty. Each identifier is exact and case-sensitive.
-Ops orders declarations by source (pacman, AUR, Flatpak), then identifier.
-Duplicates within a source, a package declared as both pacman and AUR, unknown fields, options, paths, version expressions,
-and malformed identifiers are rejected. A missing exact package is an actionable
+## Format 2
+
+These are the only supported top-level fields. `version` is a required integer;
+the three source lists are arrays of strings and may be omitted or empty:
+
+```toml
+version = 2
+pacman = []
+aur = []
+flatpak = []
+```
+
+A file containing only `version = 2` is also valid. There are no application
+categories or source prefixes inside these lists.
+
+Each identifier is exact and case-sensitive. Ops orders declarations by source
+(pacman, AUR, Flatpak), then identifier. Duplicates within a source, a package
+declared as both pacman and AUR, unknown fields, options, paths, version
+expressions, and malformed identifiers are rejected. A missing exact package is an actionable
 issue; ops does not search other sources. Removing a declaration never uninstalls
 anything. Optional dependencies must be declared explicitly if wanted.
+
+## Finding identifiers
+
+| List | Identifier | Discovery |
+| --- | --- | --- |
+| `pacman` | Exact official Arch package name | [Arch packages](https://archlinux.org/packages/) or `pacman -Ss SEARCH_TERM` |
+| `aur` | Exact AUR package name, not a differing package base | [AUR](https://aur.archlinux.org/) |
+| `flatpak` | Full, case-sensitive Flatpak application ID from Flathub | [Flathub](https://flathub.org/) or `flatpak search SEARCH_TERM` if Flatpak is installed and the remote is configured |
+
+Replace `SEARCH_TERM` with your search text. Copy the package name or full
+application ID, not a display title, search summary, version, or repository
+prefix. Source-native search helps you choose declarations; ops has no embedded
+catalog or search command. See the [README example](../README.md#configuration).
+
+The selected source is authoritative. A pacman declaration cannot fall back to
+AUR, and neither can fall back to Flatpak. A confirmed missing identifier calls
+for checking that declaration. An unavailable source or inconclusive query
+does not establish absence: address the query failure and retry when the source
+is accessible, without changing apps.toml merely because the lookup failed.
 
 ## Format diagnostics
 
