@@ -13,13 +13,14 @@ detect -> load -> local inspection -> external facts -> pure plan
 checks convergence; `applications.go` owns package/service application;
 `identity.go` coordinates Git/SSH/GitHub decisions; `doctor.go`, `update.go`, and
 `output.go` keep diagnostics, signed updates, and presentation separate.
-These are cohesive files in one orchestration package, not wrapper packages.
 
 `config` owns strict source-qualified intent. `inspect.Workstation.Local` reads
 the package database, Git identity, SSH files/agent, Flatpak inventory, required
 services, and pacman configuration without network access. `External` performs
 read-only authenticated account checks and authoritative host-key freshness
-checks. Missing optional executables are not invoked just to discover absence.
+checks for setup. Doctor uses local inspection with agent checks disabled; its
+source queries check only application availability, without AUR build preparation.
+Missing optional executables are not invoked just to discover absence.
 Malformed pacman configuration and unsafe managed SSH paths fail closed.
 
 `resolve.Applications` materializes facts only for missing exact declarations.
@@ -33,29 +34,33 @@ temporarily unavailable facts, invalid facts, and executable actions.
 Domain data flows into the planner; only orchestration and operation packages
 depend on `run.Runner`. `arch`, `aur`, `flatpak`, `git`, `ssh`, `github`, `pgp`,
 `sudo`, and `release` localize their security-sensitive operations. `aurmeta`
-parses declarative build metadata without executing PKGBUILD. No new Go runtime
-dependencies were added; TOML decoding remains the single external module.
+parses declarative build metadata without executing PKGBUILD. TOML decoding is
+the single external Go module.
 
 ## Canonical application order
 
 1. Validate official Arch x86_64 and normal-user execution; validate configuration.
 2. Inspect local state, obtain required external facts, and construct/present a plan.
-3. Confirm the plan. Acquire and refresh sudo only if privileged work is required.
+3. Present one top-level setup approval. Acquire and refresh sudo only if
+   privileged work is required.
 4. Prepare required repositories; perform one full interactive `pacman -Syu`
    before package installations. A no-op does not upgrade the system.
 5. Install missing foundational official packages and verify their presence.
 6. Configure user Flathub only for declared Flatpak applications.
 7. Apply applications in source/identifier order. Before each AUR build, fetch
-   the pinned commit, review tracked files, and revalidate source metadata and
-   dependency providers/transaction. Only after review, import exact required
+   the pinned commit, paginate tracked source files, obtain default-no
+   build/install approval, and revalidate source metadata and dependency
+   providers/transaction. Only after approval, import exact required
    PGP keys and install/verify its official build dependencies. Build as the
    normal user and install only validated, selected artifacts.
 8. Verify each application and configure/verify its required service. Services
    are deliberately adjacent to their owner; later unrelated apps may continue
    if one application fails.
 9. Configure Git, then SSH, then authenticate/reconcile GitHub keys when needed.
-10. Re-inspect actual local and remote state and rebuild the plan. Remaining
-    work is reported as incomplete, never assumed successful from child exits.
+10. After mutations, reinspect actual local and remote state and rebuild the
+    plan, including after a core failure. Remaining work is reported as
+    incomplete, never assumed successful from child exits. Cancellation or lost
+    interactive input stops further commands, including final reinspection.
 
 Flathub preparation precedes applications because it has only the verified
 Flatpak prerequisite; AUR dependencies are delayed until their own source review
@@ -63,19 +68,19 @@ so declining a build does not install its compiler toolchain. No uninstall or
 automatic orphan cleanup is performed. Core failures stop dependent execution;
 after a partial fatal failure use doctor before retrying.
 
-## Dependency audit
+## Managed dependencies
 
-| Dependency | Previously | Now | Capability / reason |
-| --- | --- | --- | --- |
-| git | Always, but required during its own planning | Always, used only after installation for mutations | Intentionally managed Git identity and Git transport for approved AUR builds |
-| openssh | Always | Always | Managed identity, effective configuration, GitHub SSH access |
-| github-cli | Always | Always | Intentional GitHub device authentication and account key reconciliation |
-| base-devel | Always through mandatory AUR bootstrap | Only when building a declared AUR package, or explicitly declared | makepkg's implicit build-tool baseline |
-| paru | Mandatory pinned bootstrap | Only if explicitly declared as an AUR app | ops already resolves, reviews, builds, and installs AUR content itself |
-| flatpak | Always | Only declared Flatpak capability or explicit package declaration | User-scoped Flatpak application installation |
-| flathub | Always | Only declared Flatpak applications | Exact configured Flatpak source |
-| compilers/build dependencies | Mandatory paru toolchain plus apps | Pinned AUR build's concrete official dependency transaction | Source-declared build/check/runtime requirements |
-| optional dependencies | Selected automatically one level deep | Only explicit declarations | No objective universally required feature |
+| Dependency | When managed | Capability / reason |
+| --- | --- | --- |
+| git | Always; mutations use it after installation | Managed Git identity and Git transport for approved AUR builds |
+| openssh | Always | Managed identity, effective configuration, GitHub SSH access |
+| github-cli | Always | GitHub device authentication and account key reconciliation |
+| base-devel | When building a declared AUR package, or explicitly declared | makepkg's implicit build-tool baseline |
+| paru | Only if explicitly declared as an AUR application | ops resolves, reviews, builds, and installs AUR content itself |
+| flatpak | Declared Flatpak capability or explicit package declaration | User-scoped Flatpak application installation |
+| flathub | Declared Flatpak applications | Exact configured Flatpak source |
+| compilers/build dependencies | Pinned AUR build's concrete official dependency transaction | Source-declared build/check/runtime requirements |
+| optional dependencies | Only explicit declarations | User-selected features |
 
 Core Git/SSH/GitHub capabilities remain intentionally always managed; users who
 do not want that opinionated scope should not run ops. `sudo`, `pacman`,
@@ -90,15 +95,10 @@ packages retain dependency reasons; pre-existing explicit official packages and
 declared official build dependencies stay explicit. Pacman manages ordinary
 required dependencies. Removing an app declaration never removes packages.
 
-## Root cause and regression boundaries
+## Source resolution and regression boundaries
 
-Previously `plan.Build` called `git ls-remote` to resolve mandatory paru while
-Git was missing but merely queued for installation. Planning failed before the
-queue could execute. Installing Git earlier behind the plan would hide the
-cycle, not solve it.
-
-There is no mandatory paru bootstrap now. For declared AUR work, bounded HTTPS
-Git smart-protocol reference discovery obtains the exact HEAD object ID without
+For declared AUR work, bounded HTTPS Git smart-protocol reference discovery
+obtains the exact HEAD object ID without
 a local Git executable. The same authenticated AUR service supplies revision-
 qualified `.SRCINFO`. Apply fetches exactly that object, verifies its ID, and
 compares reviewed metadata/files before build; no ref moves are followed.
@@ -124,12 +124,13 @@ device-authentication, or real AUR build acceptance; the VM gate remains require
 | Situation | Behavior |
 | --- | --- |
 | Missing plannable package/configuration | Missing/required status; doctor exits 1 without changing it |
-| Exact declaration not found | Unresolved application; unrelated approved work may proceed |
+| Exact declaration confirmed absent | Unresolved application; check identifier/source; unrelated approved work may proceed |
 | Remote transport/service unavailable | Unavailable diagnostic; retry without changing declarations |
 | Malformed facts or source drift | No affected application build/install; report cause and rerun/review guidance |
 | Authentication/scope missing | Explicit deferred login/refresh and key inspection, only after confirmation |
 | Top-level decline | Exit 0; no changes |
-| AUR review decline or failed application | Exit 1; retain successful unrelated work and report incomplete convergence |
+| AUR local skip, build/install decline, or failed application | Exit 1; retain successful unrelated work and report final observed state |
+| Cancellation or lost interactive input | Exit 2; no further work or final reinspection; earlier changes may remain |
 | Unsafe state, invalid config/platform, failed core prerequisite | Exit 2; stop dependent work |
 
 No-op with unavailable host-key freshness exits 1 and does not prompt or mutate.

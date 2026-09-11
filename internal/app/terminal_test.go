@@ -49,7 +49,7 @@ try:
                     os.write(master, b'User\n')
                     until(b'Git email: ')
             else:
-                until(b'q: cancel build > ')
+                until(b'q: skip application > ')
                 if mode == 'aur-approval':
                     os.write(master, b'\n')
                     until(b'Build and install paru? [y/N] ')
