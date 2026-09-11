@@ -34,7 +34,7 @@ func (a Runtime) Doctor(ctx context.Context) (code int) {
 	if err != nil {
 		return a.doctorFatal(fmt.Errorf("doctor could not inspect workstation: %w", err))
 	}
-	facts := resolve.Applications(ctx, cfg, state, resolve.Resolver{Runner: a.Runner, Client: a.SourceHTTP})
+	facts := resolve.ApplicationAvailability(ctx, cfg, state, resolve.Resolver{Runner: a.Runner, Client: a.SourceHTTP})
 	if ctx.Err() != nil {
 		return Fatal
 	}

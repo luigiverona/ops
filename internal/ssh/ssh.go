@@ -237,11 +237,7 @@ func (m Manager) ConfigureGitHub(ctx context.Context) error {
 	userConfigPath := filepath.Join(m.dir(), "ops_user_config")
 	knownHostsPath := filepath.Join(m.dir(), "ops_known_hosts")
 	legacy := []byte("Host github.com\n    HostName github.com\n    User git\n    IdentityFile ~/.ssh/ops\n    IdentitiesOnly yes\n")
-	identityPath, err := sshConfigArgument(filepath.Join(m.dir(), "ops"))
-	if err != nil {
-		return err
-	}
-	knownHostsArgument, err := sshConfigArgument(knownHostsPath)
+	managed, err := m.managedGitHubConfiguration()
 	if err != nil {
 		return err
 	}
@@ -249,7 +245,6 @@ func (m Manager) ConfigureGitHub(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	managed := []byte(fmt.Sprintf("%s\nHost github.com\n    HostName github.com\n    User git\n    IdentityFile %s\n    IdentitiesOnly yes\n    UserKnownHostsFile %s\n    StrictHostKeyChecking yes\n", managedMarker, identityPath, knownHostsArgument))
 	var existing []byte
 	if info, err := os.Lstat(configPath); err == nil {
 		if !info.Mode().IsRegular() {
@@ -335,7 +330,13 @@ func (m Manager) GitHubConfigured(ctx context.Context) bool {
 // InspectLocalGitHubConfiguration distinguishes incomplete managed files from
 // an inability to inspect effective SSH settings. It never contacts a server.
 func (m Manager) InspectLocalGitHubConfiguration(ctx context.Context) (bool, error) {
-	if !recognizedManagedFile(filepath.Join(m.dir(), "ops_config")) || !validManagedKnownHosts(filepath.Join(m.dir(), "ops_known_hosts")) {
+	managed, err := m.managedGitHubConfiguration()
+	if err != nil {
+		return false, err
+	}
+	// ssh -G can execute Match exec and resolve canonical hostnames. Only
+	// pass our exact inert configuration to it, not merely a marked file.
+	if !recognizedExactFile(filepath.Join(m.dir(), "ops_config"), managed) || !validManagedKnownHosts(filepath.Join(m.dir(), "ops_known_hosts")) {
 		return false, nil
 	}
 	configPath := filepath.Join(m.dir(), "config")
@@ -354,6 +355,18 @@ func (m Manager) InspectLocalGitHubConfiguration(ctx context.Context) (bool, err
 		return false, fmt.Errorf("inspect effective GitHub SSH configuration: %w", err)
 	}
 	return effectiveGitHubConfig(result.Stdout, m.Home), nil
+}
+
+func (m Manager) managedGitHubConfiguration() ([]byte, error) {
+	identityPath, err := sshConfigArgument(filepath.Join(m.dir(), "ops"))
+	if err != nil {
+		return nil, err
+	}
+	knownHosts, err := sshConfigArgument(filepath.Join(m.dir(), "ops_known_hosts"))
+	if err != nil {
+		return nil, err
+	}
+	return []byte(fmt.Sprintf("%s\nHost github.com\n    HostName github.com\n    User git\n    IdentityFile %s\n    IdentitiesOnly yes\n    UserKnownHostsFile %s\n    StrictHostKeyChecking yes\n", managedMarker, identityPath, knownHosts)), nil
 }
 
 // HostKeyFreshness records whether recognized managed host keys match current

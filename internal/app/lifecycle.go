@@ -50,6 +50,7 @@ func (r *execution) observe(p plan.Plan) {
 	r.git, r.ssh, r.github = p.GitStatus, p.SSHStatus, p.GitHubStatus
 	record := func(name, source, state string, unmet bool) bool {
 		r.unmet = r.unmet || unmet
+		matched := false
 		for i := range r.problems {
 			problem := &r.problems[i]
 			if source != "" && problem.Source == source && problem.Name == name || source == "" && problem.Source == "" && (problem.Component == name || problem.Name == name) {
@@ -57,8 +58,11 @@ func (r *execution) observe(p plan.Plan) {
 				if !unmet {
 					problem.Impact = ""
 				}
-				return true
+				matched = true
 			}
+		}
+		if matched {
+			return true
 		}
 		if unmet {
 			r.problems = append(r.problems, issue{State: "Unmet", Name: name, Source: source, Cause: state, Action: "Run ops again."})

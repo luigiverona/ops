@@ -99,3 +99,26 @@ func TestDiagnosticPreservesOrdinarySourceQueryReason(t *testing.T) {
 		t.Fatalf("ordinary query was hidden: %s", got)
 	}
 }
+
+func TestHostileDiagnosticPresentationBoundaries(t *testing.T) {
+	for _, hostile := range []string{
+		"\x1b[31mSGR\x1b[0m", "\x1b[2J\x1b[H", "\x1b]0;title\a",
+		"\x1b]8;;https://example.org\x1b\\link\x1b]8;;\x1b\\",
+		"\a\r\b\t\x7f\x00", "\xff\xfe\xc2", "\u202e\u2066\u200b",
+		"\x1bc\x1b[?2004h\x1b[200~paste\x1b[201~",
+	} {
+		for _, size := range []int{2047, 2048, 2049, 16384, 16385} {
+			value := strings.Repeat(".", size) + hostile + "\nfinal diagnostic"
+			got := DiagnosticExcerpt(value, false)
+			content := strings.TrimPrefix(got, "[earlier output omitted]\n")
+			if len(content) > DiagnosticBytes || len(strings.Split(content, "\n")) > DiagnosticLines || !strings.HasSuffix(got, "final diagnostic") || got != DiagnosticExcerpt(value, false) {
+				t.Fatalf("invalid excerpt for %q at %d", hostile, size)
+			}
+			for _, r := range got {
+				if r != '\n' && (r < 32 || r > 126) {
+					t.Fatalf("active terminal input %U", r)
+				}
+			}
+		}
+	}
+}

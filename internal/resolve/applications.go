@@ -26,6 +26,16 @@ type MetadataResolver interface {
 // pacman/vercmp are supplied by the supported base system; AUR and Flatpak
 // metadata use HTTPS and never need Git, makepkg, or flatpak executables.
 func Applications(ctx context.Context, cfg config.Config, state plan.State, resolver MetadataResolver) plan.Facts {
+	return applications(ctx, cfg, state, resolver, true)
+}
+
+// ApplicationAvailability checks missing declarations for doctor without
+// preparing AUR builds or opening GnuPG keyrings and their helper processes.
+func ApplicationAvailability(ctx context.Context, cfg config.Config, state plan.State, resolver MetadataResolver) plan.Facts {
+	return applications(ctx, cfg, state, resolver, false)
+}
+
+func applications(ctx context.Context, cfg config.Config, state plan.State, resolver MetadataResolver, prepareBuilds bool) plan.Facts {
 	facts := make(plan.Facts)
 	declaredPacman := make(map[string]bool)
 	declaredAUR := make(map[string]bool)
@@ -78,7 +88,7 @@ func Applications(ctx context.Context, cfg config.Config, state plan.State, reso
 		if declaration.Source == "pacman" {
 			app.EnableMultilib = metadata.Repository == "multilib"
 		}
-		if declaration.Source == "aur" {
+		if declaration.Source == "aur" && prepareBuilds {
 			pinned, cached := sources[metadata.PackageBase]
 			if !cached {
 				pinned.source, pinned.found, pinned.err = resolver.AURSource(ctx, metadata.PackageBase)

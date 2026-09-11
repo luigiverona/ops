@@ -289,16 +289,32 @@ func applicationAction(application plan.Application) string {
 }
 
 func reportEvidence(out io.Writer, err error) {
-	var command *run.Error
-	if !errors.As(err, &command) || command.Presented {
-		return
+	seen := make(map[*run.Error]bool)
+	var report func(error)
+	report = func(err error) {
+		if command, ok := err.(*run.Error); ok {
+			if seen[command] || command.Presented {
+				return
+			}
+			seen[command] = true
+			excerpt := ui.DiagnosticExcerpt(command.Evidence, command.EvidenceTruncated)
+			if excerpt != "" {
+				fmt.Fprintln(out, "  Recent output:")
+				for _, line := range strings.Split(excerpt, "\n") {
+					fmt.Fprintf(out, "    %s\n", line)
+				}
+			}
+			return
+		}
+		if joined, ok := err.(interface{ Unwrap() []error }); ok {
+			for _, cause := range joined.Unwrap() {
+				report(cause)
+			}
+		} else {
+			if cause := errors.Unwrap(err); cause != nil {
+				report(cause)
+			}
+		}
 	}
-	excerpt := ui.DiagnosticExcerpt(command.Evidence, command.EvidenceTruncated)
-	if excerpt == "" {
-		return
-	}
-	fmt.Fprintln(out, "  Recent output:")
-	for _, line := range strings.Split(excerpt, "\n") {
-		fmt.Fprintf(out, "    %s\n", line)
-	}
+	report(err)
 }

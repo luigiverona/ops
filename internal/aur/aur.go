@@ -139,10 +139,12 @@ func (m Manager) Build(ctx context.Context, source plan.AURSource, target string
 	if !sameFiles(files, currentFiles) {
 		return errors.New("reviewed AUR files changed before build")
 	}
-	if _, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureCombined, Name: "makepkg", Dir: repo, AllowTruncatedOutput: true, Stdin: strings.NewReader("")}); err != nil {
+	// Both invocations source reviewed shell code, which can print arbitrary
+	// private data. Build approval does not authorize diagnostic disclosure.
+	if _, err := m.Runner.Run(ctx, run.Spec{Name: "makepkg", Dir: repo, AllowTruncatedOutput: true, Stdin: strings.NewReader("")}); err != nil {
 		return err
 	}
-	result, err = m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "makepkg", Args: []string{"--packagelist"}, Dir: repo, Stdin: strings.NewReader("")})
+	result, err = m.Runner.Run(ctx, run.Spec{Name: "makepkg", Args: []string{"--packagelist"}, Dir: repo, Stdin: strings.NewReader("")})
 	if err != nil {
 		return err
 	}

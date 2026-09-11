@@ -147,7 +147,9 @@ only commands explicitly designated as logs may truncate captured output.
 Opted-in command failures retain at most 16 KiB of recent evidence and display
 at most 12 lines / 2 KiB, plus an explicit omission marker. Terminal controls
 are escaped, potentially sensitive output is withheld, and live output is not
-replayed. Credential and configuration dumps never opt in; the fixed BatchMode
+replayed. Reviewed makepkg code (including --packagelist) can emit arbitrary
+private data, so its output stays captured without diagnostic replay. Credential
+and configuration dumps never opt in; the fixed BatchMode
 SSH probe may report connection stderr. The privacy scan remembers markers
 before tail truncation and withholds overlong ambiguous escape sequences.
 Final inspection attaches observed state to earlier operation issues; inability

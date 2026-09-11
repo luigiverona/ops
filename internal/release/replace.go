@@ -64,7 +64,7 @@ func Replace(ctx context.Context, runner run.Runner, verified, target, version s
 	if hadTarget {
 		if _, restoreErr := runner.Run(context.WithoutCancel(ctx), run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "mv", "--", backup, target}}); restoreErr != nil {
 			keepBackup = true
-			return fmt.Errorf("update verification failed and prior binary restoration failed; backup retained at %s: %v", backup, restoreErr)
+			return fmt.Errorf("update verification failed and prior binary restoration failed; backup retained at %s: %w", backup, restoreErr)
 		}
 	} else {
 		if _, removeErr := runner.Run(context.WithoutCancel(ctx), run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "rm", "-f", "--", target}}); removeErr != nil {
