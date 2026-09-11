@@ -182,6 +182,10 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 				impact = "the declared application remains unmet"
 			}
 			action := "Run ops doctor before retrying."
+			var queryErr *resolve.QueryError
+			if errors.As(err, &queryErr) {
+				action = "Retry later."
+			}
 			if state == "Skipped" {
 				action = "Run ops again when ready to build the declared application."
 			}

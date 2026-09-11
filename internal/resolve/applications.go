@@ -2,6 +2,7 @@ package resolve
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -98,6 +99,10 @@ func Applications(ctx context.Context, cfg config.Config, state plan.State, reso
 			outputs, dependencies, packages, buildErr := resolveAURBuild(ctx, resolver, source, declaration.Identifier, declaredPacman, state.Installed, state.Explicit, state.Foreign)
 			if buildErr != nil {
 				app.State = "failed"
+				var queryErr *QueryError
+				if errors.As(buildErr, &queryErr) {
+					app.State = plan.Unavailable
+				}
 				app.Err = buildErr
 				app.Cause = "AUR build dependency resolution failed: " + buildErr.Error()
 				facts[declaration] = app

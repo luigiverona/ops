@@ -109,7 +109,7 @@ func (f *aurOrderRunner) Run(_ context.Context, spec run.Spec) (run.Result, erro
 			if f.dependenciesInstalled {
 				return run.Result{}, nil
 			}
-			return run.Result{Stdout: requirement + "\n"}, errors.New("exit 127")
+			return run.Result{Stdout: requirement + "\n"}, &run.Error{Name: "pacman", Err: diagnosticExit(127)}
 		}
 		if len(spec.Args) > 0 && spec.Args[0] == "-Sp" {
 			if len(spec.Args) > 4 && spec.Args[4] == "%n" {

@@ -108,7 +108,10 @@ func (f *prepareRunner) Run(_ context.Context, spec run.Spec) (run.Result, error
 	}
 	if spec.Name == "gh" && len(spec.Args) > 1 && spec.Args[0] == "auth" && spec.Args[1] == "status" {
 		if f.authenticated {
-			return run.Result{}, nil
+			return run.Result{Stdout: `{"hosts":{"github.com":[{"host":"github.com","active":true,"state":"success"}]}}`}, nil
+		}
+		if strings.Contains(joined, "--json hosts") {
+			return run.Result{Stdout: `{"hosts":{}}`}, nil
 		}
 		return run.Result{}, errors.New("not authenticated")
 	}

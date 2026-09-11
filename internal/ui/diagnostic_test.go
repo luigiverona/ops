@@ -59,6 +59,9 @@ func TestDiagnosticWithholdsSensitiveContent(t *testing.T) {
 		"GH_TOKEN=secret-value", "PASSWORD=secret-value", "api_key: secret-value", "https://user:secret@example.org/file",
 		"https://example.org/file?token=secret", "ghp_1234567890abcdef", "github_pat_1234_secret",
 		"-----BEGIN OPENSSH PRIVATE KEY-----\nopaque material\n-----END OPENSSH PRIVATE KEY-----",
+		"Author\x1b[31mization\x1b[0m: Bearer secret-value",
+		"pass\rword: secret-value", "--access-token secret-value",
+		"--password secret-value", "--api-key secret-value",
 	} {
 		got := DiagnosticExcerpt("build started\n"+line+"\n==> ERROR: Aborting", false)
 		if got != "[output withheld: potentially sensitive content]" {

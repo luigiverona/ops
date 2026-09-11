@@ -86,9 +86,9 @@ func (f *stateRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) 
 	case "gh":
 		if len(spec.Args) > 1 && spec.Args[0] == "auth" && spec.Args[1] == "status" {
 			if f.authenticated {
-				return run.Result{}, nil
+				return run.Result{Stdout: `{"hosts":{"github.com":[{"host":"github.com","active":true,"state":"success"}]}}`}, nil
 			}
-			return run.Result{}, errors.New("not authenticated")
+			return run.Result{Stdout: `{"hosts":{}}`}, nil
 		}
 		if len(spec.Args) > 0 && spec.Args[0] == "api" {
 			f.apiCalls++

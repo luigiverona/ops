@@ -18,7 +18,7 @@ type minimalResolverRunner struct{ calls []run.Spec }
 func (r *minimalResolverRunner) Run(_ context.Context, s run.Spec) (run.Result, error) {
 	r.calls = append(r.calls, s)
 	if s.Name == "pacman" && s.Args[0] == "-T" {
-		return run.Result{Stdout: "base-devel\n"}, errors.New("unsatisfied")
+		return run.Result{Stdout: "base-devel\n"}, &run.Error{Name: "pacman", Err: dependencyExit(127)}
 	}
 	if s.Name == "pacman" && s.Args[0] == "-Sp" {
 		return run.Result{Stdout: "base-devel\t\ngcc\t\nmake\t\n"}, nil

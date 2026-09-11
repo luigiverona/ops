@@ -131,6 +131,7 @@ type diagnosticBuffer struct {
 	sync.Mutex
 	data      []byte
 	truncated bool
+	privacy   privacyScan
 }
 
 const diagnosticLimit = 16 * 1024
@@ -139,6 +140,11 @@ func (b *diagnosticBuffer) Write(p []byte) (int, error) {
 	b.Lock()
 	defer b.Unlock()
 	n := len(p)
+	b.privacy.write(p)
+	if b.privacy.withheld {
+		b.data = nil
+		return n, nil
+	}
 	if n >= diagnosticLimit {
 		b.truncated = b.truncated || n > diagnosticLimit || len(b.data) > 0
 		b.data = append(b.data[:0], p[n-diagnosticLimit:]...)
@@ -152,7 +158,12 @@ func (b *diagnosticBuffer) Write(p []byte) (int, error) {
 	}
 	return n, nil
 }
-func (b *diagnosticBuffer) String() string { return string(b.data) }
+func (b *diagnosticBuffer) String() string {
+	if b.privacy.sensitive() {
+		return WithheldDiagnostic
+	}
+	return string(b.data)
+}
 
 // Error retains machine-readable stderr for existing local checks. Error() never
 // embeds output or arguments; presentation owns bounded, opt-in evidence.
@@ -171,3 +182,9 @@ func (e *Error) Error() string {
 }
 
 func (e *Error) Unwrap() error { return e.Err }
+
+// Exited reports a structured child exit code through wrapped command errors.
+func Exited(err error, code int) bool {
+	var exit interface{ ExitCode() int }
+	return errors.As(err, &exit) && exit.ExitCode() == code
+}

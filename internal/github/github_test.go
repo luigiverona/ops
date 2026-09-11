@@ -230,3 +230,80 @@ func equalStrings(got, want []string) bool {
 	}
 	return true
 }
+
+func TestConfiguredDoesNotQueryNetworkOrCredentials(t *testing.T) {
+	for _, tc := range []struct {
+		output     string
+		err        error
+		configured bool
+	}{
+		{"User\n", nil, true}, {"", nil, false}, {"", errors.New("configuration unreadable"), false},
+	} {
+		f := &fakeRunner{fn: func(s run.Spec) (run.Result, error) {
+			if s.Name != "gh" || strings.Join(s.Args, " ") != "config get user --host github.com" || s.Interactive || s.StreamOutput || s.FailureOutput != run.FailureNone {
+				t.Fatalf("unsafe local account query: %#v", s)
+			}
+			return run.Result{Stdout: tc.output}, tc.err
+		}}
+		configured, err := (Manager{Runner: f}).Configured(context.Background())
+		if configured != tc.configured || !errors.Is(err, tc.err) || len(f.calls) != 1 {
+			t.Fatalf("configured=%v err=%v", configured, err)
+		}
+	}
+}
+
+type configExit int
+
+func (e configExit) Error() string { return "local gh command failed" }
+func (e configExit) ExitCode() int { return int(e) }
+
+func TestConfiguredMissingKeyVersusInspectionFailure(t *testing.T) {
+	for _, tc := range []struct {
+		stderr  string
+		code    int
+		missing bool
+	}{
+		{`could not find key "user"` + "\n", 1, true},
+		{`could not find key "user"`, 2, false},
+		{"cannot read hosts.yml", 1, false},
+		{`invalid configuration: could not find key "user"`, 1, false},
+	} {
+		f := &fakeRunner{fn: func(s run.Spec) (run.Result, error) {
+			return run.Result{Stderr: tc.stderr}, &run.Error{Name: "gh", Err: configExit(tc.code)}
+		}}
+		configured, err := (Manager{Runner: f}).Configured(context.Background())
+		if configured || (err == nil) != tc.missing {
+			t.Fatalf("stderr=%q configured=%v err=%v", tc.stderr, configured, err)
+		}
+	}
+}
+
+func TestInspectAuthenticationPreservesUncertaintyAndPrivacy(t *testing.T) {
+	for _, tc := range []struct {
+		name, body    string
+		auth, failure bool
+	}{
+		{"not configured", `{"hosts":{}}`, false, false},
+		{"authenticated", `{"hosts":{"github.com":[{"host":"github.com","active":true,"state":"success"}]}}`, true, false},
+		{"timeout", `{"hosts":{"github.com":[{"host":"github.com","active":true,"state":"timeout","error":"secret-value"}]}}`, false, true},
+		{"error includes network failure", `{"hosts":{"github.com":[{"host":"github.com","active":true,"state":"error","error":"secret-value"}]}}`, false, true},
+		{"malformed", `{}`, false, true},
+		{"wrong account", `{"hosts":{"elsewhere":[]}}`, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeRunner{fn: func(s run.Spec) (run.Result, error) {
+				if strings.Join(s.Args, " ") != "auth status --hostname github.com --active --json hosts" || s.FailureOutput != run.FailureNone || s.Interactive || s.StreamOutput {
+					t.Fatalf("unsafe authentication inspection: %#v", s)
+				}
+				return run.Result{Stdout: tc.body}, nil
+			}}
+			auth, err := (Manager{Runner: f}).InspectAuthentication(context.Background())
+			if auth != tc.auth || (err != nil) != tc.failure {
+				t.Fatalf("auth=%v err=%v", auth, err)
+			}
+			if err != nil && (!strings.Contains(err.Error(), "gh auth status") || strings.Contains(err.Error(), "secret-value")) {
+				t.Fatalf("unsafe recovery: %v", err)
+			}
+		})
+	}
+}

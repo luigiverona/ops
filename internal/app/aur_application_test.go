@@ -90,7 +90,7 @@ func (r *applicationAURRunner) Run(_ context.Context, spec run.Spec) (run.Result
 			if requirement == "base-devel" || r.dependenciesInstalled {
 				return run.Result{}, nil
 			}
-			return run.Result{Stdout: requirement + "\n"}, errors.New("missing dependency")
+			return run.Result{Stdout: requirement + "\n"}, &run.Error{Name: "pacman", Err: diagnosticExit(127)}
 		}
 		if len(spec.Args) > 0 && spec.Args[0] == "-Sp" {
 			format := ""

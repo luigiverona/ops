@@ -1,8 +1,9 @@
 package ui
 
 import (
-	"regexp"
 	"strings"
+
+	"github.com/luigiverona/ops/internal/run"
 )
 
 // A dozen lines retains compiler context and makepkg's final error without
@@ -10,8 +11,6 @@ import (
 // so control characters and very long lines cannot expand the display limit.
 const DiagnosticLines = 12
 const DiagnosticBytes = 2048
-
-var sensitiveDiagnostic = regexp.MustCompile(`(?im)(authorization:|proxy-authorization:|cookie:|private key|\b(?:[a-z_][a-z0-9_]*token|token|password|passwd|secret|credential|api[_-]?key)["']?\s*[:=]|^[ \t+]*(?:export[ \t]+)?[A-Z_][A-Z0-9_]*=|https?://[^\s/]+@|[?&](?:token|key|secret|password)=|\bgh[pousr]_[A-Za-z0-9_]+|\bgithub_pat_[A-Za-z0-9_]+|^[A-Za-z0-9+/=]{64,}$)`)
 
 // DiagnosticExcerpt treats external text only as information. Sensitive-looking
 // output is withheld as a whole, including multiline private key material.
@@ -21,8 +20,8 @@ func DiagnosticExcerpt(value string, omitted bool) string {
 	if strings.TrimSpace(value) == "" {
 		return ""
 	}
-	if sensitiveDiagnostic.MatchString(value) {
-		return "[output withheld: potentially sensitive content]"
+	if value == run.WithheldDiagnostic || run.SensitiveDiagnostic(value) {
+		return run.WithheldDiagnostic
 	}
 	// Bound work even for injected runners and non-command errors.
 	if len(value) > 16*1024 {

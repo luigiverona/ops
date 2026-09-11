@@ -133,11 +133,25 @@ device-authentication, or real AUR build acceptance; the VM gate remains require
 | Unsafe state, invalid config/platform, failed core prerequisite | Exit 2; stop dependent work |
 
 No-op with unavailable host-key freshness exits 1 and does not prompt or mutate.
-Doctor never calls login, sudo, installation, or file replacement. Command
-inspection uses the C locale, EOF stdin, and bounded complete output. Successful
-build logs stay captured; approved pacman installs stream native output
+Doctor never calls login, sudo, installation, or file replacement. Workstation
+health means local managed configuration readiness: doctor checks the persisted
+GitHub account name without requesting credentials, remote key registration,
+host-key freshness, or live authentication. Setup still verifies remote state.
+Missing application declarations may require read-only source queries; an
+inconclusive query receives retry guidance, never a guessed absence.
+
+Command inspection uses the C locale, EOF stdin, and bounded complete output.
+Successful build logs stay captured; approved pacman installs stream native output
 without acquiring stdin. Streaming does not relax capture limits for inspection;
 only commands explicitly designated as logs may truncate captured output.
+Opted-in command failures retain at most 16 KiB of recent evidence and display
+at most 12 lines / 2 KiB, plus an explicit omission marker. Terminal controls
+are escaped, potentially sensitive output is withheld, and live output is not
+replayed. Credential and configuration dumps never opt in; the fixed BatchMode
+SSH probe may report connection stderr. The privacy scan remembers markers
+before tail truncation and withholds overlong ambiguous escape sequences.
+Final inspection attaches observed state to earlier operation issues; inability
+to inspect is reported separately and never guessed to mean missing state.
 
 Presentation summarizes only planned work: a user-scoped Flatpak-only install
 does not announce a system upgrade. The AUR source view is separate from normal

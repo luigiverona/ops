@@ -7,12 +7,15 @@ import (
 	"os"
 
 	"github.com/luigiverona/ops/internal/config"
+	githubops "github.com/luigiverona/ops/internal/github"
+	"github.com/luigiverona/ops/internal/inspect"
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/resolve"
 	"github.com/luigiverona/ops/internal/ui"
 )
 
-// Doctor performs the same detection and planning inspections without mutation or sudo.
+// Doctor checks managed local configuration. Live account/key verification
+// belongs to setup; an offline session is not an unhealthy workstation.
 func (a Runtime) Doctor(ctx context.Context) (code int) {
 	a, finish := a.withInterruption(ctx, "doctor")
 	defer finish(&code)
@@ -27,7 +30,7 @@ func (a Runtime) Doctor(ctx context.Context) (code int) {
 	if configErr != nil && !missingConfig {
 		return a.doctorFatal(fmt.Errorf("doctor could not inspect configuration: %w", configErr))
 	}
-	state, err := a.inspectState(ctx, cfg)
+	state, err := (inspect.Workstation{Applications: cfg.Applications, Runner: a.Runner, Home: a.Home, PacmanConf: a.PacmanConf, SkipAgent: true}).Local(ctx)
 	if err != nil {
 		return a.doctorFatal(fmt.Errorf("doctor could not inspect workstation: %w", err))
 	}
@@ -36,6 +39,21 @@ func (a Runtime) Doctor(ctx context.Context) (code int) {
 		return Fatal
 	}
 	p := plan.Build(cfg, state, facts)
+	// Build also plans remote reconciliation for setup. Doctor reports only
+	// the local configuration it inspected, without inventing remote facts.
+	p.SSHHostKeyFreshness = plan.SSHHostKeyFreshnessUnknown
+	if state.ManagedSSHIdentity && state.SSHConfigurationReady {
+		p.SSHStatus = "ready"
+	}
+	if state.Installed["github-cli"] {
+		configured, err := (githubops.Manager{Runner: a.Runner}).Configured(ctx)
+		if err != nil {
+			return a.doctorFatal(fmt.Errorf("could not inspect local GitHub configuration; run gh auth status to diagnose: %w", err))
+		}
+		if configured {
+			p.GitHubStatus = "ready"
+		}
+	}
 	return a.reportDoctor(p, configErr, missingConfig)
 }
 
@@ -107,5 +125,6 @@ func (a Runtime) doctorFatal(err error) int {
 	fmt.Fprintln(a.Err, "Inspection could not be completed.")
 	fmt.Fprint(a.Err, ui.RenderFields([]ui.Field{{Name: "cause", Value: ui.DiagnosticExcerpt(err.Error(), false)}}))
 	reportEvidence(a.Err, err)
+	fmt.Fprintln(a.Err, "Resolve the inspection error and run ops doctor again.")
 	return Fatal
 }

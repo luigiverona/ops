@@ -27,6 +27,13 @@ type Resolver struct {
 	Client *http.Client
 }
 
+// QueryError marks an inconclusive repository operation at its origin, before
+// dependency/build context wraps it. Display text never determines recovery.
+type QueryError struct{ Err error }
+
+func (e *QueryError) Error() string { return "could not query official repositories: " + e.Err.Error() }
+func (e *QueryError) Unwrap() error { return e.Err }
+
 // UserPGPKey reports whether the normal user's keyring has exactly fingerprint.
 func (r Resolver) UserPGPKey(ctx context.Context, fingerprint string) (bool, error) {
 	return (pgp.Manager{Runner: r.Runner}).Has(ctx, fingerprint)
@@ -56,6 +63,10 @@ func (r Resolver) Pacman(ctx context.Context, name string) (plan.Package, bool, 
 
 func (r Resolver) archPackage(ctx context.Context, name string) (plan.Package, bool, error) {
 	var response struct {
+		Version int  `json:"version"`
+		Count   *int `json:"count"`
+		Page    int  `json:"page"`
+		Pages   int  `json:"num_pages"`
 		Valid   bool `json:"valid"`
 		Results []struct {
 			Name         string `json:"pkgname"`
@@ -63,22 +74,22 @@ func (r Resolver) archPackage(ctx context.Context, name string) (plan.Package, b
 			Architecture string `json:"arch"`
 		} `json:"results"`
 	}
-	endpoint := "https://archlinux.org/packages/search/json/?name=" + url.QueryEscape(name) + "&arch=x86_64"
+	endpoint := "https://archlinux.org/packages/search/json/?name=" + url.QueryEscape(name) + "&arch=x86_64&arch=any&repo=Core&repo=Extra&repo=Multilib"
 	status, err := r.getJSON(ctx, endpoint, &response)
 	if err != nil {
 		return plan.Package{}, false, err
 	}
-	if status != http.StatusOK || !response.Valid || response.Results == nil {
+	if status != http.StatusOK || response.Version != 2 || !response.Valid || response.Results == nil || response.Count == nil || *response.Count != len(response.Results) || response.Page != 1 || response.Pages != 1 {
 		return plan.Package{}, false, errors.New("official repository query returned an invalid response")
 	}
 	for _, result := range response.Results {
 		if result.Name != name || (result.Architecture != "x86_64" && result.Architecture != "any") {
-			continue
+			return plan.Package{}, false, errors.New("official repository query returned unexpected package metadata")
 		}
 		switch result.Repository {
 		case "core", "extra", "multilib":
 		default:
-			continue
+			return plan.Package{}, false, errors.New("official repository query returned an unexpected repository")
 		}
 		return plan.Package{Name: name, Repository: result.Repository}, true, nil
 	}
@@ -164,13 +175,13 @@ func (r Resolver) OfficialDependency(ctx context.Context, requirement string) (p
 		binding.Satisfied = true
 		return binding, nil
 	}
-	if strings.TrimSpace(result.Stdout) != requirement {
+	if !run.Exited(err, 127) || strings.TrimSpace(result.Stdout) != requirement || strings.TrimSpace(result.Stderr) != "" {
 		return binding, fmt.Errorf("inspect installed dependency: %w", err)
 	}
 	format := "%n\t%P"
 	result, err = r.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Sp", "--needed", "--noconfirm", "--print-format", format, "--", requirement}})
 	if err != nil {
-		return binding, err
+		return binding, &QueryError{Err: err}
 	}
 	want := aurmeta.DependencyName(requirement)
 	if want == "" {
@@ -180,11 +191,11 @@ func (r Resolver) OfficialDependency(ctx context.Context, requirement string) (p
 	packages := make(map[string]bool)
 	records, err := parseProviderTransaction(result.Stdout)
 	if err != nil {
-		return binding, fmt.Errorf("pacman returned invalid transaction metadata for %q: %w", requirement, err)
+		return binding, &QueryError{Err: fmt.Errorf("pacman returned invalid transaction metadata for %q: %w", requirement, err)}
 	}
 	for _, record := range records {
 		if packages[record.Name] {
-			return binding, fmt.Errorf("pacman returned invalid or duplicate transaction metadata for %q", requirement)
+			return binding, &QueryError{Err: fmt.Errorf("pacman returned invalid or duplicate transaction metadata for %q", requirement)}
 		}
 		packages[record.Name] = true
 		if record.Name == want || providesName(record.Provides, want) {
@@ -192,7 +203,7 @@ func (r Resolver) OfficialDependency(ctx context.Context, requirement string) (p
 		}
 	}
 	if len(candidates) != 1 {
-		return binding, fmt.Errorf("pacman selected %d concrete providers for %q", len(candidates), requirement)
+		return binding, &QueryError{Err: fmt.Errorf("pacman selected %d concrete providers for %q", len(candidates), requirement)}
 	}
 	for name := range candidates {
 		binding.Provider = name
@@ -255,7 +266,7 @@ func (r Resolver) OfficialTransaction(ctx context.Context, packages []string) ([
 	args = append(args, packages...)
 	result, err := r.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: args})
 	if err != nil {
-		return nil, err
+		return nil, &QueryError{Err: err}
 	}
 	seen := make(map[string]bool)
 	var transaction []string
@@ -265,7 +276,7 @@ func (r Resolver) OfficialTransaction(ctx context.Context, packages []string) ([
 			continue
 		}
 		if !packageName.MatchString(name) || seen[name] {
-			return nil, errors.New("pacman returned invalid or duplicate concrete transaction metadata")
+			return nil, &QueryError{Err: errors.New("pacman returned invalid or duplicate concrete transaction metadata")}
 		}
 		seen[name] = true
 		transaction = append(transaction, name)
@@ -312,10 +323,10 @@ func (r Resolver) Flatpak(ctx context.Context, id string) (bool, error) {
 	if err := json.Unmarshal(data, &response); err != nil {
 		return false, fmt.Errorf("malformed Flathub response: %w", err)
 	}
-	// Only the API's application-specific 404 is an absence result. A proxy
-	// error or a missing endpoint says nothing about this declaration.
+	// Flathub also returns this 404 for missing AppStream metadata and EOL
+	// entries. It does not prove that the exact Flatpak ref is absent.
 	if status == http.StatusNotFound && response.Detail == "App not found" {
-		return false, nil
+		return false, errors.New("Flathub has no current application metadata; exact availability could not be confirmed")
 	}
 	if status != http.StatusOK || response.ID != id {
 		return false, errors.New("Flathub query returned an invalid response")

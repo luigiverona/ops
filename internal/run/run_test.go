@@ -174,3 +174,44 @@ func TestEvidenceDoesNotExposeUnapprovedOutputOrArguments(t *testing.T) {
 		t.Fatal("private command context exposed")
 	}
 }
+
+func TestEvidenceWithholdsSecretsBeforeTailTruncation(t *testing.T) {
+	for _, marker := range []string{
+		"-----BEGIN OPENSSH PRIVATE KEY-----\n", "Authorization: Bearer opaque\n", "export SESSION_SECRET=opaque\n",
+		"Author\x1b[31mization\x1b[0m: Bearer opaque\n", "--password opaque\n",
+		"Author" + strings.Repeat("\x1b[0m", 300) + "ization: Bearer opaque\n",
+		"pass" + strings.Repeat("\r", 1200) + "word: opaque\n",
+		"Author\x1b]0;" + strings.Repeat("title ", 300) + "\aization: Bearer opaque\n",
+	} {
+		for _, chunkSize := range []int{1, 7, 512, 32768} {
+			var b diagnosticBuffer
+			value := marker + strings.Repeat("private material with spaces\n", 2000) + "final build error"
+			for len(value) > 0 {
+				n := min(chunkSize, len(value))
+				_, _ = b.Write([]byte(value[:n]))
+				value = value[n:]
+			}
+			if b.String() != WithheldDiagnostic || len(b.data) != 0 {
+				t.Fatalf("chunk size %d disclosed sensitive tail", chunkSize)
+			}
+		}
+	}
+}
+
+func TestEvidenceRetentionDoesNotDependOnWriteChunks(t *testing.T) {
+	value := strings.Repeat("compiling ordinary source file\n", 900) + "last compiler error\n"
+	var want string
+	for _, size := range []int{1, 17, 512, 4096, len(value)} {
+		var b diagnosticBuffer
+		for start := 0; start < len(value); start += size {
+			_, _ = b.Write([]byte(value[start:min(start+size, len(value))]))
+		}
+		if !b.truncated || !strings.HasSuffix(b.String(), "last compiler error\n") {
+			t.Fatal("missing diagnostic tail")
+		}
+		if want != "" && b.String() != want {
+			t.Fatalf("write size %d changed retained evidence", size)
+		}
+		want = b.String()
+	}
+}
