@@ -97,6 +97,9 @@ func (r Resolver) archPackage(ctx context.Context, name string) (plan.Package, b
 }
 
 func (r Resolver) AUR(ctx context.Context, name string) (plan.Package, bool, error) {
+	if !aurmeta.ValidPackageName(name) {
+		return plan.Package{}, false, errors.New("invalid AUR package name")
+	}
 	var response struct {
 		Version     int    `json:"version"`
 		Type        string `json:"type"`

@@ -57,12 +57,43 @@ pkgname = example
 }
 
 func TestParseRejectsUnsafePackageIdentityPaths(t *testing.T) {
-	for _, source := range []string{
-		"pkgbase = ../escape\npkgver = 1\npkgrel = 1\npkgname = example\n",
-		"pkgbase = example\npkgver = 1\npkgrel = 1\npkgname = ../escape\n",
-	} {
-		if _, err := Parse([]byte(source)); err == nil {
-			t.Fatalf("unsafe package identity was accepted: %q", source)
+	for _, name := range []string{"../escape", ".", ".."} {
+		for _, source := range []string{
+			"pkgbase = " + name + "\npkgver = 1\npkgrel = 1\npkgname = example\n",
+			"pkgbase = example\npkgver = 1\npkgrel = 1\npkgname = " + name + "\n",
+		} {
+			if _, err := Parse([]byte(source)); err == nil {
+				t.Fatalf("unsafe package identity was accepted: %q", source)
+			}
+		}
+	}
+}
+
+func TestValidPackageNameRejectsDotPathsAndPreservesExistingNames(t *testing.T) {
+	for _, name := range []string{".", "..", "", "../escape", "-option", "a/b", "a b"} {
+		if ValidPackageName(name) {
+			t.Errorf("accepted invalid package name %q", name)
+		}
+	}
+	for _, name := range []string{"paru", "browser-bin", "libalpm.so", "python3", "A_Z@1.+-git", ".pkg", "..pkg", "pkg..", "...", "_", "+", "@"} {
+		if !ValidPackageName(name) {
+			t.Errorf("rejected previously valid package name %q", name)
+		}
+	}
+}
+
+func TestDependencyNamesRejectDotPaths(t *testing.T) {
+	for _, name := range []string{".", ".."} {
+		for _, expression := range []string{name, name + "=1"} {
+			if _, err := ParseDependency(expression); err == nil {
+				t.Errorf("accepted dependency %q", expression)
+			}
+			if _, err := ParseProvide(expression); err == nil {
+				t.Errorf("accepted provide %q", expression)
+			}
+			if _, err := ParseOptionalDependency(expression + ": integration"); err == nil {
+				t.Errorf("accepted optional dependency %q", expression)
+			}
 		}
 	}
 }

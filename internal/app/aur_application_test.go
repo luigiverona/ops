@@ -51,10 +51,10 @@ func (r *applicationAURRunner) Run(_ context.Context, spec run.Spec) (run.Result
 		case strings.HasPrefix(args, "-n stat --format=%u\t%f\t%h -- "):
 			path := spec.Args[len(spec.Args)-1]
 			if path == "/var/tmp" {
-				return run.Result{Stdout: "0\t43ff\t1\n"}, nil
+				return run.Result{Stdout: "0\t43ff\t2\n"}, nil
 			}
 			if path == r.stageDir {
-				return run.Result{Stdout: "0\t41c0\t1\n"}, nil
+				return run.Result{Stdout: "0\t41c0\t2\n"}, nil
 			}
 			return run.Result{Stdout: "0\t8180\t1\n"}, nil
 		case strings.HasPrefix(args, "-n mktemp --directory --tmpdir=/var/tmp "):

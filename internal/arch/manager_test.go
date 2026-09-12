@@ -3,6 +3,7 @@ package arch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -140,9 +141,9 @@ func (f *artifactStageRunner) Run(_ context.Context, spec run.Spec) (run.Result,
 		path := args[len(args)-1]
 		switch {
 		case path == artifactStageParent:
-			return run.Result{Stdout: "0\t43ff\t1\n"}, nil // root, sticky 01777 directory
+			return run.Result{Stdout: "0\t43ff\t2\n"}, nil // root, sticky 01777 directory
 		case path == f.stageDir:
-			return run.Result{Stdout: "0\t41c0\t1\n"}, nil // root 0700 directory
+			return run.Result{Stdout: "0\t41c0\t2\n"}, nil // root 0700 directory
 		case strings.HasPrefix(path, f.stageDir+string(os.PathSeparator)):
 			return run.Result{Stdout: "0\t8180\t1\n"}, nil // root 0600 regular file
 		}
@@ -231,6 +232,57 @@ func (f *artifactStageRunner) Run(_ context.Context, spec run.Spec) (run.Result,
 
 func newArtifactStageRunner() *artifactStageRunner {
 	return &artifactStageRunner{stageDir: "/var/tmp/ops-paru-ABCDEFGH", staged: make(map[string][]byte)}
+}
+
+type protectedStatRunner struct{ output string }
+
+func (r protectedStatRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
+	if spec.Name != "sudo" || strings.Join(spec.Args, " ") != "-n stat --format=%u\t%f\t%h -- /protected/path" {
+		return run.Result{}, errors.New("unexpected protected stat command")
+	}
+	return run.Result{Stdout: r.output}, nil
+}
+
+func TestValidateProtectedPathDirectoryAndFileInvariants(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		directory        bool
+		uid, mode, links uint64
+		wantError        bool
+	}{
+		{"directory two links", true, 0, syscall.S_IFDIR | 0o700, 2, false},
+		{"directory five links", true, 0, syscall.S_IFDIR | 0o755, 5, false},
+		{"directory unsafe owner", true, 1000, syscall.S_IFDIR | 0o700, 2, true},
+		{"directory group writable", true, 0, syscall.S_IFDIR | 0o720, 2, true},
+		{"directory other writable", true, 0, syscall.S_IFDIR | 0o702, 2, true},
+		{"directory sticky writable", true, 0, syscall.S_IFDIR | syscall.S_ISVTX | 0o777, 2, true},
+		{"directory is regular file", true, 0, syscall.S_IFREG | 0o600, 1, true},
+		{"directory is symlink", true, 0, syscall.S_IFLNK | 0o700, 1, true},
+		{"file single link", false, 0, syscall.S_IFREG | 0o600, 1, false},
+		{"file multiple links", false, 0, syscall.S_IFREG | 0o600, 2, true},
+		{"file no links", false, 0, syscall.S_IFREG | 0o600, 0, true},
+		{"file unsafe owner", false, 1000, syscall.S_IFREG | 0o600, 1, true},
+		{"file group writable", false, 0, syscall.S_IFREG | 0o620, 1, true},
+		{"file other writable", false, 0, syscall.S_IFREG | 0o602, 1, true},
+		{"file is directory", false, 0, syscall.S_IFDIR | 0o700, 2, true},
+		{"file is symlink", false, 0, syscall.S_IFLNK | 0o700, 1, true},
+		{"file is fifo", false, 0, syscall.S_IFIFO | 0o600, 1, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := protectedStatRunner{output: fmt.Sprintf("%d\t%x\t%d\n", test.uid, test.mode, test.links)}
+			err := (Manager{Runner: runner}).validateProtectedPath(context.Background(), "/protected/path", test.directory)
+			if (err != nil) != test.wantError {
+				t.Fatalf("stat=%q err=%v wantError=%v", runner.output, err, test.wantError)
+			}
+		})
+	}
+	for _, directory := range []bool{true, false} {
+		for _, output := range []string{"", "0\t41c0\tinvalid\n", "0\t41c0\t2\n0\t41c0\t2\n"} {
+			if err := (Manager{Runner: protectedStatRunner{output: output}}).validateProtectedPath(context.Background(), "/protected/path", directory); err == nil {
+				t.Fatalf("accepted malformed stat: directory=%v output=%q", directory, output)
+			}
+		}
+	}
 }
 
 func TestInstallArtifactsBindsStagedBytesAndExcludesDebug(t *testing.T) {

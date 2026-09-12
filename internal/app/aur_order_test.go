@@ -60,9 +60,9 @@ func (f *aurOrderRunner) Run(_ context.Context, spec run.Spec) (run.Result, erro
 			path := spec.Args[len(spec.Args)-1]
 			switch {
 			case path == "/var/tmp":
-				return run.Result{Stdout: "0\t43ff\t1\n"}, nil
+				return run.Result{Stdout: "0\t43ff\t2\n"}, nil
 			case path == f.stageDir:
-				return run.Result{Stdout: "0\t41c0\t1\n"}, nil
+				return run.Result{Stdout: "0\t41c0\t2\n"}, nil
 			default:
 				return run.Result{Stdout: "0\t8180\t1\n"}, nil
 			}
