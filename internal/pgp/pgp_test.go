@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/luigiverona/ops/internal/aurmeta"
 	"github.com/luigiverona/ops/internal/run"
@@ -667,5 +670,154 @@ func TestImportRejectsUnsafeDestinationAndMismatchedPostcondition(t *testing.T) 
 				t.Fatalf("error=%v", err)
 			}
 		})
+	}
+}
+
+func TestCopyPublicKeyringsKeepsOnlyPrivateCopiesOfPublicFiles(t *testing.T) {
+	for _, name := range []string{"pubring.kbx", "pubring.gpg"} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			data := []byte("public keyring bytes\x00\xff")
+			if err := os.WriteFile(filepath.Join(home, name), data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// Private material must not be opened or included in the snapshot.
+			if err := os.WriteFile(filepath.Join(home, "secring.gpg"), []byte("private fixture"), 0); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Join(home, "private-keys-v1.d"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			inspection, keyrings, err := copyPublicKeyrings(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.RemoveAll(inspection)
+			if inspection == home || len(keyrings) != 1 || keyrings[0] != filepath.Join(inspection, name) {
+				t.Fatalf("inspection=%s keyrings=%v", inspection, keyrings)
+			}
+			info, err := os.Stat(inspection)
+			if err != nil || info.Mode().Perm() != 0o700 {
+				t.Fatalf("inspection mode: %v %v", info, err)
+			}
+			entries := directorySnapshot(t, inspection)
+			if len(entries) != 1 || entries[name].data != string(data) || entries[name].mode.Perm() != 0o600 {
+				t.Fatalf("copied entries=%#v", entries)
+			}
+			source, err := os.Stat(filepath.Join(home, name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			copy, err := os.Stat(keyrings[0])
+			if err != nil || os.SameFile(source, copy) {
+				t.Fatalf("copy shares source inode: %v", err)
+			}
+		})
+	}
+}
+
+func TestPublicKeyringRejectsNonregularPromptly(t *testing.T) {
+	if home := os.Getenv("OPS_TEST_KEYRING_HOME"); home != "" {
+		// Run potentially blocking inspection only in a disposable child.
+		inspection, keyrings, err := copyPublicKeyrings(home)
+		if err == nil || inspection != "" || keyrings != nil {
+			t.Fatalf("partial trusted result: %q %v %v", inspection, keyrings, err)
+		}
+		runner := &keyRunner{listOutput: primaryFingerprint(testFingerprint)}
+		m := Manager{Runner: runner, Home: home}
+		if present, err := m.Has(context.Background(), testFingerprint); err == nil || present {
+			t.Fatalf("Has: %v %v", present, err)
+		}
+		if err := m.Import(context.Background(), testFingerprint); err == nil {
+			t.Fatal("Import accepted unsafe keyring")
+		}
+		for _, call := range runner.calls {
+			if !strings.Contains(strings.Join(call.Args, " "), "--gpgconf-list") {
+				t.Fatalf("unsafe keyring reached GnuPG: %#v", call)
+			}
+		}
+		return
+	}
+	for _, name := range []string{"pubring.kbx", "pubring.gpg", "public-keys.d"} {
+		for _, kind := range []string{"fifo", "symlink", "directory", "socket"} {
+			if name == "public-keys.d" && kind != "fifo" {
+				continue
+			}
+			t.Run(name+"/"+kind, func(t *testing.T) {
+				home := t.TempDir()
+				if err := os.Chmod(home, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if name == "pubring.gpg" {
+					// The earlier copy must be removed when the second candidate fails.
+					if err := os.WriteFile(filepath.Join(home, "pubring.kbx"), []byte("public keyring"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				path := filepath.Join(home, name)
+				var err error
+				switch kind {
+				case "fifo":
+					err = syscall.Mkfifo(path, 0o600)
+				case "symlink":
+					err = os.Symlink(filepath.Join(t.TempDir(), "target"), path)
+				case "directory":
+					err = os.Mkdir(path, 0o700)
+				case "socket":
+					var listener net.Listener
+					listener, err = net.Listen("unix", path)
+					if err == nil {
+						defer listener.Close()
+					}
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				before := directorySnapshot(t, home)
+				isolatedTemp := t.TempDir()
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestPublicKeyringRejectsNonregularPromptly$")
+				cmd.Env = append(os.Environ(), "OPS_TEST_KEYRING_HOME="+home, "TMPDIR="+isolatedTemp)
+				output, err := cmd.CombinedOutput()
+				if ctx.Err() != nil {
+					t.Fatalf("inspection blocked; child killed and reaped: %v\n%s", ctx.Err(), output)
+				}
+				if err != nil {
+					t.Fatalf("child: %v\n%s", err, output)
+				}
+				entries, err := os.ReadDir(isolatedTemp)
+				if err != nil || len(entries) != 0 {
+					t.Fatalf("rejection leaked an isolated home: %v %v", entries, err)
+				}
+				if after := directorySnapshot(t, home); !reflect.DeepEqual(before, after) {
+					t.Fatalf("source modified: before=%#v after=%#v", before, after)
+				}
+			})
+		}
+	}
+}
+
+func TestHasInspectsLegacyPublicKeyringWithoutModifyingIt(t *testing.T) {
+	home := t.TempDir()
+	if err := os.Chmod(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	testGPG(t, home, "--quick-generate-key", "ops legacy test <ops@example.invalid>", "ed25519", "sign", "1d")
+	fingerprint := firstPrimaryFingerprint(testGPG(t, home, "--with-colons", "--fingerprint", "--list-keys"))
+	public := testGPG(t, home, "--export", "--", fingerprint)
+	if err := os.WriteFile(filepath.Join(home, "pubring.gpg"), []byte(public), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(home, "pubring.kbx")); err != nil {
+		t.Fatal(err)
+	}
+	before := directorySnapshot(t, home)
+	present, err := (Manager{Runner: run.Exec{}, Home: home}).Has(context.Background(), fingerprint)
+	if err != nil || !present {
+		t.Fatalf("present=%v err=%v", present, err)
+	}
+	if after := directorySnapshot(t, home); !reflect.DeepEqual(before, after) {
+		t.Fatalf("legacy inspection modified source: before=%#v after=%#v", before, after)
 	}
 }

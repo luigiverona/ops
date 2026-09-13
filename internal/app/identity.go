@@ -14,13 +14,15 @@ import (
 
 func (a Runtime) configureGit(ctx context.Context, terminal ui.UI) (string, error) {
 	m := gitops.Manager{Runner: a.Runner}
-	current := m.Inspect(ctx)
+	current, err := m.Inspect(ctx)
+	if err != nil {
+		return "failed", err
+	}
 	if gitops.ValidName(current.Name) && gitops.ValidEmail(current.Email) {
 		return "ready", nil
 	}
 	name, email := current.Name, current.Email
 	a.progress("Git identity")
-	var err error
 	if !gitops.ValidName(name) {
 		name, err = terminal.Ask(ctx, "Git name:")
 		if err != nil {

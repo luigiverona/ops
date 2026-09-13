@@ -350,7 +350,9 @@ func discardInspection(path string, cause error) error {
 }
 
 func copyPublicKeyring(homeFD int, inspection, name string) (string, error) {
-	fd, err := syscall.Openat(homeFD, name, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	// A FIFO must not block open before fstat can reject it. O_NONBLOCK has
+	// no effect on the subsequent regular-file copy on Linux.
+	fd, err := syscall.Openat(homeFD, name, syscall.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		if errors.Is(err, syscall.ENOENT) {
 			return "", os.ErrNotExist

@@ -82,16 +82,11 @@ func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 		return state, fmt.Errorf("read pacman configuration: %w", err)
 	}
 	if state.Installed["git"] {
-		if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "git", Args: []string{"config", "--global", "--get", "user.name"}}); err == nil {
-			state.GitName = strings.TrimSpace(result.Stdout)
-		} else if !run.Exited(err, 1) || strings.TrimSpace(result.Stdout+result.Stderr) != "" {
-			return state, fmt.Errorf("inspect Git user.name: %w", err)
+		identity, err := (gitops.Manager{Runner: w.Runner}).Inspect(ctx)
+		if err != nil {
+			return state, err
 		}
-		if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "git", Args: []string{"config", "--global", "--get", "user.email"}}); err == nil {
-			state.GitEmail = strings.TrimSpace(result.Stdout)
-		} else if !run.Exited(err, 1) || strings.TrimSpace(result.Stdout+result.Stderr) != "" {
-			return state, fmt.Errorf("inspect Git user.email: %w", err)
-		}
+		state.GitName, state.GitEmail = identity.Name, identity.Email
 		if !gitops.ValidName(state.GitName) {
 			state.GitName = ""
 		}

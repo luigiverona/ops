@@ -4,6 +4,7 @@ package git
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/luigiverona/ops/internal/run"
@@ -14,15 +15,38 @@ type Identity struct{ Name, Email string }
 
 type Manager struct{ Runner run.Runner }
 
-func (m Manager) Inspect(ctx context.Context) Identity {
-	var identity Identity
-	if result, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "git", Args: []string{"config", "--global", "--get", "user.name"}}); err == nil {
-		identity.Name = strings.TrimSpace(result.Stdout)
+// Inspect reads both global values. An error leaves no usable identity snapshot.
+func (m Manager) Inspect(ctx context.Context) (Identity, error) {
+	name, err := m.optionalGlobalValue(ctx, "user.name")
+	if err != nil {
+		return Identity{}, err
 	}
-	if result, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "git", Args: []string{"config", "--global", "--get", "user.email"}}); err == nil {
-		identity.Email = strings.TrimSpace(result.Stdout)
+	email, err := m.optionalGlobalValue(ctx, "user.email")
+	if err != nil {
+		return Identity{}, err
 	}
-	return identity
+	return Identity{Name: name, Email: email}, nil
+}
+
+func (m Manager) optionalGlobalValue(ctx context.Context, key string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("inspect Git %s: %w", key, err)
+	}
+	result, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "git", Args: []string{"config", "--global", "--get", key}})
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", fmt.Errorf("inspect Git %s: %w", key, ctxErr)
+	}
+	if err == nil {
+		return strings.TrimSpace(result.Stdout), nil
+	}
+	// --get exits 1 for an unset value, but also for some read failures.
+	// Only a silent exit with no value establishes absence.
+	var commandErr *run.Error
+	if run.Exited(err, 1) && result.Stdout == "" && result.Stderr == "" &&
+		(!errors.As(err, &commandErr) || commandErr.Stderr == "") {
+		return "", nil
+	}
+	return "", fmt.Errorf("inspect Git %s: %w", key, err)
 }
 
 func ValidName(value string) bool {
@@ -53,7 +77,10 @@ func (m Manager) SetMissing(ctx context.Context, current Identity, name, email s
 			return err
 		}
 	}
-	verified := m.Inspect(ctx)
+	verified, err := m.Inspect(ctx)
+	if err != nil {
+		return fmt.Errorf("verify Git identity: %w", err)
+	}
 	if !ValidName(verified.Name) || !ValidEmail(verified.Email) {
 		return errors.New("Git identity verification failed")
 	}

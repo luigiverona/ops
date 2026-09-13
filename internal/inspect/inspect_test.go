@@ -297,3 +297,56 @@ func TestLocalAgentAvailabilityAndDoctorSkip(t *testing.T) {
 		})
 	}
 }
+
+type gitStateRunner struct {
+	stateRunner
+	field  string
+	result run.Result
+	err    error
+}
+
+func (r *gitStateRunner) Run(ctx context.Context, spec run.Spec) (run.Result, error) {
+	if spec.Name == "git" && spec.Args[len(spec.Args)-1] == r.field {
+		return r.result, r.err
+	}
+	return r.stateRunner.Run(ctx, spec)
+}
+
+func TestLocalGitStateOnlyPlansFromSuccessfulInspection(t *testing.T) {
+	for _, field := range []string{"user.name", "user.email"} {
+		for _, test := range []struct {
+			name    string
+			result  run.Result
+			err     error
+			wantErr bool
+		}{
+			{name: "absent", err: &run.Error{Name: "git", Err: gitStateExit(1)}},
+			{name: "invalid", result: run.Result{Stdout: "\n"}},
+			{name: "unavailable", err: errors.New("Git unavailable"), wantErr: true},
+			{name: "unreadable", result: run.Result{Stderr: "permission denied\n"}, err: gitStateExit(1), wantErr: true},
+		} {
+			t.Run(field+"/"+test.name, func(t *testing.T) {
+				w := Workstation{Runner: &gitStateRunner{field: field, result: test.result, err: test.err}, Home: t.TempDir(), PacmanConf: testPacmanConf(t), SkipAgent: true}
+				state, err := w.Local(context.Background())
+				if test.wantErr {
+					if !errors.Is(err, test.err) || state.GitName != "" || state.GitEmail != "" {
+						t.Fatalf("state=%#v err=%v", state, err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				p := plan.Build(config.Config{}, state, nil)
+				if !p.ConfigureGit || p.GitStatus != "configuration required" {
+					t.Fatalf("missing identity plan=%#v", p)
+				}
+			})
+		}
+	}
+}
+
+type gitStateExit int
+
+func (e gitStateExit) Error() string { return "git exited" }
+func (e gitStateExit) ExitCode() int { return int(e) }
