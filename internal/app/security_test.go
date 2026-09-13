@@ -176,3 +176,61 @@ func wirePublic(fill byte) string {
 	}
 	return "ssh-ed25519 " + base64.StdEncoding.EncodeToString(blob) + " key-" + strconv.Itoa(int(fill))
 }
+
+func TestConfigureSSHAgentAvailabilityControlsManagedLoad(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("ssh-keygen unavailable")
+	}
+	home := t.TempDir()
+	dir := filepath.Join(home, ".ssh")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	generateTestIdentity(t, dir, "ops")
+	generateTestIdentity(t, dir, "unrelated")
+	managed, err := os.ReadFile(filepath.Join(dir, "ops.pub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelated, err := os.ReadFile(filepath.Join(dir, "unrelated.pub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		output string
+		err    error
+		loads  int
+		issues int
+	}{
+		{name: "empty agent", output: "The agent has no identities.\n", err: diagnosticExit(1), loads: 1},
+		{name: "unavailable agent", err: diagnosticExit(2)},
+		{name: "unrelated only", output: string(unrelated), loads: 1},
+		{name: "managed and unrelated", output: string(managed) + string(unrelated)},
+		{name: "unexpected failure", err: diagnosticExit(1), issues: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			loads := 0
+			runner := diagnosticRunner(func(ctx context.Context, spec run.Spec) (run.Result, error) {
+				if spec.Name == "ssh-keygen" && !spec.Interactive {
+					return (run.Exec{}).Run(ctx, spec)
+				}
+				if spec.Name != "ssh-add" {
+					t.Fatalf("unexpected command: %#v", spec)
+				}
+				if strings.Join(spec.Args, " ") == "-L" {
+					return run.Result{Stdout: test.output}, test.err
+				}
+				if strings.Join(spec.Args, " ") != filepath.Join(dir, "ops") || !spec.Interactive || spec.Interaction == "" {
+					t.Fatalf("unexpected agent mutation or interaction: %#v", spec)
+				}
+				loads++
+				return run.Result{}, nil
+			})
+			status, identity, issues, fatal := (Runtime{Home: home, Runner: runner, Out: io.Discard, Err: io.Discard}).configureSSH(context.Background(), ui.UI{}, plan.Plan{ReviewSSHAgent: true, LoadSSHAgent: true})
+			if fatal != nil || identity == nil || len(issues) != test.issues || loads != test.loads || (status == "ready") != (test.issues == 0) {
+				t.Fatalf("status=%s identity=%v issues=%v fatal=%v loads=%d", status, identity, issues, fatal, loads)
+			}
+		})
+	}
+}

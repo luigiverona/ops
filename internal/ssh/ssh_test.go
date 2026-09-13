@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luigiverona/ops/internal/run"
 )
@@ -829,4 +831,340 @@ func testHostKey(keyType string, fill byte) string {
 		blob[i] = fill
 	}
 	return keyType + " " + base64.StdEncoding.EncodeToString(blob)
+}
+
+type sshRunnerFunc func(context.Context, run.Spec) (run.Result, error)
+
+func (f sshRunnerFunc) Run(ctx context.Context, spec run.Spec) (run.Result, error) {
+	return f(ctx, spec)
+}
+
+type sshExit int
+
+func (e sshExit) Error() string { return fmt.Sprintf("exit status %d", e) }
+func (e sshExit) ExitCode() int { return int(e) }
+
+func TestAgentIdentitiesClassification(t *testing.T) {
+	key := testHostKey("ssh-ed25519", 42)
+	for _, test := range []struct {
+		name      string
+		result    run.Result
+		err       error
+		available bool
+		count     int
+		wantError bool
+	}{
+		{name: "one identity", result: run.Result{Stdout: key + "\n"}, available: true, count: 1},
+		{name: "empty stdout", result: run.Result{Stdout: "The agent has no identities.\n"}, err: sshExit(1), available: true},
+		{name: "empty stderr", result: run.Result{Stderr: "The agent has no identities.\n"}, err: sshExit(1), available: true},
+		{name: "uncontactable", err: sshExit(2)},
+		{name: "exit two with output failure", err: errors.Join(sshExit(2), errors.New("capture failure")), wantError: true},
+		{name: "empty with output failure", result: run.Result{Stdout: "The agent has no identities.\n"}, err: errors.Join(sshExit(1), errors.New("capture failure")), wantError: true},
+		{name: "other exit one", result: run.Result{Stderr: "error fetching identities: agent refused operation\n"}, err: sshExit(1), wantError: true},
+		{name: "silent exit one", err: sshExit(1), wantError: true},
+		{name: "other exit", err: sshExit(255), wantError: true},
+		{name: "empty text wrong exit", result: run.Result{Stdout: "The agent has no identities.\n"}, err: sshExit(255), wantError: true},
+		{name: "empty with additional error", result: run.Result{Stdout: "The agent has no identities.\n", Stderr: "protocol failure"}, err: sshExit(1), wantError: true},
+		{name: "substring is insufficient", result: run.Result{Stderr: "could not open key; no identities parsed"}, err: sshExit(1), wantError: true},
+		{name: "unstructured failure", result: run.Result{Stderr: "Could not open a connection to your authentication agent."}, err: errors.New("exec failed"), wantError: true},
+		// Existing listing semantics skip malformed lines and retain valid ones.
+		{name: "mixed malformed output", result: run.Result{Stdout: "invalid\nssh-ed25519 !bad-base64\n" + key + "\n"}, available: true, count: 1},
+		{name: "only malformed output", result: run.Result{Stdout: "invalid\n"}, available: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var commandErr error
+			if test.err != nil {
+				commandErr = fmt.Errorf("inspect: %w", &run.Error{Name: "ssh-add", Err: test.err})
+			}
+			m := Manager{Runner: sshRunnerFunc(func(_ context.Context, spec run.Spec) (run.Result, error) {
+				if spec.Name != "ssh-add" || strings.Join(spec.Args, " ") != "-L" || spec.Interactive {
+					t.Fatalf("unexpected command: %#v", spec)
+				}
+				return test.result, commandErr
+			})}
+			ids, available, err := m.AgentIdentities(context.Background())
+			if available != test.available || len(ids) != test.count || (err != nil) != test.wantError {
+				t.Fatalf("identities=%v available=%v err=%v", ids, available, err)
+			}
+			if test.wantError && err != commandErr {
+				t.Fatalf("command error was not preserved: %v", err)
+			}
+			if len(ids) == 1 {
+				want, _ := PublicFingerprint(key)
+				if ids[0].Fingerprint != want || ids[0].PublicKey != key {
+					t.Fatalf("identity=%v", ids[0])
+				}
+			}
+		})
+	}
+}
+
+func TestAgentIdentitiesRealOpenSSH(t *testing.T) {
+	for _, tool := range []string{"ssh-agent", "ssh-add", "ssh-keygen"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skip(tool + " unavailable")
+		}
+	}
+	// Keep the Unix socket path short regardless of the test's full name.
+	dir, err := os.MkdirTemp("", "ops-agent-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "agent.sock")
+	agent := exec.Command("ssh-agent", "-D", "-a", socket)
+	agent.Env = append(os.Environ(), "SSH_AUTH_SOCK="+socket, "SSH_AGENT_PID=", "LC_ALL=C")
+	if err := agent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = agent.Process.Kill()
+		_ = agent.Wait()
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(socket); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("isolated ssh-agent did not create its socket")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	m := managerFor(t)
+	base := m.Runner
+	m.Runner = sshRunnerFunc(func(ctx context.Context, spec run.Spec) (run.Result, error) {
+		spec.Env = append(spec.Env, "SSH_AUTH_SOCK="+socket, "SSH_AGENT_PID=", "SSH_ASKPASS_REQUIRE=never")
+		return base.Run(ctx, spec)
+	})
+	result, err := m.Runner.Run(ctx, run.Spec{Name: "ssh-add", Args: []string{"-L"}})
+	t.Logf("empty: exit 1=%v stdout=%q stderr=%q", run.Exited(err, 1), result.Stdout, result.Stderr)
+	if !run.Exited(err, 1) || result.Stdout != "The agent has no identities.\n" || result.Stderr != "" {
+		t.Fatalf("unexpected empty-agent response: %#v, %v", result, err)
+	}
+	check := func(count int) []AgentIdentity {
+		t.Helper()
+		ids, available, err := m.AgentIdentities(ctx)
+		if err != nil || !available || len(ids) != count {
+			t.Fatalf("ids=%v available=%v err=%v", ids, available, err)
+		}
+		return ids
+	}
+	check(0)
+	for _, socketValue := range []string{"", filepath.Join(dir, "missing.sock")} {
+		unavailable := Manager{Runner: sshRunnerFunc(func(ctx context.Context, spec run.Spec) (run.Result, error) {
+			spec.Env = append(spec.Env, "SSH_AUTH_SOCK="+socketValue, "SSH_AGENT_PID=")
+			result, err := base.Run(ctx, spec)
+			t.Logf("unavailable: exit 2=%v stdout=%q stderr=%q", run.Exited(err, 2), result.Stdout, result.Stderr)
+			if !run.Exited(err, 2) || result.Stdout != "" {
+				t.Fatalf("unexpected unavailable response: %#v, %v", result, err)
+			}
+			return result, err
+		})}
+		if ids, available, err := unavailable.AgentIdentities(ctx); err != nil || available || len(ids) != 0 {
+			t.Fatalf("ids=%v available=%v err=%v", ids, available, err)
+		}
+	}
+	generate(t, m, "unrelated")
+	generate(t, m, "ops")
+	if err := m.Load(ctx, filepath.Join(m.dir(), "unrelated")); err != nil {
+		t.Fatal(err)
+	}
+	unrelated := check(1)[0]
+	if _, err := m.Discover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := check(1)[0]; got != unrelated {
+		t.Fatal("discovery changed unrelated agent identity")
+	}
+	if err := m.Load(ctx, filepath.Join(m.dir(), "ops")); err != nil {
+		t.Fatal(err)
+	}
+	ids := check(2)
+	if ids[0] != unrelated && ids[1] != unrelated {
+		t.Fatal("managed load removed unrelated agent identity")
+	}
+}
+
+func TestDiscoverPrivateCorrespondenceRealOpenSSH(t *testing.T) {
+	for _, encrypted := range []bool{false, true} {
+		for _, layout := range []string{"matching", "mismatched", "no public", "matching elsewhere", "public only"} {
+			t.Run(fmt.Sprintf("encrypted=%v/%s", encrypted, layout), func(t *testing.T) {
+				m := managerFor(t)
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				path := filepath.Join(m.dir(), "ops")
+				passphrase := ""
+				if encrypted {
+					passphrase = "temporary-test-passphrase"
+				}
+				if output, err := exec.CommandContext(ctx, "ssh-keygen", "-q", "-t", "ed25519", "-N", passphrase, "-f", path).CombinedOutput(); err != nil {
+					t.Fatalf("generate ops: %v: %s", err, output)
+				}
+				other := managerFor(t)
+				generate(t, other, "B")
+				publicA := readSSHConfigurationFiles(t, m.dir(), "ops.pub")["ops.pub"]
+				publicB := readSSHConfigurationFiles(t, other.dir(), "B.pub")["B.pub"]
+				want, err := PublicFingerprint(string(publicA))
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantPublic := path + ".pub"
+				switch layout {
+				case "mismatched", "matching elsewhere":
+					if err := os.WriteFile(path+".pub", publicB, 0o644); err != nil {
+						t.Fatal(err)
+					}
+					wantPublic = ""
+					if layout == "matching elsewhere" {
+						wantPublic = filepath.Join(m.dir(), "unrelated-filename.pub")
+						if err := os.WriteFile(wantPublic, publicA, 0o644); err != nil {
+							t.Fatal(err)
+						}
+					}
+				case "no public":
+					if err := os.Remove(path + ".pub"); err != nil {
+						t.Fatal(err)
+					}
+					wantPublic = ""
+				case "public only":
+					if err := os.Remove(path); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// OpenSSH 10.5p1's pathname -l reports B for private A + B.pub,
+				// for both plain and encrypted A. Descriptor inspection must report A.
+				if layout == "mismatched" {
+					result, err := m.Runner.Run(ctx, run.Spec{Name: "ssh-keygen", Args: []string{"-l", "-E", "sha256", "-f", path}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Logf("pathname fingerprint with mismatched sidecar: %s", strings.TrimSpace(result.Stdout))
+				}
+				entries, err := os.ReadDir(m.dir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				var names []string
+				for _, entry := range entries {
+					names = append(names, entry.Name())
+				}
+				before := readSSHConfigurationFiles(t, m.dir(), names...)
+				// Force any attempted passphrase prompt into a detectable helper.
+				marker := filepath.Join(m.Home, "prompted")
+				askpass := filepath.Join(m.Home, "askpass")
+				if err := os.WriteFile(askpass, []byte("#!/bin/sh\ntouch \"$OPS_TEST_PROMPT_MARKER\"\nexit 1\n"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				base := m.Runner
+				m.Runner = sshRunnerFunc(func(ctx context.Context, spec run.Spec) (run.Result, error) {
+					if spec.Interactive || spec.Name != "ssh-keygen" || strings.Join(spec.Args, " ") != "-l -E sha256 -f /proc/self/fd/0" {
+						t.Fatalf("unexpected inspection command: %#v", spec)
+					}
+					if _, ok := spec.Stdin.(*os.File); !ok {
+						t.Fatal("private inspection requires the original file descriptor")
+					}
+					spec.Env = append(spec.Env, "SSH_ASKPASS_REQUIRE=force", "SSH_ASKPASS="+askpass, "OPS_TEST_PROMPT_MARKER="+marker)
+					return base.Run(ctx, spec)
+				})
+				ids, err := m.Discover(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if layout == "public only" {
+					if len(ids) != 0 {
+						t.Fatalf("public-only file became a private identity: %v", ids)
+					}
+				} else {
+					if len(ids) != 1 || ids[0] != (Identity{PrivatePath: path, PublicPath: wantPublic, Fingerprint: want}) {
+						t.Fatalf("identities=%v, want public=%q fingerprint=%s", ids, wantPublic, want)
+					}
+					id, err := m.EnsureIdentity(ctx)
+					if layout == "matching" {
+						if err != nil || id != ids[0] {
+							t.Fatalf("matching managed identity not verified: %v, %v", id, err)
+						}
+					} else if err == nil {
+						t.Fatalf("unverified managed pair accepted: %v", id)
+					}
+				}
+				if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("inspection attempted a passphrase prompt")
+				}
+				after := readSSHConfigurationFiles(t, m.dir(), names...)
+				for name, data := range before {
+					if !bytes.Equal(data, after[name]) {
+						t.Fatalf("inspection modified %s", name)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestDeleteRejectsPrivateReplacementWithStalePublic(t *testing.T) {
+	m := managerFor(t)
+	generate(t, m, "ops")
+	ids, err := m.Discover(context.Background())
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("identities=%v, %v", ids, err)
+	}
+	generate(t, m, "replacement")
+	if err := os.Rename(filepath.Join(m.dir(), "replacement"), ids[0].PrivatePath); err != nil {
+		t.Fatal(err)
+	}
+	before := readSSHConfigurationFiles(t, m.dir(), "ops", "ops.pub", "replacement.pub")
+	if err := m.Delete(context.Background(), ids[0]); err == nil {
+		t.Fatal("accepted replaced private key based on stale .pub")
+	}
+	after := readSSHConfigurationFiles(t, m.dir(), "ops", "ops.pub", "replacement.pub")
+	for name, data := range before {
+		if !bytes.Equal(data, after[name]) {
+			t.Fatalf("failed revalidation modified %s", name)
+		}
+	}
+}
+
+func TestManagedIdentityRejectsNonregularFiles(t *testing.T) {
+	for _, name := range []string{"ops", "ops.pub"} {
+		t.Run(name, func(t *testing.T) {
+			m := managerFor(t)
+			if err := os.Mkdir(filepath.Join(m.dir(), name), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			runner := &recordingRunner{}
+			m.Runner = runner
+			if _, err := m.Discover(context.Background()); err == nil {
+				t.Fatal("discovery accepted nonregular managed path")
+			}
+			// Keep ops present to avoid the creation interaction for ops.pub.
+			if name == "ops.pub" {
+				if err := os.WriteFile(filepath.Join(m.dir(), "ops"), []byte("invalid"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := m.EnsureIdentity(context.Background()); err == nil || len(runner.calls) != 0 {
+				t.Fatalf("nonregular managed path reached commands: %v", err)
+			}
+		})
+	}
+}
+
+func TestPrivateFingerprintRejectsReplacementDuringInspection(t *testing.T) {
+	m := managerFor(t)
+	generate(t, m, "ops")
+	generate(t, m, "replacement")
+	path := filepath.Join(m.dir(), "ops")
+	base := m.Runner
+	m.Runner = sshRunnerFunc(func(ctx context.Context, spec run.Spec) (run.Result, error) {
+		if err := os.Rename(filepath.Join(m.dir(), "replacement"), path); err != nil {
+			t.Fatal(err)
+		}
+		return base.Run(ctx, spec)
+	})
+	if _, err := m.privateFingerprint(context.Background(), path); err == nil {
+		t.Fatal("accepted fingerprint after the private path was replaced")
+	}
 }

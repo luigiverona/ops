@@ -2,11 +2,13 @@
 package ssh
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -89,11 +91,10 @@ func (m Manager) Discover(ctx context.Context) ([]Identity, error) {
 		if !privateHeader(data) {
 			continue
 		}
-		result, err := m.Runner.Run(ctx, run.Spec{Name: "ssh-keygen", Args: []string{"-l", "-E", "sha256", "-f", path}, Stdin: strings.NewReader("")})
+		fingerprint, err := m.privateFingerprint(ctx, path)
 		if err != nil {
 			continue
 		}
-		fingerprint := fingerprintField(result.Stdout)
 		if fingerprint != "" {
 			privateKeys = append(privateKeys, private{path, fingerprint})
 		}
@@ -147,11 +148,55 @@ func (m Manager) verifyFingerprint(ctx context.Context, path, want string) error
 		}
 		return nil
 	}
-	result, err := m.Runner.Run(ctx, run.Spec{Name: "ssh-keygen", Args: []string{"-l", "-E", "sha256", "-f", path}, Stdin: strings.NewReader("")})
-	if err != nil || fingerprintField(result.Stdout) != want {
+	got, err := m.privateFingerprint(ctx, path)
+	if err != nil || got != want {
 		return errors.New("identity changed since review")
 	}
 	return nil
+}
+
+// privateFingerprint inspects the original regular file through an inherited
+// descriptor. OpenSSH may prefer path.pub when given a private-key pathname;
+// /proc/self/fd/0 has no possible .pub sibling. Stdin must be the *os.File,
+// not a pipe: ssh-keygen reopens it to read the embedded public identity,
+// including for encrypted OpenSSH keys, without asking for a passphrase.
+func (m Manager) privateFingerprint(ctx context.Context, path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("private identity is not a regular file")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+		return "", errors.New("private identity changed during inspection")
+	}
+	header, err := bufio.NewReader(f).ReadString('\n')
+	if err != nil || !privateHeader([]byte(header)) {
+		return "", errors.New("not a private identity")
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	result, err := m.Runner.Run(ctx, run.Spec{Name: "ssh-keygen", Args: []string{"-l", "-E", "sha256", "-f", "/proc/self/fd/0"}, Stdin: f})
+	if err != nil {
+		return "", err
+	}
+	current, err := os.Lstat(path)
+	if err != nil || !current.Mode().IsRegular() || !os.SameFile(opened, current) {
+		return "", errors.New("private identity changed during inspection")
+	}
+	fingerprint := fingerprintField(result.Stdout)
+	if fingerprint == "" {
+		return "", errors.New("private identity fingerprint missing")
+	}
+	return fingerprint, nil
 }
 
 // EnsureIdentity creates the managed Ed25519 identity through ssh-keygen's normal passphrase interaction.
@@ -186,14 +231,22 @@ func (m Manager) EnsureIdentity(ctx context.Context) (Identity, error) {
 }
 
 // AgentIdentities inspects loaded identities independently from local files.
+// The boolean reports whether the agent is contactable, even when it is empty.
 func (m Manager) AgentIdentities(ctx context.Context) ([]AgentIdentity, bool, error) {
 	result, err := m.Runner.Run(ctx, run.Spec{Name: "ssh-add", Args: []string{"-L"}})
 	if err != nil {
-		message := strings.ToLower(result.Stderr)
-		if strings.Contains(message, "could not open") {
+		// The runner can join an exit error with an output-capture failure.
+		// Such a failure must not be reduced to an ordinary agent state.
+		var compound interface{ Unwrap() []error }
+		if errors.As(err, &compound) {
+			return nil, false, err
+		}
+		// OpenSSH reserves exit 2 for failure to contact the agent. Exit 1
+		// also covers other failures, so require its exact empty-state output.
+		if run.Exited(err, 2) {
 			return nil, false, nil
 		}
-		if strings.Contains(message, "no identities") {
+		if run.Exited(err, 1) && strings.TrimSpace(result.Stdout+result.Stderr) == "The agent has no identities." {
 			return nil, true, nil
 		}
 		return nil, false, err
