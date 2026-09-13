@@ -48,7 +48,8 @@ func (m Manager) Build(ctx context.Context, source plan.AURSource, target string
 		return err
 	}
 	defer os.RemoveAll(dir)
-	repo := filepath.Join(dir, source.Metadata.PackageBase)
+	// Remote package identity must not determine filesystem containment.
+	repo := filepath.Join(dir, "checkout")
 	if _, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "git", Args: []string{"init", "--quiet", repo}}); err != nil {
 		return err
 	}

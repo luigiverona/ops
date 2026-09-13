@@ -16,7 +16,7 @@ var fingerprintPattern = regexp.MustCompile(`^(?:[A-F0-9]{40}|[A-F0-9]{64})$`)
 // base identity. Callers use it before treating AUR metadata as a path or URL
 // component.
 func ValidPackageName(value string) bool {
-	return dependencyNamePattern.MatchString(value)
+	return value != "." && value != ".." && dependencyNamePattern.MatchString(value)
 }
 
 // Package is one output declared by an AUR package base.
@@ -458,7 +458,7 @@ func parseExpression(value string, provide bool) (Dependency, error) {
 		name = value[:index]
 		version = value[index+len(operator):]
 	}
-	if !dependencyNamePattern.MatchString(name) || (operator != "" && version == "") || strings.ContainsAny(version, "<>=\t\r\n ") {
+	if !ValidPackageName(name) || (operator != "" && version == "") || strings.ContainsAny(version, "<>=\t\r\n ") {
 		return Dependency{}, fmt.Errorf("invalid dependency expression %q", value)
 	}
 	if provide && operator != "" && operator != "=" {

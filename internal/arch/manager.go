@@ -339,15 +339,21 @@ func (m Manager) validateProtectedPath(ctx context.Context, path string, directo
 		return err
 	}
 	uid, mode, links, err := parseProtectedStat(result.Stdout)
-	if err != nil || uid != 0 || mode&0o022 != 0 || links != 1 {
-		return errors.New("protected staged path has unsafe ownership, permissions, or links")
+	if err != nil || uid != 0 || mode&0o022 != 0 {
+		return errors.New("protected staged path has unsafe ownership or permissions")
 	}
-	wantType := uint64(syscall.S_IFREG)
 	if directory {
-		wantType = syscall.S_IFDIR
+		if mode&syscall.S_IFMT != syscall.S_IFDIR {
+			return errors.New("protected staged path has an unexpected file type")
+		}
+		// Directory link counts include subdirectories and need not equal one.
+		return nil
 	}
-	if mode&syscall.S_IFMT != wantType {
+	if mode&syscall.S_IFMT != syscall.S_IFREG {
 		return errors.New("protected staged path has an unexpected file type")
+	}
+	if links != 1 {
+		return errors.New("protected staged file has unsafe links")
 	}
 	return nil
 }

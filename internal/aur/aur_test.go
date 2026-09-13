@@ -84,13 +84,112 @@ func paruMetadata(t *testing.T, srcinfo string) aurmeta.Metadata {
 }
 
 func TestBuildRejectsUnsafePlannedSourceIdentityBeforeFilesystemUse(t *testing.T) {
-	runner := &bootstrapRunner{}
-	err := (Manager{Runner: runner}).Build(context.Background(), plan.AURSource{
-		Commit:   "0123456789012345678901234567890123456789",
-		Metadata: aurmeta.Metadata{PackageBase: "../escape", Packages: []aurmeta.Package{{Name: "example"}}},
-	}, "example", []string{"example"}, func() error { return nil }, func(string, []string) error { return nil })
-	if err == nil || len(runner.calls) != 0 {
-		t.Fatalf("unsafe planned source reached filesystem work: err=%v calls=%#v", err, runner.calls)
+	tempParent := t.TempDir()
+	t.Setenv("TMPDIR", tempParent)
+	for _, name := range []string{"../escape", ".", ".."} {
+		for _, field := range []string{"base", "target", "output"} {
+			t.Run(field+"/"+name, func(t *testing.T) {
+				runner := &bootstrapRunner{}
+				source := plan.AURSource{
+					Commit:   "0123456789012345678901234567890123456789",
+					Metadata: aurmeta.Metadata{PackageBase: "example", Packages: []aurmeta.Package{{Name: "example"}}},
+				}
+				target, output := "example", "example"
+				switch field {
+				case "base":
+					source.Metadata.PackageBase = name
+				case "target":
+					target = name
+				case "output":
+					output = name
+				}
+				reviewed, mutated := false, false
+				manager := Manager{Runner: runner, Review: func(string, map[string]string) error { reviewed = true; return nil }}
+				err := manager.Build(context.Background(), source, target, []string{output}, func() error { mutated = true; return nil }, func(string, []string) error { mutated = true; return nil })
+				if err == nil || !strings.Contains(err.Error(), "invalid planned AUR") || len(runner.calls) != 0 || reviewed || mutated {
+					t.Fatalf("unsafe planned identity reached build work: err=%v calls=%#v reviewed=%v mutated=%v", err, runner.calls, reviewed, mutated)
+				}
+			})
+		}
+	}
+	if entries, err := os.ReadDir(tempParent); err != nil || len(entries) != 0 {
+		t.Fatalf("invalid source left filesystem changes: entries=%v err=%v", entries, err)
+	}
+}
+
+func TestBuildUsesFixedCheckoutBelowTemporaryRoot(t *testing.T) {
+	const commit = "0123456789012345678901234567890123456789"
+	tempParent := t.TempDir()
+	t.Setenv("TMPDIR", tempParent)
+	for _, base := range []string{"paru", "suite-base", "..pkg", "..."} {
+		t.Run(base, func(t *testing.T) {
+			srcinfo := "pkgbase = " + base + "\npkgver = 1\npkgrel = 1\npkgname = paru\n"
+			runner := &bootstrapRunner{commit: commit, srcinfo: srcinfo}
+			var repo, root string
+			reviewed, installed := false, false
+			manager := Manager{Runner: runner, Review: func(name string, files map[string]string) error {
+				reviewed = true
+				repo = runner.repo
+				root = filepath.Dir(repo)
+				if filepath.Dir(root) != tempParent || !strings.HasPrefix(filepath.Base(root), "ops-aur-") {
+					t.Fatalf("checkout is outside fresh temporary root: %q", repo)
+				}
+				if relative, err := filepath.Rel(root, repo); err != nil || relative != "checkout" {
+					t.Fatalf("checkout is not the fixed child: relative=%q err=%v", relative, err)
+				}
+				data, err := os.ReadFile(filepath.Join(repo, ".SRCINFO"))
+				if err != nil || string(data) != srcinfo || files[".SRCINFO"] != srcinfo || name != "paru" {
+					t.Fatalf("review did not use checked-out metadata: files=%v err=%v", files, err)
+				}
+				return nil
+			}}
+			err := manager.Build(context.Background(), plan.AURSource{Commit: commit, Metadata: paruMetadata(t, srcinfo)}, "paru", []string{"paru"}, func() error { return nil }, func(buildDir string, artifacts []string) error {
+				installed = true
+				if buildDir != repo || len(artifacts) != 1 || filepath.Dir(artifacts[0]) != repo {
+					t.Fatalf("artifact handoff left checkout: dir=%q artifacts=%v", buildDir, artifacts)
+				}
+				return nil
+			})
+			if err != nil || !reviewed || !installed {
+				t.Fatalf("build did not complete: err=%v reviewed=%v installed=%v", err, reviewed, installed)
+			}
+			operations := make(map[string]int)
+			for _, call := range runner.calls {
+				var path, operation string
+				switch call.Name {
+				case "git":
+					if call.Args[0] == "init" {
+						path, operation = call.Args[len(call.Args)-1], "init"
+					} else if call.Args[0] == "-C" {
+						path, operation = call.Args[1], call.Args[2]
+					} else {
+						t.Fatalf("git command lacks checkout path: %+v", call)
+					}
+					if operation == "fetch" && call.Args[len(call.Args)-2] != "https://aur.archlinux.org/"+base+".git" {
+						t.Fatalf("package base was not preserved in source URL: %+v", call)
+					}
+				case "makepkg":
+					path, operation = call.Dir, "makepkg"
+				default:
+					t.Fatalf("unexpected build command: %+v", call)
+				}
+				if path != repo || path == root || path == filepath.Dir(root) {
+					t.Fatalf("command escaped checkout: %+v", call)
+				}
+				operations[operation]++
+			}
+			for _, operation := range []string{"init", "fetch", "checkout", "ls-files", "rev-parse", "makepkg"} {
+				if operations[operation] == 0 {
+					t.Errorf("missing operation %q", operation)
+				}
+			}
+			if operations["makepkg"] != 2 {
+				t.Fatalf("build and packagelist were not both checked: %v", operations)
+			}
+			if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("temporary root was not cleaned: %v", err)
+			}
+		})
 	}
 }
 

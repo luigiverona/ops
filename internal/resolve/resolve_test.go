@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luigiverona/ops/internal/config"
+	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/run"
 )
 
@@ -68,10 +70,70 @@ func TestAURSourcePinsMetadataToExactGitCommit(t *testing.T) {
 }
 
 func TestAURSourceRejectsUnsafePackageBaseBeforeNetworkResolution(t *testing.T) {
-	runner := &countingRunner{}
-	_, _, err := (Resolver{Runner: runner}).AURSource(context.Background(), "paru?redirect=example")
-	if err == nil || runner.calls != 0 {
-		t.Fatalf("unsafe package base reached source resolution: err=%v calls=%d", err, runner.calls)
+	for _, name := range []string{"paru?redirect=example", ".", ".."} {
+		t.Run(name, func(t *testing.T) {
+			runner := &countingRunner{}
+			requests := 0
+			client := &http.Client{Transport: roundTrip(func(*http.Request) (*http.Response, error) {
+				requests++
+				return nil, errors.New("unexpected request")
+			})}
+			resolver := Resolver{Runner: runner, Client: client}
+			_, found, err := resolver.AURSource(context.Background(), name)
+			if err == nil || found || runner.calls != 0 || requests != 0 {
+				t.Fatalf("unsafe package base reached source resolution: err=%v calls=%d requests=%d", err, runner.calls, requests)
+			}
+			_, found, err = resolver.AUR(context.Background(), name)
+			if err == nil || found || runner.calls != 0 || requests != 0 {
+				t.Fatalf("unsafe package name reached RPC resolution: err=%v calls=%d requests=%d", err, runner.calls, requests)
+			}
+		})
+	}
+}
+
+func TestAURDotPackageBasesFailPlanningBeforeCommands(t *testing.T) {
+	const commit = "0123456789012345678901234567890123456789"
+	for _, base := range []string{".", ".."} {
+		for _, boundary := range []string{"RPC", "SRCINFO"} {
+			t.Run(boundary+"/"+base, func(t *testing.T) {
+				requests := 0
+				client := &http.Client{Transport: roundTrip(func(req *http.Request) (*http.Response, error) {
+					requests++
+					var body string
+					switch {
+					case strings.HasPrefix(req.URL.Path, "/rpc/"):
+						rpcBase := "example"
+						if boundary == "RPC" {
+							rpcBase = base
+						}
+						body = fmt.Sprintf(`{"version":5,"type":"multiinfo","resultcount":1,"results":[{"Name":"example","PackageBase":%q}]}`, rpcBase)
+					case req.URL.Path == "/example.git/info/refs":
+						body = "001e# service=git-upload-pack\n0000" + packet(commit+" HEAD\x00object-format=sha1\n") + "0000"
+					case strings.HasSuffix(req.URL.Path, "/.SRCINFO"):
+						body = "pkgbase = " + base + "\npkgver = 1\npkgrel = 1\npkgname = example\n"
+					default:
+						t.Fatalf("unexpected metadata request: %s", req.URL)
+					}
+					return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+				})}
+				runner := &countingRunner{}
+				declaration := config.Application{Source: config.AUR, Identifier: "example"}
+				cfg := config.Config{Version: 2, Applications: []config.Application{declaration}}
+				fact := Applications(context.Background(), cfg, plan.State{}, Resolver{Runner: runner, Client: client})[declaration]
+				wantRequests := 1
+				wantCause := "invalid AUR package base"
+				if boundary == "SRCINFO" {
+					wantRequests = 3
+					wantCause = ".SRCINFO contains an invalid package base"
+				}
+				if fact.State != plan.Unavailable || fact.Err == nil || !strings.Contains(fact.Err.Error(), wantCause) {
+					t.Fatalf("invalid base was not rejected: fact=%+v", fact)
+				}
+				if fact.AURSource.Commit != "" || len(fact.AURPackages) != 0 || runner.calls != 0 || requests != wantRequests {
+					t.Fatalf("invalid base reached build planning: fact=%+v calls=%d requests=%d", fact, runner.calls, requests)
+				}
+			})
+		}
 	}
 }
 
