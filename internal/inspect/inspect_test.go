@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/run"
 	sshops "github.com/luigiverona/ops/internal/ssh"
@@ -70,7 +71,11 @@ func (f *stateRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) 
 		}
 		return run.Result{Stdout: "user@example.com\n"}, nil
 	case "ssh-keygen":
-		path := spec.Args[len(spec.Args)-1]
+		private, ok := spec.Stdin.(*os.File)
+		if !ok || spec.Interactive {
+			return run.Result{}, errors.New("expected noninteractive private-file inspection")
+		}
+		path := private.Name()
 		key := f.managedKey
 		if filepath.Base(path) == "other" {
 			key = f.otherKey
@@ -235,4 +240,60 @@ func testPacmanConf(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+type agentStateRunner struct {
+	stateRunner
+	err    error
+	output string
+	calls  int
+}
+
+func (r *agentStateRunner) Run(ctx context.Context, spec run.Spec) (run.Result, error) {
+	if spec.Name == "ssh-add" {
+		r.calls++
+		if spec.Interactive || strings.Join(spec.Args, " ") != "-L" {
+			return run.Result{}, errors.New("unexpected agent mutation")
+		}
+		return run.Result{Stdout: r.output}, r.err
+	}
+	return r.stateRunner.Run(ctx, spec)
+}
+
+type agentStateExit int
+
+func (e agentStateExit) Error() string { return "ssh-add failed" }
+func (e agentStateExit) ExitCode() int { return int(e) }
+
+func TestLocalAgentAvailabilityAndDoctorSkip(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		exit      int
+		output    string
+		available bool
+		wantError bool
+	}{
+		{name: "empty", exit: 1, output: "The agent has no identities.\n", available: true},
+		{name: "unavailable", exit: 2},
+		{name: "unexpected", exit: 1, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &agentStateRunner{err: &run.Error{Name: "ssh-add", Err: agentStateExit(test.exit)}, output: test.output}
+			w := Workstation{Home: t.TempDir(), Runner: runner, PacmanConf: testPacmanConf(t)}
+			state, err := w.Local(context.Background())
+			if (err != nil) != test.wantError || state.SSHAgentAvailable != test.available || state.ManagedSSHAgentIdentity || state.UnrelatedSSHAgentIdentities != 0 || runner.calls != 1 {
+				t.Fatalf("state=%#v err=%v calls=%d", state, err, runner.calls)
+			}
+			if !test.wantError {
+				p := plan.Build(config.Config{}, state, plan.Facts{})
+				if p.LoadSSHAgent != test.available {
+					t.Fatalf("managed load plan does not reflect agent availability: %#v", p)
+				}
+			}
+			w.SkipAgent = true
+			if _, err := w.Local(context.Background()); err != nil || runner.calls != 1 {
+				t.Fatalf("Doctor inspection consulted session agent: %v calls=%d", err, runner.calls)
+			}
+		})
+	}
 }
