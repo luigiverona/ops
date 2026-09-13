@@ -14,21 +14,33 @@ import (
 
 func TestConfigureGitInspectionFailureDoesNotPromptOrMutate(t *testing.T) {
 	for _, field := range []string{"user.name", "user.email"} {
-		for _, cause := range []error{errors.New("runner unavailable"), context.Canceled} {
-			t.Run(field+"/"+cause.Error(), func(t *testing.T) {
+		for _, cause := range []error{
+			errors.New("runner unavailable"), context.Canceled,
+			errors.Join(diagnosticExit(1), errors.New("incomplete inspection")),
+			&run.Error{Err: diagnosticExit(1), Evidence: "permission denied"},
+			nil,
+		} {
+			name := "successful read with diagnostics"
+			if cause != nil {
+				name = cause.Error()
+			}
+			t.Run(field+"/"+name, func(t *testing.T) {
 				var output bytes.Buffer
 				runner := diagnosticRunner(func(_ context.Context, spec run.Spec) (run.Result, error) {
 					if spec.Name != "git" || len(spec.Args) != 4 || spec.Args[2] != "--get" {
 						t.Fatalf("inspection failure reached mutation: %#v", spec)
 					}
 					if spec.Args[3] == field {
+						if cause == nil {
+							return run.Result{Stdout: "Fallback\n", Stderr: "permission denied\n"}, nil
+						}
 						return run.Result{}, cause
 					}
 					return run.Result{}, diagnosticExit(1)
 				})
 				a := Runtime{Runner: runner, Out: &output, Err: &output, interruption: &interruption{}}
 				status, err := a.configureGit(context.Background(), ui.UI{In: strings.NewReader("Test User\nuser@example.invalid\n"), Out: &output})
-				if status != "failed" || !errors.Is(err, cause) || output.Len() != 0 || a.interruption.mutation {
+				if status != "failed" || err == nil || cause != nil && !errors.Is(err, cause) || output.Len() != 0 || a.interruption.mutation {
 					t.Fatalf("status=%s err=%v mutation=%v output=%s", status, err, a.interruption.mutation, &output)
 				}
 			})

@@ -103,6 +103,13 @@ func TestInspectRejectsInconclusiveReads(t *testing.T) {
 			{"config failure", run.Result{}, &run.Error{Name: "git", Err: testExit(128)}},
 			{"read diagnostic", run.Result{Stderr: "permission denied\n"}, &run.Error{Name: "git", Err: testExit(1)}},
 			{"error diagnostic", run.Result{}, &run.Error{Name: "git", Stderr: "permission denied", Err: testExit(1)}},
+			{"retained evidence", run.Result{}, &run.Error{Name: "git", Evidence: "\n", Err: testExit(1)}},
+			{"truncated evidence", run.Result{}, &run.Error{Name: "git", EvidenceTruncated: true, Err: testExit(1)}},
+			{"nested diagnostic", run.Result{}, &run.Error{Name: "git", Err: &run.Error{Stderr: "permission denied", Err: testExit(1)}}},
+			{"joined runner failure", run.Result{}, errors.Join(testExit(1), errors.New("runner unavailable"))},
+			{"wrapped joined capture failure", run.Result{}, fmt.Errorf("runner: %w", &run.Error{Name: "git", Err: errors.Join(testExit(1), errors.New("incomplete capture"))})},
+			{"joined cancellation", run.Result{}, errors.Join(testExit(1), context.Canceled)},
+			{"joined deadline", run.Result{}, &run.Error{Name: "git", Err: errors.Join(testExit(1), context.DeadlineExceeded)}},
 			{"partial value", run.Result{Stdout: "value\n"}, testExit(1)},
 			{"whitespace value", run.Result{Stdout: "\n"}, testExit(1)},
 			{"whitespace diagnostic", run.Result{Stderr: "\n"}, testExit(1)},
@@ -116,6 +123,35 @@ func TestInspectRejectsInconclusiveReads(t *testing.T) {
 				})
 				got, err := (Manager{Runner: runner}).Inspect(context.Background())
 				if !errors.Is(err, test.err) || !strings.Contains(err.Error(), field) || got != (Identity{}) {
+					t.Fatalf("identity=%#v err=%v", got, err)
+				}
+			})
+		}
+	}
+}
+
+func TestInspectWrappedMissingValue(t *testing.T) {
+	runner := runnerFunc(func(context.Context, run.Spec) (run.Result, error) {
+		return run.Result{}, fmt.Errorf("runner: %w", &run.Error{Name: "git", Err: testExit(1)})
+	})
+	got, err := (Manager{Runner: runner}).Inspect(context.Background())
+	if err != nil || got != (Identity{}) {
+		t.Fatalf("identity=%#v err=%v", got, err)
+	}
+}
+
+func TestInspectRejectsSuccessfulReadWithDiagnostics(t *testing.T) {
+	for _, field := range []string{"user.name", "user.email"} {
+		for _, diagnostic := range []string{"permission denied\n", " \n"} {
+			t.Run(field+"/"+diagnostic, func(t *testing.T) {
+				runner := runnerFunc(func(_ context.Context, spec run.Spec) (run.Result, error) {
+					if spec.Args[3] == field {
+						return run.Result{Stdout: "fallback\n", Stderr: diagnostic}, nil
+					}
+					return run.Result{Stdout: "Existing\n"}, nil
+				})
+				got, err := (Manager{Runner: runner}).Inspect(context.Background())
+				if err == nil || got != (Identity{}) || !strings.Contains(err.Error(), field) {
 					t.Fatalf("identity=%#v err=%v", got, err)
 				}
 			})
@@ -177,6 +213,7 @@ func TestInspectIsolatedGitConfig(t *testing.T) {
 		name, content       string
 		want                Identity
 		unreadable, wantErr bool
+		xdgFallback         bool
 	}{
 		{name: "both absent"},
 		{name: "name absent", content: "[user]\n email = user@example.invalid\n", want: Identity{Email: "user@example.invalid"}},
@@ -185,6 +222,7 @@ func TestInspectIsolatedGitConfig(t *testing.T) {
 		{name: "invalid value", content: "[user]\n email = invalid\n", want: Identity{Email: "invalid"}},
 		{name: "malformed", content: "[user\n", wantErr: true},
 		{name: "unreadable", content: "[user]\n name = Test User\n", unreadable: true, wantErr: true},
+		{name: "unreadable with XDG fallback", content: "[user]\n name = Preferred User\n email = preferred@example.invalid\n", unreadable: true, xdgFallback: true, wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if test.unreadable && os.Geteuid() == 0 {
@@ -192,6 +230,19 @@ func TestInspectIsolatedGitConfig(t *testing.T) {
 			}
 			if err := os.WriteFile(path, []byte(test.content), 0o600); err != nil {
 				t.Fatal(err)
+			}
+			if test.xdgFallback {
+				t.Setenv("GIT_CONFIG_GLOBAL", "")
+				if err := os.Unsetenv("GIT_CONFIG_GLOBAL"); err != nil {
+					t.Fatal(err)
+				}
+				xdg := filepath.Join(home, "xdg", "git")
+				if err := os.MkdirAll(xdg, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(xdg, "config"), []byte("[user]\n name = Fallback User\n email = fallback@example.invalid\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if test.unreadable {
 				if err := os.Chmod(path, 0); err != nil {

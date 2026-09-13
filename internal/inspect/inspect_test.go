@@ -324,12 +324,15 @@ func TestLocalGitStateOnlyPlansFromSuccessfulInspection(t *testing.T) {
 			{name: "invalid", result: run.Result{Stdout: "\n"}},
 			{name: "unavailable", err: errors.New("Git unavailable"), wantErr: true},
 			{name: "unreadable", result: run.Result{Stderr: "permission denied\n"}, err: gitStateExit(1), wantErr: true},
+			{name: "joined failure", err: errors.Join(gitStateExit(1), errors.New("incomplete inspection")), wantErr: true},
+			{name: "retained evidence", err: &run.Error{Err: gitStateExit(1), Evidence: "permission denied"}, wantErr: true},
+			{name: "successful with diagnostic", result: run.Result{Stdout: "Fallback\n", Stderr: "permission denied\n"}, wantErr: true},
 		} {
 			t.Run(field+"/"+test.name, func(t *testing.T) {
 				w := Workstation{Runner: &gitStateRunner{field: field, result: test.result, err: test.err}, Home: t.TempDir(), PacmanConf: testPacmanConf(t), SkipAgent: true}
 				state, err := w.Local(context.Background())
 				if test.wantErr {
-					if !errors.Is(err, test.err) || state.GitName != "" || state.GitEmail != "" {
+					if err == nil || test.err != nil && !errors.Is(err, test.err) || state.GitName != "" || state.GitEmail != "" {
 						t.Fatalf("state=%#v err=%v", state, err)
 					}
 					return

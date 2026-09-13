@@ -37,16 +37,40 @@ func (m Manager) optionalGlobalValue(ctx context.Context, key string) (string, e
 		return "", fmt.Errorf("inspect Git %s: %w", key, ctxErr)
 	}
 	if err == nil {
-		return strings.TrimSpace(result.Stdout), nil
+		if result.Stderr == "" {
+			return strings.TrimSpace(result.Stdout), nil
+		}
+		// Git can return an XDG fallback value with exit 0 after warning
+		// that the higher-priority ~/.gitconfig could not be read.
+		err = &run.Error{Name: "git", Stderr: result.Stderr, Err: errors.New("global configuration inspection emitted diagnostics")}
 	}
 	// --get exits 1 for an unset value, but also for some read failures.
 	// Only a silent exit with no value establishes absence.
-	var commandErr *run.Error
-	if run.Exited(err, 1) && result.Stdout == "" && result.Stderr == "" &&
-		(!errors.As(err, &commandErr) || commandErr.Stderr == "") {
+	if result.Stdout == "" && result.Stderr == "" && silentMissingExit(err) {
 		return "", nil
 	}
 	return "", fmt.Errorf("inspect Git %s: %w", key, err)
+}
+
+// Absence requires a single exit-1 cause. run.Exited can also
+// find that exit inside a joined inspection failure, which is inconclusive.
+func silentMissingExit(err error) bool {
+	for err != nil {
+		if commandErr, ok := err.(*run.Error); ok &&
+			(commandErr.Stderr != "" || commandErr.Evidence != "" || commandErr.EvidenceTruncated) {
+			return false
+		}
+		switch cause := err.(type) {
+		case interface{ Unwrap() []error }:
+			return false
+		case interface{ Unwrap() error }:
+			err = cause.Unwrap()
+		default:
+			exit, ok := err.(interface{ ExitCode() int })
+			return ok && exit.ExitCode() == 1
+		}
+	}
+	return false
 }
 
 func ValidName(value string) bool {
