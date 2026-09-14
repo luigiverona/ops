@@ -78,6 +78,8 @@ identifiers from the selected source; ops never chooses another source as a
 fallback.
 
 Official/AUR package installation is preceded by one full, interactive `pacman -Syu`.
+Wave D's [independent review](docs/wave-d-independent-review.md) has unresolved
+provenance and read-only inspection findings; it is not ready for a PR.
 The general upgrade uses all configured repositories, including custom repositories,
 so their available rebuilds are included. Subsequent managed official installations
 use only `core`, `extra`, and enabled `multilib`.

@@ -85,6 +85,13 @@ The pre-approval disclosure and source-contract documentation were updated.
 change and passes afterward. The real libalpm fixture independently demonstrates
 the omitted rebuild.
 
+A separate isolated ELF probe compiled a client against `libops.so.1`, then
+left only `libops.so.2` available. The old client exited 127 with a missing
+`libops.so.1` loader error; the rebuilt client linked to `.so.2` exited 0.
+Together with the real libalpm upgrade-selection probe this confirms the
+concrete ABI failure, rather than inferring a defect solely from repository
+configuration differences.
+
 ### D-R4 — Important: official repository section names are trust anchors
 
 Location: `internal/archrepo/identity.go`, `Official`, and
@@ -221,3 +228,179 @@ remain unfinished Wave D work; they are not waived or classified Optional.
   `_flatpak_dir_ensure_repo`, `flatpak_dir_get_remote_subset`, and
   `flatpak_dir_remote_fetch_summary_index` establish inspection side effects and
   the independent summary-signature flag.
+
+## Remaining scope assessment
+
+- Official sync targets retain `repo/name` through plan packages, build packages,
+  provider bindings, transaction parsing and installation. Unknown repositories,
+  duplicate concrete names, malformed/missing identities and missing explicit
+  install targets fail closed. Ordering is canonicalized. Bare names remain at
+  local query and install-reason operations, where they identify local packages;
+  they are not used as official sync installation targets.
+- Core targets are `extra/git`, `core/openssh`, `extra/github-cli`, and conditional
+  `extra/flatpak`. Mutation and verification use these identities; the shared
+  metadata predicate still admits the forged package. Repository moves may need
+  maintenance. No new exception was added to accept a custom repository.
+- Pacman's equal-version `--needed` skip was independently reproduced. Official
+  `-S` mutation and print paths already omit it, including core and AUR official
+  dependency installations. They can select an equal-version qualified reinstall.
+  The unresolved forged case prevents repair from being planned in the first
+  place. No real privileged reinstall was executed to claim installed-byte proof.
+- Direct official dependencies, virtual official providers, versioned official
+  providers and multiple installed possible providers pass the real fixture
+  matrix. Custom-only and foreign-only installed virtual satisfiers are rejected
+  even when `-T` succeeds. Copied provider metadata bypasses these checks (D-R1),
+  and satisfied transitive custom dependencies are omitted (D-R6).
+- Pre-build revalidation rejects changed providers/repositories and transaction
+  additions. Shrinkage verifies omitted planned members. Final reinspection now
+  repeats these checks for retained approved AUR bindings (D-R7 corrected). It
+  does not reconstruct historical build plans for previously ready AUR apps.
+- Install-reason behavior remains explicit: ordinary implicit dependencies stay
+  implicit; AUR concrete build packages use `--asdeps`; planned explicit intent
+  is restored and checked; declared official apps are marked explicit only after
+  the source predicate. Existing focused reason-preservation regressions pass.
+- Protected configuration round-trips through real `pacman-conf` with `RootDir`,
+  `DBPath`, `GPGDir`, `Architecture`, `SigLevel`, `LocalFileSigLevel`, and
+  `RemoteFileSigLevel` unchanged. Include expansion preserves resolved Server
+  values. Commented multilib stays absent. Duplicate sections remain visible in
+  real expansion and are rejected by the filter. Protected staging checks root
+  ownership, file type, permissions, links and validated directory names; cleanup
+  is attempted on copy, verification and transaction failure. Those protections
+  do not authenticate the original configuration, its mirrors or sync content
+  (D-R4), and separate CLI processes do not lock out concurrent root changes.
+- Flatpak JSON parsing correctly distinguishes empty application output from an
+  empty remote array, and rejects null, non-string values, missing/duplicate/
+  unknown keys, malformed/trailing JSON, duplicate remote names and duplicate
+  application IDs. Actual selected-column JSON keys match Flatpak 1.18.2.
+  Schema strictness does not establish completeness of trust options (D-R2).
+- Reported `oci`, `no-enumerate`, `no-gpg-verify`, `filtered`, and disabled
+  options prevent readiness. Title/comment presentation metadata is harmless
+  and does not block an otherwise canonical fixture. Subsets and summary trust
+  are unresolved. Stored origin is checked, not historical Flatpak byte origin.
+- Wrong-origin Flatpaks become failures in inspection/planning/Doctor and are not
+  silently treated as missing. Install refuses migration and verifies origin
+  afterward. The original final-origin/URL/disabled-drift regressions pass.
+- Missing remote creation and disabled canonical remote enablement are exposed
+  before `Continue?`. Decline does not mutate. A changed existing namesake or
+  wrong URL is rejected before correction, and reported postconditions are
+  checked afterward. There is no `--if-not-exists` preservation or destructive
+  app reinstall. The CLI check/mutate window is not atomic against another
+  same-user process; hidden source options still bypass these checks (D-R2).
+- Doctor calls no new pacman mutation, synchronization, sudo staging, app install,
+  remote repair or GPG mutation explicitly. Its use of real Flatpak inspection
+  nevertheless violates strict read-only behavior on legacy state (D-R5).
+- `archrepo` has a coherent repository-policy/identity-query responsibility and
+  one official repository allowlist. Qualified-string boundaries are validated.
+  The architectural blockers are missing authenticated evidence and confusing
+  transaction membership with an installed dependency closure, already counted
+  in D-R1/D-R4/D-R6; file count itself is not a finding.
+
+Optional improvements: centralize a typed qualified target to reduce repeated
+`Repository + "/" + Name` construction; provide clearer recovery for a custom
+repository taking priority in read-only transaction planning when the eventual
+official-only installation would use different implicit providers; maintain
+core target mappings when official repositories move packages. These are not
+additional release blockers.
+
+## Validation and disposition
+
+Go 1.26.7 exactly, invoked by absolute path with `GOENV=off` and
+`GOTOOLCHAIN=local`. `go env GOTOOLCHAIN GOENV` prints `local` and an empty GOENV
+path (the environment-file mechanism is disabled).
+
+| Check | Result |
+| --- | --- |
+| Initial seven focused suites, before review tests | All passed |
+| `go mod verify` | Passed |
+| `gofmt -l .` | Empty |
+| `go test -count=1 ./internal/archrepo` | Failed: D-R1, D-R4, D-R6 regressions |
+| `go test -count=1 ./internal/resolve` | Passed |
+| `go test -count=1 ./internal/inspect` | Passed |
+| `go test -count=1 ./internal/plan` | Passed |
+| `go test -count=1 ./internal/arch` | Passed, including D-R3 correction |
+| `go test -count=1 ./internal/flatpak` | Failed: D-R2 and D-R5 regressions |
+| `go test -count=1 ./internal/app` | Passed, including D-R7 correction |
+| All new adversarial tests | Executed; unresolved findings remain red |
+| `go vet ./...` | Passed |
+| `go build ./...` | Passed |
+| `git diff --check` | Passed |
+| Targeted race | Not run: zero-blocker prerequisite is not met |
+| Full `go test -count=1 ./...` | Not run: ready gate is blocked |
+| Full repository race | Deliberately not run, as requested |
+
+The full non-race test suite also contains real detached-signature fixture
+creation in `internal/release/release_test.go`; it was not invoked under the
+no-signing instruction. No key generation, import or signing command was run by
+this review. No test or native probe used the preserved VM or real package/remote
+mutation. Full end-to-end installed-byte repair is unverified because no such
+repair implementation exists yet; the native pacman probes use print/query modes.
+
+The two corrective production changes have separate Conventional Commits.
+Failing unresolved regressions are preserved explicitly, without skips or weakened
+assertions. There are **zero proven Critical findings, seven Important findings,
+two corrected and five unresolved**. This is a blocked independent review, not a
+completed implementation or permission to open a PR.
+
+No push, PR, merge, tag, release, publication, R2 access, VM mutation, signing,
+Go/dependency upgrade or next-wave work occurred. The expected feature branch
+and original implementation commit remain intact. Evidence logs and source probes
+also remain under `/tmp/ops-wave-d-review`; durable findings and reproducers are
+committed in this repository so another shutdown does not lose the review.
+
+## Exact changed files
+
+Baseline to final review tree: 50 files. This includes
+all 44 original Wave D files and six files added by the independent review.
+
+```text
+README.md
+docs/architecture.md
+docs/configuration.md
+docs/package-source-provenance.md
+docs/wave-d-independent-review.md
+docs/workstation-security.md
+internal/app/applications.go
+internal/app/aur_application_test.go
+internal/app/aur_order_test.go
+internal/app/diagnostic_test.go
+internal/app/doctor.go
+internal/app/doctor_test.go
+internal/app/lifecycle.go
+internal/app/lifecycle_test.go
+internal/app/output.go
+internal/app/output_test.go
+internal/app/prepare.go
+internal/app/prepare_test.go
+internal/app/provenance_test.go
+internal/app/review_test.go
+internal/app/terminal_test.go
+internal/arch/manager.go
+internal/arch/manager_test.go
+internal/arch/provenance.go
+internal/arch/provenance_test.go
+internal/arch/review_test.go
+internal/archrepo/cli_test.go
+internal/archrepo/config.go
+internal/archrepo/config_test.go
+internal/archrepo/identity.go
+internal/archrepo/provenance_test.go
+internal/archrepo/query.go
+internal/archrepo/review_test.go
+internal/flatpak/flatpak.go
+internal/flatpak/provenance_test.go
+internal/flatpak/review_test.go
+internal/inspect/inspect.go
+internal/inspect/inspect_test.go
+internal/inspect/provenance_test.go
+internal/plan/plan.go
+internal/plan/plan_test.go
+internal/plan/provenance_test.go
+internal/resolve/applications.go
+internal/resolve/minimal_test.go
+internal/resolve/planning_test.go
+internal/resolve/provenance_test.go
+internal/resolve/resolve.go
+internal/resolve/resolve_test.go
+internal/testpkg/fixture.go
+internal/testpkg/pacman.go
+```
