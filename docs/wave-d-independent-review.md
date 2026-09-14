@@ -66,6 +66,15 @@ Source: [Arch Flatpak dependencies](https://archlinux.org/packages/extra/x86_64/
 and [bubblewrap isolation model](https://github.com/containers/bubblewrap/blob/main/README.md).
 The existing installed bubblewrap was used; no dependency was installed or upgraded.
 
+D-R5 follow-up found during validation: hiding all of `/run` also hides valid
+user runtime files, potentially misreporting an explicitly configured Flatpak
+installation there as absent. `TestReadOnlyFilesystemPreservesRuntimeFiles`
+reproduced the failure before correction. Preserve `/run` read-only and instead
+set both D-Bus addresses to the non-socket `/dev/null` inside the private device
+namespace. Native queries retain access to their state while helper connections
+cannot use the normal session/system bus addresses. This is part of D-R5's
+correction, not a waived source-identity limitation.
+
 ## First resume checkpoint
 
 State A: clean `fix/package-source-provenance`, no stashes or corrective

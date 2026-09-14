@@ -34,3 +34,26 @@ func TestReadOnlyFilesystemNeverFallsBack(t *testing.T) {
 		t.Fatal("missing bubblewrap silently bypassed read-only boundary")
 	}
 }
+
+func TestReadOnlyFilesystemPreservesRuntimeFiles(t *testing.T) {
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		t.Skip("bubblewrap unavailable")
+	}
+	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+	if runtimeDir == "" {
+		t.Skip("no user runtime directory")
+	}
+	dir, err := os.MkdirTemp(runtimeDir, "ops-readonly-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	path := filepath.Join(dir, "inventory")
+	if err := os.WriteFile(path, []byte("existing state"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (Exec{}).Run(context.Background(), Spec{Name: "cat", Args: []string{path}, ReadOnlyFilesystem: true})
+	if err != nil || result.Stdout != "existing state" {
+		t.Fatalf("runtime inventory hidden: %q %v", result.Stdout, err)
+	}
+}
