@@ -16,6 +16,7 @@ import (
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/run"
+	"github.com/luigiverona/ops/internal/testpkg"
 	"github.com/luigiverona/ops/internal/ui"
 )
 
@@ -34,16 +35,20 @@ type applicationAURRunner struct {
 
 func (r *applicationAURRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
 	r.calls = append(r.calls, spec)
+	if spec.Name == "pacman-conf" || spec.Name == "pacman" && (spec.Args[0] == "-Qi" || spec.Args[0] == "-Si" || spec.Args[0] == "-Sl") {
+		result, _ := testpkg.Query(spec)
+		return result, nil
+	}
 	if spec.Name == "paru" {
 		return run.Result{}, errors.New("direct paru application installation is forbidden")
 	}
 	if spec.Name == "sudo" {
 		args := strings.Join(spec.Args, " ")
 		switch {
-		case strings.HasPrefix(args, "-n pacman -S --needed --noconfirm --asdeps -- "):
+		case strings.HasPrefix(args, "-n pacman -S --noconfirm --asdeps -- "):
 			r.dependenciesInstalled = true
 			return run.Result{}, nil
-		case strings.HasPrefix(args, "-n pacman -S --needed --noconfirm -- "):
+		case strings.HasPrefix(args, "-n pacman -S --noconfirm -- "):
 			r.dependenciesInstalled = true
 			return run.Result{}, nil
 		case strings.HasPrefix(args, "-n pacman -D --asexplicit -- "):
@@ -99,8 +104,8 @@ func (r *applicationAURRunner) Run(_ context.Context, spec run.Spec) (run.Result
 					format = spec.Args[i+1]
 				}
 			}
-			if format == "%n\t%P" {
-				return run.Result{Stdout: spec.Args[len(spec.Args)-1] + "\t\n"}, nil
+			if format == "%r/%n\t%P" {
+				return run.Result{Stdout: "extra/" + spec.Args[len(spec.Args)-1] + "\t\n"}, nil
 			}
 			for i, arg := range spec.Args {
 				if arg == "--" {
@@ -153,8 +158,8 @@ func TestAURApplicationBuildIsPinnedNoninteractiveAndInstallsOnlySelectedOutput(
 		AURSource:          plan.AURSource{Commit: applicationAURCommit, Metadata: metadata},
 		AUROutputs:         []string{"browser-bin"},
 		AURExplicitOutputs: []string{"browser-bin"},
-		AURDependencies:    []plan.OfficialDependency{{Requirement: "base-devel", Satisfied: true}, {Requirement: "builder", Provider: "builder", Packages: []string{"builder"}}, {Requirement: "runtime", Provider: "runtime", Packages: []string{"runtime"}}},
-		AURPackages:        []plan.BuildPackage{{Name: "builder", Purposes: []string{"build"}}, {Name: "runtime", Purposes: []string{"runtime"}}},
+		AURDependencies:    []plan.OfficialDependency{{Requirement: "base-devel", Provider: "extra/base-devel", Packages: []string{"extra/base-devel"}, Satisfied: true}, {Requirement: "builder", Provider: "extra/builder", Packages: []string{"extra/builder"}}, {Requirement: "runtime", Provider: "extra/runtime", Packages: []string{"extra/runtime"}}},
+		AURPackages:        []plan.BuildPackage{{Name: "builder", Repository: "extra", Purposes: []string{"build"}}, {Name: "runtime", Repository: "extra", Purposes: []string{"runtime"}}},
 	}
 	runner := &applicationAURRunner{}
 	var output bytes.Buffer
@@ -212,8 +217,8 @@ func TestAURDeclaredOfficialDependencyIsInstalledExplicitly(t *testing.T) {
 		AURSource:          plan.AURSource{Commit: applicationAURCommit, Metadata: metadata},
 		AUROutputs:         []string{"browser-bin"},
 		AURExplicitOutputs: []string{"browser-bin"},
-		AURDependencies:    []plan.OfficialDependency{{Requirement: "shared", Provider: "shared", Packages: []string{"shared"}}},
-		AURPackages:        []plan.BuildPackage{{Name: "shared", Purposes: []string{"runtime"}, AsExplicit: true}},
+		AURDependencies:    []plan.OfficialDependency{{Requirement: "shared", Provider: "extra/shared", Packages: []string{"extra/shared"}}},
+		AURPackages:        []plan.BuildPackage{{Name: "shared", Repository: "extra", Purposes: []string{"runtime"}, AsExplicit: true}},
 	}
 	runner := &applicationAURRunner{}
 	manager := aur.Manager{Runner: runner, Review: func(string, map[string]string) error { return nil }}
@@ -228,7 +233,7 @@ func TestAURDeclaredOfficialDependencyIsInstalledExplicitly(t *testing.T) {
 		}
 		args := strings.Join(call.Args, " ")
 		markedExplicit = markedExplicit || args == "-n pacman -D --asexplicit -- shared"
-		installedAsDependency = installedAsDependency || strings.Contains(args, "--asdeps") && strings.Contains(args, " shared")
+		installedAsDependency = installedAsDependency || strings.Contains(args, "--asdeps") && strings.Contains(args, " extra/shared")
 	}
 	if !markedExplicit || !installedAsDependency {
 		t.Fatalf("declared dependency install reason was order-dependent: %#v", runner.calls)

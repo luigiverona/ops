@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/luigiverona/ops/internal/arch"
+	"github.com/luigiverona/ops/internal/archrepo"
 	"github.com/luigiverona/ops/internal/aur"
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/flatpak"
@@ -119,7 +120,7 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 			return execution{status: Fatal}
 		}
 		a.progress("Updating system...")
-		if err := archManager.FullUpgrade(ctx); err != nil {
+		if err := archManager.FullUpgrade(ctx, p.UpgradeTargets...); err != nil {
 			return stop("Arch system upgrade", "core", err, "package installation cannot continue safely")
 		}
 	}
@@ -129,7 +130,7 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		}
 		a.progress("Installing packages...")
 	}
-	if err := archManager.Install(ctx, p.CorePackages, false); err != nil {
+	if err := archManager.Install(ctx, coreTargets(p.CorePackages), false); err != nil {
 		return stop("core packages", "core", err, "required workstation capabilities are unavailable")
 	}
 
@@ -145,6 +146,16 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		}
 		a.progress("Preparing Flatpak applications...")
 		if err := flatpakManager.AddFlathub(ctx); err != nil {
+			return stop("flathub", "core", err, "Flatpak application support is unavailable")
+		}
+	}
+
+	if p.EnableFlathub {
+		if err := a.beginMutation(ctx); err != nil {
+			return execution{status: Fatal}
+		}
+		a.progress("Enabling user Flathub...")
+		if err := flatpakManager.EnableFlathub(ctx); err != nil {
 			return stop("flathub", "core", err, "Flatpak application support is unavailable")
 		}
 	}
@@ -270,8 +281,12 @@ func (a Runtime) verifyCore(ctx context.Context, p plan.Plan) error {
 		packages = append(packages, "flatpak")
 	}
 	for _, pkg := range packages {
-		if _, err := a.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Q", pkg}}); err != nil {
+		match, err := archrepo.InstalledMatch(ctx, a.Runner, coreTargets([]string{pkg})[0])
+		if err != nil {
 			return fmt.Errorf("verify prerequisite %s: %w", pkg, err)
+		}
+		if !match {
+			return fmt.Errorf("prerequisite %s does not match current official package metadata", pkg)
 		}
 	}
 	return nil
@@ -344,4 +359,13 @@ func (a Runtime) reviewAUR(ctx context.Context, terminal ui.UI, application plan
 		return errReviewDeclined
 	}
 	return nil
+}
+
+// Core prerequisites have fixed official identities on the supported Arch baseline.
+func coreTargets(names []string) []string {
+	targets := make([]string, 0, len(names))
+	for _, name := range names {
+		targets = append(targets, archrepo.Prerequisite(name))
+	}
+	return targets
 }

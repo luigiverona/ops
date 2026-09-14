@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/luigiverona/ops/internal/archrepo"
 	"github.com/luigiverona/ops/internal/aurmeta"
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/plan"
@@ -59,6 +60,20 @@ func applications(ctx context.Context, cfg config.Config, state plan.State, reso
 		if plan.IsInstalled(declaration, state) {
 			continue
 		}
+		if declaration.Source == config.Flatpak {
+			if origin := state.Flatpaks[declaration.Identifier]; origin != "" {
+				app.State = plan.Failed
+				app.Cause = "installed Flatpak origin cannot be validated as enabled Flathub; inspect flatpak list --user --app --columns=application,origin and reconcile manually"
+				facts[declaration] = app
+				continue
+			}
+			if state.Flathub.Name != "" && !state.Flathub.Canonical() {
+				app.State = plan.Failed
+				app.Cause = "incompatible flathub remote; inspect flatpak remotes --user --show-disabled and reconcile its source manually"
+				facts[declaration] = app
+				continue
+			}
+		}
 		var metadata plan.Package
 		var found bool
 		var err error
@@ -86,6 +101,16 @@ func applications(ctx context.Context, cfg config.Config, state plan.State, reso
 		}
 		app.State = "install"
 		if declaration.Source == "pacman" {
+			if metadata.Name != declaration.Identifier || !archrepo.Official(metadata.Repository) {
+				app.State = plan.Failed
+				app.Cause = "invalid official package identity"
+				facts[declaration] = app
+				continue
+			}
+			app.Package = metadata
+			if state.Installed[declaration.Identifier] {
+				app.Cause = "installed package does not match current official metadata; reinstall " + metadata.Repository + "/" + metadata.Name + " (pacman does not record historical repository origin)"
+			}
 			app.EnableMultilib = metadata.Repository == "multilib"
 		}
 		if declaration.Source == "aur" && prepareBuilds {
@@ -187,14 +212,18 @@ func resolveAURBuild(ctx context.Context, resolver MetadataResolver, source plan
 		if binding.Satisfied {
 			continue
 		}
-		for _, packageName := range binding.Packages {
+		for _, target := range binding.Packages {
+			repo, packageName, _ := archrepo.Split(target)
 			pkg := packages[packageName]
+			if pkg != nil && pkg.Repository != repo {
+				return nil, nil, nil, fmt.Errorf("conflicting official provider repositories")
+			}
 			if pkg == nil {
-				pkg = &plan.BuildPackage{Name: packageName, AsExplicit: declared[packageName] || (installed[packageName] && explicit[packageName] && !foreign[packageName])}
+				pkg = &plan.BuildPackage{Name: packageName, Repository: repo, AsExplicit: declared[packageName] || (installed[packageName] && explicit[packageName] && !foreign[packageName])}
 				packages[packageName] = pkg
 			}
 			pkg.Purposes = appendUnique(pkg.Purposes, requirement.Purpose)
-			if packageName == binding.Provider && aurmeta.DependencyName(requirement.Expression) != binding.Provider {
+			if target == binding.Provider && aurmeta.DependencyName(requirement.Expression) != packageName {
 				pkg.Provides = appendUnique(pkg.Provides, aurmeta.DependencyName(requirement.Expression))
 			}
 		}
@@ -213,22 +242,17 @@ func validateOfficialDependency(binding plan.OfficialDependency, requirement str
 	if binding.Requirement != requirement {
 		return fmt.Errorf("requirement mismatch")
 	}
-	if binding.Satisfied {
-		if binding.Provider != "" || len(binding.Packages) != 0 {
-			return fmt.Errorf("satisfied dependency includes a repository transaction")
-		}
-		return nil
-	}
 	if binding.Provider == "" || len(binding.Packages) == 0 {
 		return fmt.Errorf("missing provider transaction")
 	}
 	seen := make(map[string]bool, len(binding.Packages))
 	providerFound := false
 	for _, name := range binding.Packages {
-		if !aurmeta.ValidPackageName(name) || seen[name] {
+		_, concrete, err := archrepo.Split(name)
+		if err != nil || seen[concrete] {
 			return fmt.Errorf("invalid transaction package")
 		}
-		seen[name] = true
+		seen[concrete] = true
 		providerFound = providerFound || name == binding.Provider
 	}
 	if !providerFound {

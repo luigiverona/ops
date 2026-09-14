@@ -85,7 +85,7 @@ func (a Runtime) reportDoctor(p plan.Plan, configErr error, missingConfig bool) 
 		reportEvidence(a.Out, application.Err)
 		if application.State.Actionable() {
 			prepare = true
-			if application.State == plan.Install {
+			if application.State == plan.Install && application.Cause == "" {
 				fmt.Fprintln(a.Out, "    The declared application is not installed.")
 			}
 			if len(application.Services) > 0 {

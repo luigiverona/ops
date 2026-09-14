@@ -54,6 +54,19 @@ for checking that declaration. An unavailable source or inconclusive query
 does not establish absence: address the query failure and retry when the source
 is accessible, without changing apps.toml merely because the lookup failed.
 
+`pacman` covers only `core`, `extra`, and `multilib`. A custom repository's
+same-name package does not provide official readiness evidence. Ops compares
+installed metadata with the exact official sync package; pacman does not retain
+historical repository origin. An installed metadata mismatch is shown as an
+official reinstall in the setup plan.
+
+`flatpak` requires origin `flathub` in the user installation and an enabled remote
+with URL `https://dl.flathub.org/repo/`. Ops can add a missing remote or enable an
+otherwise canonical disabled remote after approval. Wrong URLs, unsafe remote
+options, ambiguous inventories, and other app origins are reported for manual
+reconciliation. Ops does not remove or reinstall wrong-origin Flatpaks.
+See [package source contracts](package-source-provenance.md) for exact semantics.
+
 ## Format diagnostics
 
 A missing file must be created before running `ops`; `ops doctor` can still

@@ -10,7 +10,9 @@ import (
 	"strings"
 
 	"github.com/luigiverona/ops/internal/arch"
+	"github.com/luigiverona/ops/internal/archrepo"
 	"github.com/luigiverona/ops/internal/config"
+	"github.com/luigiverona/ops/internal/flatpak"
 	gitops "github.com/luigiverona/ops/internal/git"
 	githubops "github.com/luigiverona/ops/internal/github"
 	"github.com/luigiverona/ops/internal/plan"
@@ -35,7 +37,7 @@ type Workstation struct {
 func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 	state := plan.State{
 		Services:  map[string]bool{},
-		Installed: map[string]bool{}, Explicit: map[string]bool{}, Foreign: map[string]bool{}, Flatpaks: map[string]bool{},
+		Installed: map[string]bool{}, Explicit: map[string]bool{}, Foreign: map[string]bool{}, Flatpaks: map[string]string{},
 		SSHHostKeyFreshness: plan.SSHHostKeyFreshnessUnknown,
 	}
 	if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Qq"}}); err == nil {
@@ -53,22 +55,36 @@ func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 	} else {
 		return state, err
 	}
+	var names []string
+	wanted := map[string]bool{"git": true, "openssh": true, "github-cli": true, "flatpak": true}
+	for _, app := range w.Applications {
+		if app.Source == config.Pacman {
+			wanted[app.Identifier] = true
+		}
+	}
+	for name := range wanted {
+		if state.Installed[name] {
+			names = append(names, name)
+		}
+	}
+	var err error
+	state.OfficialMatches, err = archrepo.InstalledMatches(ctx, w.Runner, names)
+	if err != nil {
+		return state, err
+	}
 	if state.Installed["flatpak"] {
-		if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "flatpak", Args: []string{"list", "--user", "--app", "--columns=application"}}); err == nil {
-			addLines(state.Flatpaks, result.Stdout)
-		} else {
+		manager := flatpak.Manager{Runner: w.Runner}
+		state.Flatpaks, err = manager.Applications(ctx)
+		if err != nil {
 			return state, fmt.Errorf("inspect installed Flatpak applications: %w", err)
 		}
-
-		if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "flatpak", Args: []string{"remotes", "--user", "--columns=name"}}); err == nil {
-			for _, line := range strings.Fields(result.Stdout) {
-				state.Flathub = state.Flathub || line == "flathub"
-			}
-		} else {
+		remotes, err := manager.Remotes(ctx)
+		if err != nil {
 			return state, fmt.Errorf("inspect Flatpak remotes: %w", err)
 		}
-
+		state.Flathub = remotes["flathub"]
 	}
+
 	path := w.PacmanConf
 	if path == "" {
 		path = "/etc/pacman.conf"

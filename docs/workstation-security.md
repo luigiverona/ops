@@ -16,6 +16,14 @@ There is no automatic rollback of a complete workstation run. Atomic replacement
 protects individual managed files; after a partial failure actual state is
 rediscovered. Failed core prerequisites stop dependent work.
 
+Official Arch readiness uses validated current official metadata rather than
+native/foreign classification or invented historical origin. Package mutations
+exclude custom repositories, including implicit dependencies and core packages.
+User Flatpak readiness requires an enabled canonical Flathub remote and matching
+app origin. Wrong-origin apps and wrong-URL namesakes are reported without
+destructive migration. See [package source contracts](package-source-provenance.md)
+for exact evidence, remediation, and trust limits.
+
 ## AUR
 
 AUR HTTPS source discovery validates the exact package base and a single pinned

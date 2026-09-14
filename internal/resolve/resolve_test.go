@@ -15,6 +15,7 @@ import (
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/run"
+	"github.com/luigiverona/ops/internal/testpkg"
 )
 
 type missingRunner struct{}
@@ -145,6 +146,9 @@ type dependencyRunner struct {
 
 func (f *dependencyRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
 	f.calls = append(f.calls, spec)
+	if spec.Name == "pacman" && (spec.Args[0] == "-Qi" || spec.Args[0] == "-Si") {
+		return run.Result{Stdout: testpkg.Info(spec.Args[len(spec.Args)-1])}, nil
+	}
 	if len(spec.Args) > 0 && spec.Args[0] == "-T" {
 		if f.satisfied {
 			return run.Result{}, nil
@@ -158,20 +162,20 @@ func (f *dependencyRunner) Run(_ context.Context, spec run.Spec) (run.Result, er
 }
 
 func TestOfficialDependencyPreservesInstalledSatisfier(t *testing.T) {
-	runner := &dependencyRunner{satisfied: true}
+	runner := &dependencyRunner{satisfied: true, transaction: "extra/rust\tcargo\n"}
 	binding, err := (Resolver{Runner: runner}).OfficialDependency(context.Background(), "cargo")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !binding.Satisfied || binding.Provider != "" || len(binding.Packages) != 0 || len(runner.calls) != 1 {
+	if !binding.Satisfied || binding.Provider != "extra/rust" || len(binding.Packages) != 1 || len(runner.calls) != 4 {
 		t.Fatalf("binding=%#v calls=%#v", binding, runner.calls)
 	}
 }
 
 func TestOfficialDependencyMaterializesPacmanProviderAndTransaction(t *testing.T) {
 	tests := []string{
-		"rust\tcargo rustfmt\nllvm-libs\t\n",
-		"llvm-libs\t\nrust\tcargo rustfmt\n",
+		"extra/rust\tcargo rustfmt\nextra/llvm-libs\t\n",
+		"extra/llvm-libs\t\nextra/rust\tcargo rustfmt\n",
 	}
 	for _, transaction := range tests {
 		runner := &dependencyRunner{transaction: transaction}
@@ -179,11 +183,11 @@ func TestOfficialDependencyMaterializesPacmanProviderAndTransaction(t *testing.T
 		if err != nil {
 			t.Fatal(err)
 		}
-		if binding.Satisfied || binding.Provider != "rust" || strings.Join(binding.Packages, ",") != "llvm-libs,rust" {
+		if binding.Satisfied || binding.Provider != "extra/rust" || strings.Join(binding.Packages, ",") != "extra/llvm-libs,extra/rust" {
 			t.Fatalf("binding=%#v", binding)
 		}
 		call := runner.calls[1]
-		if call.Name != "pacman" || strings.Join(call.Args, " ") != "-Sp --needed --noconfirm --print-format %n\t%P -- cargo" || call.Interactive {
+		if call.Name != "pacman" || strings.Join(call.Args, " ") != "-Sp --noconfirm --print-format %r/%n\t%P -- cargo" || call.Interactive {
 			t.Fatalf("non-deterministic provider query: %#v", call)
 		}
 	}
@@ -194,10 +198,10 @@ func TestParseProviderTransactionPacmanGrammar(t *testing.T) {
 		output string
 		want   string
 	}{
-		{"linux-api-headers\t\n", "linux-api-headers:"},
-		{"rust\tcargo rustfmt\n", "rust:cargo,rustfmt"},
-		{"provider\tvirtual=2.3\n", "provider:virtual=2.3"},
-		{"one\t\r\ntwo\tvirtual=1\r\n", "one:,two:virtual=1"},
+		{"extra/linux-api-headers\t\n", "extra/linux-api-headers:"},
+		{"extra/rust\tcargo rustfmt\n", "extra/rust:cargo,rustfmt"},
+		{"extra/provider\tvirtual=2.3\n", "extra/provider:virtual=2.3"},
+		{"extra/one\t\r\nextra/two\tvirtual=1\r\n", "extra/one:,extra/two:virtual=1"},
 	}
 	for _, test := range valid {
 		records, err := parseProviderTransaction(test.output)
@@ -213,8 +217,8 @@ func TestParseProviderTransactionPacmanGrammar(t *testing.T) {
 		}
 	}
 	for _, output := range []string{
-		"missing\n", "two\ttabs\there\n", "\tprovide\n", "bad/name\tprovide\n",
-		"pkg\tprovide>=2\n", "pkg\tprovide  other\n", "pkg\t\npkg\t\n",
+		"missing\n", "extra/two\ttabs\there\n", "\tprovide\n", "bad/name\tprovide\n",
+		"extra/pkg\tprovide>=2\n", "extra/pkg\tprovide  other\n", "extra/pkg\t\nextra/pkg\t\n",
 	} {
 		if _, err := parseProviderTransaction(output); err == nil {
 			t.Fatalf("accepted malformed transaction %q", output)
@@ -296,8 +300,8 @@ func TestRealVerCmpArchVersionSemantics(t *testing.T) {
 
 func TestOfficialDependencyRejectsAmbiguousOrInvalidResolution(t *testing.T) {
 	for _, transaction := range []string{
-		"rust\tcargo\nrustup\tcargo\n",
-		"rust\tcargo\nrust\tcargo\n",
+		"extra/rust\tcargo\nextra/rustup\tcargo\n",
+		"extra/rust\tcargo\nextra/rust\tcargo\n",
 		"not/a/package\tcargo\n",
 	} {
 		runner := &dependencyRunner{transaction: transaction}
@@ -321,16 +325,16 @@ func (f *transactionRunner) Run(_ context.Context, spec run.Spec) (run.Result, e
 }
 
 func TestOfficialTransactionIsConcreteDeterministicAndNoninteractive(t *testing.T) {
-	runner := &transactionRunner{output: "rust\nllvm-libs\n"}
+	runner := &transactionRunner{output: "extra/rust\nextra/llvm-libs\n"}
 	resolver := Resolver{Runner: runner}
-	transaction, err := resolver.OfficialTransaction(context.Background(), []string{"llvm-libs", "rust"})
+	transaction, err := resolver.OfficialTransaction(context.Background(), []string{"extra/llvm-libs", "extra/rust"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(transaction, ",") != "llvm-libs,rust" {
+	if strings.Join(transaction, ",") != "extra/llvm-libs,extra/rust" {
 		t.Fatalf("transaction=%v", transaction)
 	}
-	if runner.spec.Interactive || strings.Join(runner.spec.Args, " ") != "-Sp --needed --noconfirm --print-format %n -- llvm-libs rust" {
+	if runner.spec.Interactive || strings.Join(runner.spec.Args, " ") != "-Sp --noconfirm --print-format %r/%n -- extra/llvm-libs extra/rust" {
 		t.Fatalf("query=%#v", runner.spec)
 	}
 }

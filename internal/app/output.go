@@ -48,6 +48,9 @@ func (a Runtime) showPlan(p plan.Plan) {
 		label := application.Declaration.Identifier + " (" + sourceLabel(application.Declaration.Source) + ")"
 		switch application.State {
 		case "install":
+			if application.Cause != "" {
+				label += "; " + application.Cause
+			}
 			install = append(install, label)
 		case "configure":
 			configure = append(configure, label)
@@ -81,6 +84,9 @@ func (a Runtime) showPlan(p plan.Plan) {
 		configure = append(configure, "GitHub SSH keys")
 	}
 
+	if p.EnableFlathub {
+		configure = append(configure, "Enable existing user flathub remote at https://dl.flathub.org/repo/")
+	}
 	if p.AddFlathub {
 		configure = append(configure, "Flathub for user Flatpak applications")
 	}
@@ -105,6 +111,7 @@ func (a Runtime) showPlan(p plan.Plan) {
 	}
 	if p.FullUpgrade {
 		fmt.Fprintln(a.Out, "\nThe system will be updated.")
+		fmt.Fprintln(a.Out, "  Use official Arch repositories only (core, extra, multilib); custom repositories are excluded.")
 	}
 	dependencies := len(p.CorePackages) > 0
 	for _, application := range p.Applications {

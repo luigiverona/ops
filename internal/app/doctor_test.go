@@ -15,6 +15,7 @@ import (
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/run"
 	sshops "github.com/luigiverona/ops/internal/ssh"
+	"github.com/luigiverona/ops/internal/testpkg"
 )
 
 type doctorRunner struct {
@@ -25,6 +26,9 @@ type doctorRunner struct {
 
 func (f *doctorRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
 	f.calls = append(f.calls, spec)
+	if result, ok := testpkg.Query(spec); ok {
+		return result, nil
+	}
 	if spec.Name == "uname" {
 		return run.Result{Stdout: "x86_64\n"}, nil
 	}
@@ -41,10 +45,10 @@ func (f *doctorRunner) Run(_ context.Context, spec run.Spec) (run.Result, error)
 		return run.Result{Stdout: "paru v2\n"}, nil
 	}
 	if spec.Name == "flatpak" && len(spec.Args) > 0 && spec.Args[0] == "remotes" {
-		return run.Result{Stdout: "flathub\n"}, nil
+		return run.Result{Stdout: testpkg.Flathub}, nil
 	}
 	if spec.Name == "flatpak" {
-		return run.Result{}, nil
+		return run.Result{Stdout: "[]"}, nil
 	}
 	if spec.Name == "git" && spec.Args[len(spec.Args)-1] == "user.name" {
 		return run.Result{Stdout: "User\n"}, nil

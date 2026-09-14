@@ -1,0 +1,71 @@
+package resolve
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/luigiverona/ops/internal/config"
+	"github.com/luigiverona/ops/internal/plan"
+	"github.com/luigiverona/ops/internal/run"
+)
+
+func TestCustomLocalPacmanCannotOverrideOfficialAPI(t *testing.T) {
+	for _, repo := range []string{"custom", "extra"} {
+		runner := &transactionRunner{output: "Repository : " + repo + "\nName : firefox\n"}
+		requests := 0
+		client := &http.Client{Transport: roundTrip(func(req *http.Request) (*http.Response, error) {
+			requests++
+			if strings.Join(req.URL.Query()["repo"], ",") != "Core,Extra,Multilib" {
+				t.Fatal(req.URL)
+			}
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"version":2,"valid":true,"count":1,"page":1,"num_pages":1,"results":[{"pkgname":"firefox","repo":"extra","arch":"x86_64"}]}`))}, nil
+		})}
+		pkg, found, err := (Resolver{Runner: runner, Client: client}).Pacman(context.Background(), "firefox")
+		if err != nil || !found || pkg.Repository != "extra" {
+			t.Fatalf("%+v %v", pkg, err)
+		}
+		if (requests == 1) != (repo == "custom") {
+			t.Fatalf("API calls %d for %s", requests, repo)
+		}
+	}
+}
+func TestOfficialDependencyRejectsCustomOrAmbiguousTransaction(t *testing.T) {
+	for _, output := range []string{"custom/rust\tcargo\n", "extra/rust\tcargo\ncustom/llvm-libs\t\n", "extra/rust\tcargo\ncore/rust\tcargo\n", "unknown/rust\tcargo\n", "extra/rust\tcargo\nextra/lib\t\textra\n"} {
+		_, err := (Resolver{Runner: &dependencyRunner{transaction: output}}).OfficialDependency(context.Background(), "cargo")
+		var queryErr *QueryError
+		if !errors.As(err, &queryErr) {
+			t.Fatalf("accepted %q: %v", output, err)
+		}
+	}
+}
+func TestNativeCustomDeclarationIsNotReady(t *testing.T) {
+	declaration := config.Application{Source: config.Pacman, Identifier: "firefox"}
+	state := plan.State{Installed: map[string]bool{"firefox": true}, Foreign: map[string]bool{}}
+	facts := Applications(context.Background(), config.Config{Applications: []config.Application{declaration}}, state, fakeResolver{pacman: map[string]plan.Package{"firefox": {Name: "firefox", Repository: "extra"}}})
+	app := plan.Build(config.Config{Applications: []config.Application{declaration}}, state, facts).Applications[0]
+	if app.State != plan.Install || app.Package.Repository != "extra" || !strings.Contains(app.Cause, "does not match current official metadata") {
+		t.Fatalf("%+v", app)
+	}
+}
+
+type mismatchedInstalledProvider struct{ dependencyRunner }
+
+func (r *mismatchedInstalledProvider) Run(ctx context.Context, s run.Spec) (run.Result, error) {
+	result, err := r.dependencyRunner.Run(ctx, s)
+	if s.Args[0] == "-Qi" {
+		result.Stdout = strings.Replace(result.Stdout, "Arch fixture", "Custom packager", 1)
+	}
+	return result, err
+}
+func TestSatisfiedCustomProviderFailsClosed(t *testing.T) {
+	runner := &mismatchedInstalledProvider{dependencyRunner{satisfied: true, transaction: "extra/rust\tcargo\n"}}
+	_, err := (Resolver{Runner: runner}).OfficialDependency(context.Background(), "cargo")
+	var queryErr *QueryError
+	if !errors.As(err, &queryErr) {
+		t.Fatalf("native dependency accepted: %v", err)
+	}
+}

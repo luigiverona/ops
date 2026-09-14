@@ -10,6 +10,7 @@ import (
 
 	"github.com/luigiverona/ops/internal/aurmeta"
 	"github.com/luigiverona/ops/internal/config"
+	"github.com/luigiverona/ops/internal/flatpak"
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/resolve"
 	"github.com/luigiverona/ops/internal/ui"
@@ -21,7 +22,7 @@ func TestShowPlanConciseIntent(t *testing.T) {
 		plan plan.Plan
 		want string
 	}{
-		{"mixed", realWorkstationPlan(t), "Workstation setup\n\nInstall\n  bitwarden (pacman)\n  com.tutanota.Tutanota (Flatpak)\n\nConfigure\n  SSH for GitHub\n  GitHub authentication\n  Register this workstation's SSH key with GitHub if needed\n\nManage GitHub SSH settings separately; preserve other host configuration.\n\nThe system will be updated.\n\n"},
+		{"mixed", realWorkstationPlan(t), "Workstation setup\n\nInstall\n  bitwarden (pacman)\n  com.tutanota.Tutanota (Flatpak)\n\nConfigure\n  SSH for GitHub\n  GitHub authentication\n  Register this workstation's SSH key with GitHub if needed\n\nManage GitHub SSH settings separately; preserve other host configuration.\n\nThe system will be updated.\n  Use official Arch repositories only (core, extra, multilib); custom repositories are excluded.\n\n"},
 		{"identity", plan.Plan{ConfigureGit: true, CreateSSHIdentity: true, AuthenticateGitHub: true}, "Workstation setup\n\nConfigure\n  Git identity\n  SSH for GitHub\n  GitHub authentication\n\n"},
 		{"ready", plan.Plan{Core: readyCore(), Applications: readyApplications()}, ""},
 		{"scope refresh", plan.Plan{RefreshGitHubSSHKeyScope: true}, "Workstation setup\n\nConfigure\n  GitHub SSH key access\n\n"},
@@ -320,9 +321,10 @@ func realWorkstationPlan(t *testing.T) plan.Plan {
 			"librewolf-bin": true, "mullvad-browser-bin": true, "mullvad-vpn": true,
 			"discord": true, "spotify-launcher": true, "steam": true,
 		},
-		Services: map[string]bool{"mullvad-daemon.service": true},
-		Foreign:  map[string]bool{"librewolf-bin": true, "mullvad-browser-bin": true},
-		Flatpaks: map[string]bool{}, Flathub: true, Multilib: true,
+		Services:        map[string]bool{"mullvad-daemon.service": true},
+		OfficialMatches: map[string]string{"git": "extra/git", "openssh": "core/openssh", "github-cli": "extra/github-cli", "flatpak": "extra/flatpak", "mullvad-vpn": "extra/mullvad-vpn", "discord": "extra/discord", "spotify-launcher": "extra/spotify-launcher", "steam": "multilib/steam"},
+		Foreign:         map[string]bool{"librewolf-bin": true, "mullvad-browser-bin": true},
+		Flatpaks:        map[string]string{}, Flathub: flatpak.Remote{Name: "flathub", URL: flatpak.FlathubRepositoryURL, Enabled: true}, Multilib: true,
 		GitName: "User", GitEmail: "user@example.com",
 		ManagedSSHIdentity: true, UnrelatedSSHIdentities: 1,
 	}
@@ -344,6 +346,9 @@ type outputResolver struct {
 
 func (r outputResolver) Pacman(_ context.Context, name string) (plan.Package, bool, error) {
 	pkg, ok := r.pacman[name]
+	if ok && pkg.Repository == "" {
+		pkg.Repository = "extra"
+	}
 	return pkg, ok, nil
 }
 
@@ -365,7 +370,7 @@ func (r outputResolver) OfficialDependency(_ context.Context, requirement string
 	if dependency, ok := r.deps[requirement]; ok {
 		return dependency, nil
 	}
-	return plan.OfficialDependency{Requirement: requirement, Satisfied: true}, nil
+	return plan.OfficialDependency{Requirement: requirement, Provider: "extra/" + requirement, Packages: []string{"extra/" + requirement}, Satisfied: true}, nil
 }
 func (r outputResolver) UserPGPKey(_ context.Context, _ string) (bool, error) { return true, nil }
 

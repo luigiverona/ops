@@ -10,19 +10,24 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 
 	"github.com/luigiverona/ops/internal/config"
+	"github.com/luigiverona/ops/internal/flatpak"
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/run"
 	sshops "github.com/luigiverona/ops/internal/ssh"
+	"github.com/luigiverona/ops/internal/testpkg"
 	"github.com/luigiverona/ops/internal/ui"
 )
 
 type prepareRunner struct {
+	flatApps                  map[string]bool
+	missingFlathub            bool
 	calls                     []run.Spec
 	failUpgrade               bool
 	failMarkExplicit          bool
@@ -45,6 +50,12 @@ type prepareRunner struct {
 
 func (f *prepareRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
 	f.calls = append(f.calls, spec)
+	if spec.Name == "pacman" && spec.Args[0] == "-Qi" && f.sourceDrift["-Qn:"+spec.Args[len(spec.Args)-1]] {
+		return run.Result{}, errors.New("package source changed")
+	}
+	if result, ok := testpkg.Query(spec); ok {
+		return result, nil
+	}
 	joined := strings.Join(spec.Args, " ")
 	if spec.Name == "systemctl" {
 		if spec.Args[0] == "is-enabled" {
@@ -67,8 +78,28 @@ func (f *prepareRunner) Run(_ context.Context, spec run.Spec) (run.Result, error
 	if spec.Name == "pacman" && len(spec.Args) == 2 && (spec.Args[0] == "-Qn" || spec.Args[0] == "-Qm") && f.sourceDrift[spec.Args[0]+":"+spec.Args[1]] {
 		return run.Result{}, errors.New("package source changed")
 	}
+	if spec.Name == "flatpak" && spec.Args[0] == "remote-add" {
+		f.missingFlathub = false
+	}
+	if spec.Name == "flatpak" && spec.Args[0] == "install" {
+		if f.flatApps == nil {
+			f.flatApps = map[string]bool{}
+		}
+		f.flatApps[spec.Args[len(spec.Args)-1]] = true
+	}
+	if spec.Name == "flatpak" && spec.Args[0] == "list" {
+		var rows []string
+		for id := range f.flatApps {
+			rows = append(rows, id)
+		}
+		sort.Strings(rows)
+		return run.Result{Stdout: testpkg.FlatpakApps(rows...)}, nil
+	}
 	if spec.Name == "flatpak" && len(spec.Args) > 0 && spec.Args[0] == "remotes" {
-		return run.Result{Stdout: "flathub\n"}, nil
+		if f.missingFlathub {
+			return run.Result{Stdout: "[]"}, nil
+		}
+		return run.Result{Stdout: testpkg.Flathub}, nil
 	}
 	if spec.Name == "git" && len(spec.Args) >= 4 && spec.Args[0] == "config" && spec.Args[1] == "--global" {
 		switch {
@@ -199,9 +230,9 @@ func TestPreparePlanProgressMatchesMutationOrder(t *testing.T) {
 
 func readyExecutionState() plan.State {
 	return plan.State{
-		Installed: map[string]bool{"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true},
-		Explicit:  map[string]bool{"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true},
-		Foreign:   map[string]bool{}, Flatpaks: map[string]bool{}, Flathub: true, Multilib: true,
+		OfficialMatches: map[string]string{"git": "extra/git", "openssh": "core/openssh", "github-cli": "extra/github-cli", "flatpak": "extra/flatpak", "base-devel": "extra/base-devel"}, Installed: map[string]bool{"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true},
+		Explicit: map[string]bool{"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true},
+		Foreign:  map[string]bool{}, Flatpaks: map[string]string{}, Flathub: flatpak.Remote{Name: "flathub", URL: flatpak.FlathubRepositoryURL, Enabled: true}, Multilib: true,
 		GitName: "User", GitEmail: "user@example.com", ManagedSSHIdentity: true, SSHConfigurationReady: true,
 		SSHHostKeyFreshness: plan.SSHHostKeyFreshnessCurrent,
 		GitHubAuth:          true, GitHubKeysKnown: true, ManagedGitHubKeyKnown: true, ManagedGitHubKey: true,
@@ -226,7 +257,8 @@ func TestPreparePlanAllReadyHasNoMutationOrProgress(t *testing.T) {
 	state := readyExecutionState()
 	state.Installed["bitwarden"] = true
 	state.Explicit["bitwarden"] = true
-	state.Flatpaks["com.tutanota.Tutanota"] = true
+	state.OfficialMatches["bitwarden"] = "extra/bitwarden"
+	state.Flatpaks["com.tutanota.Tutanota"] = "flathub"
 	p := resolveAndPlan(context.Background(), config.Config{Version: 2, Applications: []config.Application{
 		{Identifier: "bitwarden", Source: "pacman"},
 		{Identifier: "com.tutanota.Tutanota", Source: "flatpak"},
@@ -252,7 +284,7 @@ func TestPreparePlanAllReadyHasNoMutationOrProgress(t *testing.T) {
 
 func TestPreparePlanReportsExplicitReasonFailureAsApplicationIssue(t *testing.T) {
 	p := plan.Plan{Core: readyCore(), Applications: []plan.Application{{
-		Declaration: config.Application{Identifier: "firefox", Source: "pacman"}, State: "configure",
+		Package: plan.Package{Name: "firefox", Repository: "extra"}, Declaration: config.Application{Identifier: "firefox", Source: "pacman"}, State: "configure",
 	}}, GitStatus: "ready", SSHStatus: "ready", GitHubStatus: "ready"}
 	var output bytes.Buffer
 	runner := &prepareRunner{failMarkExplicit: true}
@@ -271,12 +303,12 @@ func TestConfigureApplicationsRevalidateTheirDeclaredSourceBeforeMarkingExplicit
 		source string
 		query  string
 	}{
-		{name: "official", source: "pacman", query: "-Qn"},
+		{name: "official", source: "pacman", query: "-Qi --"},
 		{name: "foreign", source: "aur", query: "-Qm"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			p := plan.Plan{Core: readyCore(), Applications: []plan.Application{{
-				Declaration: config.Application{Identifier: "example", Source: config.Source(test.source)}, State: "configure",
+				Package: plan.Package{Name: "example", Repository: "extra"}, Declaration: config.Application{Identifier: "example", Source: config.Source(test.source)}, State: "configure",
 			}}, GitStatus: "ready", SSHStatus: "ready", GitHubStatus: "ready"}
 			var output bytes.Buffer
 			runner := &prepareRunner{}
@@ -302,7 +334,7 @@ func TestConfigureApplicationsRevalidateTheirDeclaredSourceBeforeMarkingExplicit
 
 func TestConfigureSourceDriftIsAnApplicationIssueAndDoesNotBlockOtherApplications(t *testing.T) {
 	p := plan.Plan{Core: readyCore(), Applications: []plan.Application{
-		{Declaration: config.Application{Identifier: "stale", Source: "pacman"}, State: "configure"},
+		{Package: plan.Package{Name: "stale", Repository: "extra"}, Declaration: config.Application{Identifier: "stale", Source: "pacman"}, State: "configure"},
 		{Declaration: config.Application{Identifier: "working", Source: "aur"}, State: "configure"},
 	}, GitStatus: "ready", SSHStatus: "ready", GitHubStatus: "ready"}
 	var output bytes.Buffer
@@ -433,7 +465,7 @@ func TestPreparePlanContinuesUnrelatedWorkWhenHostKeyFreshnessUnavailable(t *tes
 		SSHHostKeyFreshness: plan.SSHHostKeyFreshnessUnavailable,
 	}
 	var output bytes.Buffer
-	runner := &prepareRunner{}
+	runner := &prepareRunner{missingFlathub: true}
 	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 	if code != Issues {
 		t.Fatalf("code=%d\n%s", code, output.String())
@@ -813,16 +845,16 @@ func TestPreparePlanPreservesFatalAndNonfatalFailureSemantics(t *testing.T) {
 
 	t.Run("application failure continues", func(t *testing.T) {
 		p := plan.Plan{Core: readyCore(), Applications: []plan.Application{
-			{Declaration: config.Application{Identifier: "broken", Source: "flatpak"}, State: "install"},
-			{Declaration: config.Application{Identifier: "working", Source: "flatpak"}, State: "install"},
+			{Declaration: config.Application{Identifier: "org.example.Broken", Source: "flatpak"}, State: "install"},
+			{Declaration: config.Application{Identifier: "org.example.Working", Source: "flatpak"}, State: "install"},
 		}, GitStatus: "ready", SSHStatus: "ready", GitHubStatus: "ready"}
 		var output bytes.Buffer
-		runner := &prepareRunner{failFlatpak: "broken"}
+		runner := &prepareRunner{failFlatpak: "org.example.Broken"}
 		code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 		if code != Issues || strings.Join(mutationOrder(runner.calls), ",") != "application,application" {
 			t.Fatalf("code=%d mutations=%v\n%s", code, mutationOrder(runner.calls), output.String())
 		}
-		wantProgress := []string{"Installing broken...", "Installing working..."}
+		wantProgress := []string{"Installing org.example.Broken...", "Installing org.example.Working..."}
 		if got := progressRecords(output.String()); strings.Join(got, "\n") != strings.Join(wantProgress, "\n") {
 			t.Fatalf("progress=%v, want=%v\n%s", got, wantProgress, output.String())
 		}
@@ -838,7 +870,7 @@ func mutationOrder(calls []run.Spec) []string {
 			order = append(order, "upgrade")
 		case call.Name == "sudo" && strings.Contains(args, "--asdeps"):
 			order = append(order, "dependency")
-		case call.Name == "sudo" && strings.Contains(args, "pacman -S --needed --noconfirm"):
+		case call.Name == "sudo" && strings.Contains(args, "pacman -S --noconfirm"):
 			order = append(order, "application")
 		case call.Name == "flatpak" && len(call.Args) > 0 && call.Args[0] == "install":
 			order = append(order, "application")

@@ -21,7 +21,7 @@ func (r *minimalResolverRunner) Run(_ context.Context, s run.Spec) (run.Result, 
 		return run.Result{Stdout: "base-devel\n"}, &run.Error{Name: "pacman", Err: dependencyExit(127)}
 	}
 	if s.Name == "pacman" && s.Args[0] == "-Sp" {
-		return run.Result{Stdout: "base-devel\t\ngcc\t\nmake\t\n"}, nil
+		return run.Result{Stdout: "extra/base-devel\t\nextra/gcc\t\nextra/make\t\n"}, nil
 	}
 	return run.Result{}, errors.New("executable not installed: " + s.Name)
 }

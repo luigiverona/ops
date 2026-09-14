@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luigiverona/ops/internal/archrepo"
 	"github.com/luigiverona/ops/internal/aurmeta"
 	"github.com/luigiverona/ops/internal/pgp"
 	"github.com/luigiverona/ops/internal/plan"
@@ -40,7 +41,6 @@ func (r Resolver) UserPGPKey(ctx context.Context, fingerprint string) (bool, err
 }
 
 var gitObject = regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$`)
-var packageName = regexp.MustCompile(`^[A-Za-z0-9@._+][A-Za-z0-9@._+-]*$`)
 
 func (r Resolver) Pacman(ctx context.Context, name string) (plan.Package, bool, error) {
 	result, err := r.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Si", "--", name}})
@@ -54,8 +54,11 @@ func (r Resolver) Pacman(ctx context.Context, name string) (plan.Package, bool, 
 		}
 		return pkg, found, nil
 	}
-	fields := parsePacmanInfo(result.Stdout)
-	if fields["Name"] != name {
+	fields, parseErr := archrepo.ParseInfo(result.Stdout)
+	if parseErr != nil {
+		return plan.Package{}, false, &QueryError{Err: parseErr}
+	}
+	if fields["Name"] != name || !archrepo.Official(fields["Repository"]) {
 		return r.archPackage(ctx, name)
 	}
 	return plan.Package{Name: name, Repository: fields["Repository"]}, true, nil
@@ -74,7 +77,10 @@ func (r Resolver) archPackage(ctx context.Context, name string) (plan.Package, b
 			Architecture string `json:"arch"`
 		} `json:"results"`
 	}
-	endpoint := "https://archlinux.org/packages/search/json/?name=" + url.QueryEscape(name) + "&arch=x86_64&arch=any&repo=Core&repo=Extra&repo=Multilib"
+	endpoint := "https://archlinux.org/packages/search/json/?name=" + url.QueryEscape(name) + "&arch=x86_64&arch=any"
+	for _, repo := range archrepo.Repositories() {
+		endpoint += "&repo=" + strings.ToUpper(repo[:1]) + repo[1:]
+	}
 	status, err := r.getJSON(ctx, endpoint, &response)
 	if err != nil {
 		return plan.Package{}, false, err
@@ -82,13 +88,14 @@ func (r Resolver) archPackage(ctx context.Context, name string) (plan.Package, b
 	if status != http.StatusOK || response.Version != 2 || !response.Valid || response.Results == nil || response.Count == nil || *response.Count != len(response.Results) || response.Page != 1 || response.Pages != 1 {
 		return plan.Package{}, false, errors.New("official repository query returned an invalid response")
 	}
+	if len(response.Results) > 1 {
+		return plan.Package{}, false, errors.New("ambiguous official package metadata")
+	}
 	for _, result := range response.Results {
 		if result.Name != name || (result.Architecture != "x86_64" && result.Architecture != "any") {
 			return plan.Package{}, false, errors.New("official repository query returned unexpected package metadata")
 		}
-		switch result.Repository {
-		case "core", "extra", "multilib":
-		default:
+		if !archrepo.Official(result.Repository) {
 			return plan.Package{}, false, errors.New("official repository query returned an unexpected repository")
 		}
 		return plan.Package{Name: name, Repository: result.Repository}, true, nil
@@ -166,8 +173,9 @@ func (r Resolver) AURSource(ctx context.Context, name string) (plan.AURSource, b
 	return plan.AURSource{Commit: commit, Metadata: metadata}, true, nil
 }
 
-// OfficialDependency asks pacman whether a dependency is already satisfied and,
-// if not, materializes the concrete package selected by pacman's own resolver.
+// OfficialDependency materializes pacman's provider and concrete transaction
+// even when -T succeeds. Installed satisfaction additionally requires matching
+// the provider's current official metadata; -T alone has no source semantics.
 func (r Resolver) OfficialDependency(ctx context.Context, requirement string) (plan.OfficialDependency, error) {
 	binding := plan.OfficialDependency{Requirement: requirement}
 	result, err := r.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-T", "--", requirement}})
@@ -176,13 +184,12 @@ func (r Resolver) OfficialDependency(ctx context.Context, requirement string) (p
 			return binding, errors.New("pacman dependency test returned contradictory output")
 		}
 		binding.Satisfied = true
-		return binding, nil
 	}
-	if !run.Exited(err, 127) || strings.TrimSpace(result.Stdout) != requirement || strings.TrimSpace(result.Stderr) != "" {
+	if err != nil && (!run.Exited(err, 127) || strings.TrimSpace(result.Stdout) != requirement || strings.TrimSpace(result.Stderr) != "") {
 		return binding, fmt.Errorf("inspect installed dependency: %w", err)
 	}
-	format := "%n\t%P"
-	result, err = r.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Sp", "--needed", "--noconfirm", "--print-format", format, "--", requirement}})
+	format := "%r/%n\t%P"
+	result, err = r.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Sp", "--noconfirm", "--print-format", format, "--", requirement}})
 	if err != nil {
 		return binding, &QueryError{Err: err}
 	}
@@ -201,7 +208,8 @@ func (r Resolver) OfficialDependency(ctx context.Context, requirement string) (p
 			return binding, &QueryError{Err: fmt.Errorf("pacman returned invalid or duplicate transaction metadata for %q", requirement)}
 		}
 		packages[record.Name] = true
-		if record.Name == want || providesName(record.Provides, want) {
+		_, concreteName, _ := archrepo.Split(record.Name)
+		if concreteName == want || providesName(record.Provides, want) {
 			candidates[record.Name] = true
 		}
 	}
@@ -215,6 +223,17 @@ func (r Resolver) OfficialDependency(ctx context.Context, requirement string) (p
 		binding.Packages = append(binding.Packages, name)
 	}
 	sort.Strings(binding.Packages)
+	if binding.Satisfied {
+		for _, target := range binding.Packages {
+			match, err := archrepo.InstalledMatch(ctx, r.Runner, target)
+			if err != nil {
+				return binding, &QueryError{Err: err}
+			}
+			if !match {
+				return binding, &QueryError{Err: errors.New("installed dependency does not match its official provider; reconcile the package source and rerun ops")}
+			}
+		}
+	}
 	return binding, nil
 }
 
@@ -238,10 +257,11 @@ func parseProviderTransaction(output string) ([]providerTransactionRecord, error
 			return nil, errors.New("record must contain exactly one tab-delimited name and provides field")
 		}
 		name, provides, _ := strings.Cut(line, "\t")
-		if !packageName.MatchString(name) || seen[name] {
+		_, concreteName, identityErr := archrepo.Split(name)
+		if identityErr != nil || seen[concreteName] {
 			return nil, fmt.Errorf("invalid package name %q", name)
 		}
-		seen[name] = true
+		seen[concreteName] = true
 		record := providerTransactionRecord{Name: name}
 		if provides != "" {
 			for _, provided := range strings.Split(provides, " ") {
@@ -262,29 +282,10 @@ func parseProviderTransaction(output string) ([]providerTransactionRecord, error
 // OfficialTransaction materializes pacman's current transaction for exact
 // concrete package targets without performing it or allowing interaction.
 func (r Resolver) OfficialTransaction(ctx context.Context, packages []string) ([]string, error) {
-	if len(packages) == 0 {
-		return nil, nil
-	}
-	args := []string{"-Sp", "--needed", "--noconfirm", "--print-format", "%n", "--"}
-	args = append(args, packages...)
-	result, err := r.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: args})
+	transaction, err := archrepo.Transaction(ctx, r.Runner, packages)
 	if err != nil {
 		return nil, &QueryError{Err: err}
 	}
-	seen := make(map[string]bool)
-	var transaction []string
-	for _, line := range strings.Split(result.Stdout, "\n") {
-		name := strings.TrimSpace(line)
-		if name == "" {
-			continue
-		}
-		if !packageName.MatchString(name) || seen[name] {
-			return nil, &QueryError{Err: errors.New("pacman returned invalid or duplicate concrete transaction metadata")}
-		}
-		seen[name] = true
-		transaction = append(transaction, name)
-	}
-	sort.Strings(transaction)
 	return transaction, nil
 }
 
@@ -376,21 +377,4 @@ func (r Resolver) getBytes(ctx context.Context, endpoint string) ([]byte, int, e
 		return nil, resp.StatusCode, errors.New("service response exceeds size limit")
 	}
 	return data, resp.StatusCode, nil
-}
-
-func parsePacmanInfo(output string) map[string]string {
-	fields := make(map[string]string)
-	var key string
-	for _, line := range strings.Split(output, "\n") {
-		if strings.HasPrefix(line, " ") && key != "" {
-			fields[key] += "\n" + strings.TrimSpace(line)
-			continue
-		}
-		left, right, ok := strings.Cut(line, ":")
-		if ok {
-			key = strings.TrimSpace(left)
-			fields[key] = strings.TrimSpace(right)
-		}
-	}
-	return fields
 }

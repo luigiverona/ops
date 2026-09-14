@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/luigiverona/ops/internal/arch"
+	"github.com/luigiverona/ops/internal/archrepo"
 	"github.com/luigiverona/ops/internal/aur"
 	"github.com/luigiverona/ops/internal/flatpak"
 	"github.com/luigiverona/ops/internal/pgp"
@@ -38,7 +39,7 @@ func (a Runtime) installApplication(ctx context.Context, am arch.Manager, au aur
 	}
 	switch application.Declaration.Source {
 	case "pacman":
-		if err := am.Install(ctx, []string{name}, false); err != nil {
+		if err := am.Install(ctx, []string{application.Package.Repository + "/" + name}, false); err != nil {
 			return err
 		}
 	case "aur":
@@ -56,9 +57,6 @@ func (a Runtime) installApplication(ctx context.Context, am arch.Manager, au aur
 
 	switch application.Declaration.Source {
 	case "pacman":
-		if _, err := a.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Qn", name}}); err != nil {
-			return err
-		}
 		return a.markApplicationExplicit(ctx, am, application)
 	case "aur":
 		_, err := a.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Qm", name}})
@@ -79,12 +77,20 @@ func (a Runtime) markApplicationExplicit(ctx context.Context, am arch.Manager, a
 	var query string
 	switch application.Declaration.Source {
 	case "pacman":
-		query = "-Qn"
+		match, err := archrepo.InstalledMatch(ctx, a.Runner, application.Package.Repository+"/"+name)
+		if err != nil {
+			return fmt.Errorf("application source changed after planning; rerun ops: %w", err)
+		}
+		if !match {
+			return errors.New("application no longer matches official metadata; rerun ops")
+		}
 	case "aur":
 		query = "-Qm"
 	}
-	if _, err := a.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{query, name}}); err != nil {
-		return fmt.Errorf("application source changed after planning; rerun ops: expected %s package: %w", application.Declaration.Source, err)
+	if query != "" {
+		if _, err := a.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{query, name}}); err != nil {
+			return fmt.Errorf("application source changed after planning; rerun ops: expected %s package: %w", application.Declaration.Source, err)
+		}
 	}
 	if err := a.beginMutation(ctx); err != nil {
 		return err
@@ -130,18 +136,21 @@ func (a Runtime) installAURApplication(ctx context.Context, am arch.Manager, au 
 		missing := make(map[string]bool)
 		installable := make(map[string]bool, len(application.AURPackages))
 		for _, pkg := range application.AURPackages {
-			installable[pkg.Name] = true
+			installable[pkg.Repository+"/"+pkg.Name] = true
 		}
 		for _, planned := range application.AURDependencies {
 			current, err := resolver.OfficialDependency(ctx, planned.Requirement)
 			if err != nil {
 				return fmt.Errorf("revalidate AUR dependency %q: %w", planned.Requirement, err)
 			}
+			if err := a.revalidateOfficialBinding(ctx, current, planned); err != nil {
+				return err
+			}
 			if current.Satisfied {
 				continue
 			}
-			if planned.Satisfied || current.Provider != planned.Provider || !packageSubset(current.Packages, planned.Packages) {
-				return errors.New("AUR dependency provider changed after planning; rerun ops")
+			if planned.Satisfied {
+				return errors.New("AUR installed dependency changed after planning; rerun ops")
 			}
 			for _, packageName := range current.Packages {
 				if !installable[packageName] {
@@ -152,10 +161,10 @@ func (a Runtime) installAURApplication(ctx context.Context, am arch.Manager, au 
 		}
 		var packages, explicitPackages []string
 		for _, pkg := range application.AURPackages {
-			if !missing[pkg.Name] {
+			if !missing[pkg.Repository+"/"+pkg.Name] {
 				continue
 			}
-			packages = append(packages, pkg.Name)
+			packages = append(packages, pkg.Repository+"/"+pkg.Name)
 			if pkg.AsExplicit {
 				explicitPackages = append(explicitPackages, pkg.Name)
 			}
@@ -188,8 +197,11 @@ func (a Runtime) installAURApplication(ctx context.Context, am arch.Manager, au 
 			if err != nil {
 				return fmt.Errorf("verify AUR dependency %q: %w", planned.Requirement, err)
 			}
-			if !current.Satisfied {
+			if !current.Satisfied || current.Provider != planned.Provider {
 				return fmt.Errorf("AUR dependency %q is not satisfied after the planned installation", planned.Requirement)
+			}
+			if err := a.revalidateOfficialBinding(ctx, current, planned); err != nil {
+				return err
 			}
 		}
 		a.progress("Building " + application.Declaration.Identifier + "...")
@@ -200,6 +212,28 @@ func (a Runtime) installAURApplication(ctx context.Context, am arch.Manager, au 
 		return am.InstallArtifacts(ctx, buildDir, artifacts, application.AUROutputs, application.AURExplicitOutputs)
 	}
 	return au.Build(ctx, application.AURSource, application.Declaration.Identifier, application.AUROutputs, afterReview, install)
+}
+
+// Pacman's print transaction shrinks as earlier approved work installs shared
+// dependencies. Every omitted member must still match its planned repository;
+// additions and provider/repository substitutions require a new plan.
+func (a Runtime) revalidateOfficialBinding(ctx context.Context, current, planned plan.OfficialDependency) error {
+	if current.Provider != planned.Provider || !packageSubset(current.Packages, planned.Packages) {
+		return errors.New("AUR dependency provider or repository changed after planning; rerun ops")
+	}
+	for _, target := range planned.Packages {
+		if stringPresent(current.Packages, target) {
+			continue
+		}
+		match, err := archrepo.InstalledMatch(ctx, a.Runner, target)
+		if err != nil {
+			return fmt.Errorf("revalidate satisfied AUR transaction member %s: %w", target, err)
+		}
+		if !match {
+			return fmt.Errorf("AUR transaction member %s no longer matches planned official metadata; rerun ops", target)
+		}
+	}
+	return nil
 }
 
 func stringPresent(values []string, want string) bool {
