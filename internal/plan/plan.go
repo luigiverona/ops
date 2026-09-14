@@ -73,7 +73,7 @@ type AURSource struct {
 type OfficialDependency struct {
 	Requirement string
 	Provider    string   // validated repo/name, including an already-satisfied provider
-	Packages    []string // every concrete repo/name in the resolver transaction
+	Packages    []string // concrete repo/name closure, including satisfied dependencies
 	Satisfied   bool
 }
 

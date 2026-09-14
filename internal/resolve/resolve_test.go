@@ -167,7 +167,7 @@ func TestOfficialDependencyPreservesInstalledSatisfier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !binding.Satisfied || binding.Provider != "extra/rust" || len(binding.Packages) != 1 || len(runner.calls) != 4 {
+	if !binding.Satisfied || binding.Provider != "extra/rust" || len(binding.Packages) != 1 || len(runner.calls) != 5 {
 		t.Fatalf("binding=%#v calls=%#v", binding, runner.calls)
 	}
 }

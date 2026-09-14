@@ -69,6 +69,9 @@ execution are outside the locking guarantees of these separate CLI processes.
 
 `OfficialDependency` always records its qualified provider and every printed
 transaction member, even when `pacman -T` says the requirement is satisfied.
+It also walks official `Depends On` metadata and records the complete qualified
+dependency closure, including installed providers omitted by the print transaction.
+Each satisfied edge is inspected; cycles are visited once per concrete package.
 The `%r/%n\t%P` output identifies native resolver providers, including virtual
 ones, and every concrete repository. Successful `-T` additionally requires a
 current official metadata match for the selected provider/transaction; a custom

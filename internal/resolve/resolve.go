@@ -173,10 +173,70 @@ func (r Resolver) AURSource(ctx context.Context, name string) (plan.AURSource, b
 	return plan.AURSource{Commit: commit, Metadata: metadata}, true, nil
 }
 
-// OfficialDependency materializes pacman's provider and concrete transaction
-// even when -T succeeds. Installed satisfaction additionally requires matching
-// the provider's current official metadata; -T alone has no source semantics.
+// OfficialDependency includes the dependency closure, including installed
+// satisfiers omitted by pacman's print transaction. Every edge is resolved by
+// pacman, and every satisfied binding uses the shared installed predicate.
 func (r Resolver) OfficialDependency(ctx context.Context, requirement string) (plan.OfficialDependency, error) {
+	binding, err := r.officialDependency(ctx, requirement)
+	if err != nil {
+		return binding, err
+	}
+	queue := append([]string(nil), binding.Packages...)
+	packages := map[string]string{}
+	for _, target := range queue {
+		_, name, _ := archrepo.Split(target)
+		packages[name] = target
+	}
+	resolved := map[string]bool{requirement: true}
+	for i := 0; i < len(queue); i++ {
+		target := queue[i]
+		result, err := r.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Si", "--", target}, FailureOutput: run.FailureStderr})
+		if err != nil {
+			return binding, &QueryError{Err: err}
+		}
+		info, err := archrepo.ParseInfo(result.Stdout)
+		repo, name, _ := archrepo.Split(target)
+		if err != nil || info["Repository"] != repo || info["Name"] != name || info["Depends On"] == "" {
+			return binding, &QueryError{Err: fmt.Errorf("missing or changed dependency metadata for %s", target)}
+		}
+		if info["Depends On"] == "None" {
+			continue
+		}
+		for _, dependency := range strings.Fields(info["Depends On"]) {
+			if _, err := aurmeta.ParseDependency(dependency); err != nil {
+				return binding, &QueryError{Err: err}
+			}
+			if resolved[dependency] {
+				continue
+			}
+			resolved[dependency] = true
+			child, err := r.officialDependency(ctx, dependency)
+			if err != nil {
+				return binding, fmt.Errorf("dependency of %s: %w", target, err)
+			}
+			if binding.Satisfied && !child.Satisfied {
+				return binding, &QueryError{Err: fmt.Errorf("installed dependency closure of %s is incomplete", requirement)}
+			}
+			for _, member := range child.Packages {
+				_, concrete, _ := archrepo.Split(member)
+				if previous := packages[concrete]; previous != "" {
+					if previous != member {
+						return binding, &QueryError{Err: fmt.Errorf("conflicting repositories for dependency %s", concrete)}
+					}
+					continue
+				}
+				packages[concrete] = member
+				queue = append(queue, member)
+			}
+		}
+	}
+	sort.Strings(queue)
+	binding.Packages = queue
+	return binding, nil
+}
+
+// officialDependency resolves one edge. -T alone has no source semantics.
+func (r Resolver) officialDependency(ctx context.Context, requirement string) (plan.OfficialDependency, error) {
 	binding := plan.OfficialDependency{Requirement: requirement}
 	result, err := r.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-T", "--", requirement}})
 	if err == nil {
@@ -211,6 +271,18 @@ func (r Resolver) OfficialDependency(ctx context.Context, requirement string) (p
 		_, concreteName, _ := archrepo.Split(record.Name)
 		if concreteName == want || providesName(record.Provides, want) {
 			candidates[record.Name] = true
+		}
+	}
+	// An exact unversioned package target takes precedence over virtual
+	// providers pulled in as its dependencies (for example ca-certificates).
+	// Versioned ambiguities still fail closed rather than guessing a satisfier.
+	if requirement == want {
+		for target := range candidates {
+			_, name, _ := archrepo.Split(target)
+			if name == want {
+				candidates = map[string]bool{target: true}
+				break
+			}
 		}
 	}
 	if len(candidates) != 1 {

@@ -11,6 +11,7 @@ import (
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/run"
+	"github.com/luigiverona/ops/internal/testpkg"
 )
 
 func TestCustomLocalPacmanCannotOverrideOfficialAPI(t *testing.T) {
@@ -67,5 +68,41 @@ func TestSatisfiedCustomProviderFailsClosed(t *testing.T) {
 	var queryErr *QueryError
 	if !errors.As(err, &queryErr) {
 		t.Fatalf("native dependency accepted: %v", err)
+	}
+}
+
+func TestClosureKeepsExactTargetAndItsVirtualProviderDependency(t *testing.T) {
+	runner := &dependencyRunner{transaction: "extra/certificates\t\nextra/certificates-store\tcertificates\n"}
+	binding, err := (Resolver{Runner: runner}).OfficialDependency(context.Background(), "certificates")
+	if err != nil || binding.Provider != "extra/certificates" || strings.Join(binding.Packages, ",") != "extra/certificates,extra/certificates-store" {
+		t.Fatalf("binding=%+v err=%v", binding, err)
+	}
+}
+
+type closureMetadataRunner struct{ output string }
+
+func (r closureMetadataRunner) Run(_ context.Context, s run.Spec) (run.Result, error) {
+	switch s.Args[0] {
+	case "-T":
+		return run.Result{Stdout: "builder\n"}, &run.Error{Name: "pacman", Err: dependencyExit(127)}
+	case "-Sp":
+		return run.Result{Stdout: "extra/builder\t\n"}, nil
+	case "-Si":
+		return run.Result{Stdout: r.output}, nil
+	}
+	return run.Result{}, errors.New("unexpected query")
+}
+
+func TestClosureRejectsMissingMalformedAndChangedDependencyMetadata(t *testing.T) {
+	valid := testpkg.Info("extra/builder")
+	for _, output := range []string{
+		strings.Replace(valid, "Depends On : None\n", "", 1),
+		strings.Replace(valid, "Depends On : None", "Depends On : !!!", 1),
+		strings.Replace(valid, "Repository : extra", "Repository : core", 1),
+		valid + "Depends On : None\n",
+	} {
+		if _, err := (Resolver{Runner: closureMetadataRunner{output}}).OfficialDependency(context.Background(), "builder"); err == nil {
+			t.Fatalf("accepted malformed dependency metadata: %q", output)
+		}
 	}
 }

@@ -203,6 +203,53 @@ func TestReviewSatisfiedTransitiveCustomDependency(t *testing.T) {
 	}
 }
 
+func TestReviewTransitiveProviderClosure(t *testing.T) {
+	for _, scenario := range []string{"official", "custom", "foreign", "cycle", "missing", "repository drift"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := testpkg.NewPacmanFixture(t)
+			builder := testpkg.FixturePackage{Name: "ops-builder", Version: "1-1", Packager: "Official", Payload: "builder", Depends: "ops-virtual>=2"}
+			compiler := testpkg.FixturePackage{Name: "ops-compiler", Version: "2-1", Packager: "Official", Payload: "compiler", Provides: "ops-virtual=2"}
+			if scenario == "cycle" {
+				compiler.Depends = "ops-builder"
+			}
+			f.Sync(t, "core")
+			f.Sync(t, "extra", builder, compiler)
+			f.Sync(t, "custom")
+			f.Local(t, builder)
+			switch scenario {
+			case "custom", "foreign":
+				other := compiler
+				other.Name, other.Packager, other.Payload = "ops-other", "Custom", "custom compiler"
+				f.Local(t, other)
+				if scenario == "custom" {
+					f.Sync(t, "custom", other)
+				}
+			case "missing":
+			default:
+				f.Local(t, compiler)
+			}
+			f.Configure(t, "core", "extra", "custom")
+			resolver := resolve.Resolver{Runner: f}
+			binding, err := resolver.OfficialDependency(context.Background(), "ops-builder")
+			valid := scenario == "official" || scenario == "cycle" || scenario == "repository drift"
+			if (err == nil) != valid {
+				t.Fatalf("binding=%+v err=%v", binding, err)
+			}
+			if valid && (!binding.Satisfied || strings.Join(binding.Packages, ",") != "extra/ops-builder,extra/ops-compiler") {
+				t.Fatalf("incomplete installed closure: %+v", binding)
+			}
+			if scenario == "repository drift" {
+				f.Sync(t, "extra", builder)
+				f.Sync(t, "core", compiler)
+				changed, err := resolver.OfficialDependency(context.Background(), "ops-builder")
+				if err != nil || strings.Join(changed.Packages, ",") != "core/ops-compiler,extra/ops-builder" {
+					t.Fatalf("transitive repository drift was lost: %+v %v", changed, err)
+				}
+			}
+		})
+	}
+}
+
 func TestReviewExpandedConfigurationPreservesSecurityPolicy(t *testing.T) {
 	if _, err := exec.LookPath("pacman-conf"); err != nil {
 		t.Skip("pacman-conf unavailable")

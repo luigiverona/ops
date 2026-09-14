@@ -1,6 +1,39 @@
 # Wave D independent review, resumed 2026-09-14
 
-## Reconstructed checkpoint
+## Second resume checkpoint (2026-09-14)
+
+The second resume found state C, a clean `fix/package-source-provenance` at
+`ae53c6c738508e2dd8fcde64b735c2e6dfa0ed0e`, with no stashes. All prior work was
+committed and preserved. The three surviving review commits are `b8a7476`,
+`01ae9bd`, and `ae53c6c`; their production changes and tests were inspected.
+Fetch again left origin/main at `2fc8614171d8c335ade870d045da4e73f44b79bd`.
+The original implementation tree is still `dd5b5db76bac4d2600900c16571ec461958e4604`.
+Both original failing native suites were rerun with Go 1.26.7 and reproduced
+D-R1, D-R2, D-R4, D-R5 and D-R6. The earlier report below is preserved as a
+historical checkpoint; second-resume dispositions supersede its status totals.
+
+### D-R6 second-resume correction
+
+`Resolver.OfficialDependency` now walks each selected package's official
+`Depends On` metadata, resolves each requirement through pacman, and includes
+satisfied transitive providers in the retained qualified closure. Each satisfied
+edge uses the same installed predicate as direct dependencies. Missing dependency
+metadata, repository changes, conflicting package identities and incomplete
+installed closures fail closed. A work queue handles cycles without recursion.
+Exact unversioned targets take precedence over virtual provides in their pulled
+transaction, matching pacman's named-target rule (needed for ca-certificates).
+
+The existing `TestReviewSatisfiedTransitiveCustomDependency` failed before this
+correction and passes afterward. Added real-libalpm coverage exercises official,
+custom, foreign, versioned virtual, cyclic, missing and moved-repository children.
+Parser regressions reject missing, duplicate, malformed and changed closure
+metadata. The real resolver suite passes against the existing Arch sync databases,
+including cargo, base-devel and java-runtime>=26 (78 seconds locally).
+The forged-content predicate remains D-R1; the closure correction does not
+claim to authenticate its members. D-R6 is corrected, conditional on that shared
+predicate being repaired before release.
+
+## First resume checkpoint
 
 State A: clean `fix/package-source-provenance`, no stashes or corrective
 commits. HEAD was `64bb2328202864d6859e5a7745161ae2b7de064f`, tree

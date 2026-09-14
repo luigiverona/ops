@@ -11,12 +11,16 @@ import (
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/run"
+	"github.com/luigiverona/ops/internal/testpkg"
 )
 
 type minimalResolverRunner struct{ calls []run.Spec }
 
 func (r *minimalResolverRunner) Run(_ context.Context, s run.Spec) (run.Result, error) {
 	r.calls = append(r.calls, s)
+	if s.Name == "pacman" && s.Args[0] == "-Si" {
+		return run.Result{Stdout: testpkg.Info(s.Args[len(s.Args)-1])}, nil
+	}
 	if s.Name == "pacman" && s.Args[0] == "-T" {
 		return run.Result{Stdout: "base-devel\n"}, &run.Error{Name: "pacman", Err: dependencyExit(127)}
 	}

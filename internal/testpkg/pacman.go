@@ -17,7 +17,7 @@ func Info(target string) string {
 			repo = "core"
 		}
 	}
-	return "Repository : " + repo + "\nName : " + name + "\nVersion : 1-1\nArchitecture : x86_64\nBuild Date : Thu Jan 1 00:00:00 2026\nPackager : Arch fixture\n"
+	return "Repository : " + repo + "\nName : " + name + "\nVersion : 1-1\nArchitecture : x86_64\nBuild Date : Thu Jan 1 00:00:00 2026\nPackager : Arch fixture\nDepends On : None\n"
 }
 func Query(s run.Spec) (run.Result, bool) {
 	if s.Name == "pacman-conf" && len(s.Args) == 0 {
