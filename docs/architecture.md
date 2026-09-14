@@ -44,10 +44,10 @@ the single external Go module.
 3. Present one top-level setup approval. Acquire and refresh sudo only if
    privileged work is required.
 4. Prepare required repositories; perform one full interactive `pacman -Syu`
-   over supported official repositories before package installations. Custom
-   repository sections are excluded using an expanded, protected temporary
-   configuration; the workstation configuration is preserved. A no-op does not
-   upgrade the system.
+   over all configured repositories before package installations, including
+   available custom rebuilds. Subsequent managed official installations exclude
+   custom sections using an expanded, protected temporary configuration. The
+   workstation configuration is preserved. A no-op does not upgrade the system.
 5. Install foundational packages with qualified official targets and verify
    their current official metadata match.
 6. Configure user Flathub only for declared Flatpak applications.

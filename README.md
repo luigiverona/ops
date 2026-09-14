@@ -78,8 +78,9 @@ identifiers from the selected source; ops never chooses another source as a
 fallback.
 
 Official/AUR package installation is preceded by one full, interactive `pacman -Syu`.
-Package mutations use only `core`, `extra`, and enabled `multilib`; configured
-custom repositories are excluded from that upgrade and subsequent transactions.
+The general upgrade uses all configured repositories, including custom repositories,
+so their available rebuilds are included. Subsequent managed official installations
+use only `core`, `extra`, and enabled `multilib`.
 Installed official readiness means a match to current official sync metadata,
 not proof of historical repository origin. Flatpak readiness requires the enabled
 canonical user Flathub remote and the application's `flathub` origin.

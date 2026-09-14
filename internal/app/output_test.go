@@ -22,7 +22,7 @@ func TestShowPlanConciseIntent(t *testing.T) {
 		plan plan.Plan
 		want string
 	}{
-		{"mixed", realWorkstationPlan(t), "Workstation setup\n\nInstall\n  bitwarden (pacman)\n  com.tutanota.Tutanota (Flatpak)\n\nConfigure\n  SSH for GitHub\n  GitHub authentication\n  Register this workstation's SSH key with GitHub if needed\n\nManage GitHub SSH settings separately; preserve other host configuration.\n\nThe system will be updated.\n  Use official Arch repositories only (core, extra, multilib); custom repositories are excluded.\n\n"},
+		{"mixed", realWorkstationPlan(t), "Workstation setup\n\nInstall\n  bitwarden (pacman)\n  com.tutanota.Tutanota (Flatpak)\n\nConfigure\n  SSH for GitHub\n  GitHub authentication\n  Register this workstation's SSH key with GitHub if needed\n\nManage GitHub SSH settings separately; preserve other host configuration.\n\nThe system will be updated.\n  Upgrade using all configured repositories, including custom repositories.\n  Install managed official targets from core, extra, or multilib; exclude custom repositories from those installations.\n\n"},
 		{"identity", plan.Plan{ConfigureGit: true, CreateSSHIdentity: true, AuthenticateGitHub: true}, "Workstation setup\n\nConfigure\n  Git identity\n  SSH for GitHub\n  GitHub authentication\n\n"},
 		{"ready", plan.Plan{Core: readyCore(), Applications: readyApplications()}, ""},
 		{"scope refresh", plan.Plan{RefreshGitHubSSHKeyScope: true}, "Workstation setup\n\nConfigure\n  GitHub SSH key access\n\n"},

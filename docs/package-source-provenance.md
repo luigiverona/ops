@@ -41,18 +41,20 @@ merely because pacman's ordinary upgrade would not downgrade it.
 Every sync installation first obtains `-Sp --noconfirm --print-format %r/%n`.
 Unknown/custom repositories, malformed records, duplicate names (even across
 repositories), and omitted requested targets fail closed. Actual targets are
-qualified. All package mutations, including the full upgrade and AUR artifact
-`-U`, inspect `pacman-conf`'s expanded configuration. If custom sections exist,
+qualified. Managed official installations and AUR artifact `-U` inspect
+`pacman-conf`'s expanded configuration. If custom sections exist,
 ops retains global policy and official repository sections, streams the result
 into a root-owned protected staging directory, validates ownership/type/link
 counts, and invokes pacman with that temporary `--config`. Includes must already
 be expanded; duplicate sections and missing core/extra fail closed. The original
 configuration is preserved. Cleanup also runs on failure.
 
-The pre-approval plan discloses that custom repositories are excluded from the
-upgrade. Their packages do not receive custom-repository updates through ops.
-The full official upgrade remains one interactive `-Syu`; ops never performs
-an isolated database refresh followed by a partial official upgrade.
+The pre-approval plan discloses that the general interactive `-Syu` uses all
+configured repositories. This includes available custom rebuilds alongside
+official library upgrades. Managed official targets stay qualified, and their
+subsequent installations exclude custom repositories. Ops never performs an
+isolated database refresh followed by a partial official upgrade. Custom/AUR
+packages without compatible available rebuilds remain an administrator concern.
 
 Ordinary installations keep additional dependencies implicit so pacman retains
 its dependency reasons. AUR build transactions specify every concrete approved

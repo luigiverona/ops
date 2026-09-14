@@ -17,8 +17,9 @@ protects individual managed files; after a partial failure actual state is
 rediscovered. Failed core prerequisites stop dependent work.
 
 Official Arch readiness uses validated current official metadata rather than
-native/foreign classification or invented historical origin. Package mutations
-exclude custom repositories, including implicit dependencies and core packages.
+native/foreign classification or invented historical origin. Managed official
+installations exclude custom repositories, including implicit dependencies and
+core packages. The general system upgrade uses all configured repositories.
 User Flatpak readiness requires an enabled canonical Flathub remote and matching
 app origin. Wrong-origin apps and wrong-URL namesakes are reported without
 destructive migration. See [package source contracts](package-source-provenance.md)

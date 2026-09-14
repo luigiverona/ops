@@ -12,7 +12,8 @@ import (
 )
 
 // runOfficial keeps configured custom repositories out of package mutations,
-// including implicit dependencies and the full system upgrade. When filtering
+// including implicit dependencies. The general full upgrade uses the user's
+// complete configuration so available custom rebuilds are included. When filtering
 // is needed, the expanded config is streamed into existing protected staging;
 // pacman never consumes a user-writable configuration path as root.
 func (m Manager) runOfficial(ctx context.Context, spec run.Spec) (returnErr error) {

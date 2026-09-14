@@ -62,7 +62,7 @@ func (r *configRunner) Run(_ context.Context, s run.Spec) (run.Result, error) {
 }
 
 func TestEveryPackageMutationExcludesCustomRepositoriesInProtectedConfig(t *testing.T) {
-	for _, operation := range []string{"-Syu", "-S", "-U"} {
+	for _, operation := range []string{"-S", "-U"} {
 		for _, failure := range []string{"", "copy", "stage", "pacman"} {
 			r := &configRunner{configuration: "[options]\nSigLevel = Required\n[custom]\nServer = https://custom/\n[core]\nServer = https://core/\n[extra]\nServer = https://extra/\n[multilib]\nServer = https://multilib/\n", failCopy: failure == "copy", unsafeStage: failure == "stage", failPacman: failure == "pacman"}
 			spec := run.Spec{Name: "sudo", Args: []string{"-n", "pacman", operation, "--", "extra/git"}, Interactive: operation == "-Syu", Interaction: "pacman transaction decisions"}

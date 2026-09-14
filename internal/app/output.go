@@ -111,7 +111,8 @@ func (a Runtime) showPlan(p plan.Plan) {
 	}
 	if p.FullUpgrade {
 		fmt.Fprintln(a.Out, "\nThe system will be updated.")
-		fmt.Fprintln(a.Out, "  Use official Arch repositories only (core, extra, multilib); custom repositories are excluded.")
+		fmt.Fprintln(a.Out, "  Upgrade using all configured repositories, including custom repositories.")
+		fmt.Fprintln(a.Out, "  Install managed official targets from core, extra, or multilib; exclude custom repositories from those installations.")
 	}
 	dependencies := len(p.CorePackages) > 0
 	for _, application := range p.Applications {

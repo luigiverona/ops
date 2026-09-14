@@ -115,7 +115,19 @@ func (m Manager) FullUpgrade(ctx context.Context, targets ...string) error {
 	if len(targets) > 0 {
 		args = append(append(args, "--"), targets...)
 	}
-	return m.runOfficial(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: args, Interactive: true, Interaction: "pacman transaction decisions"})
+	// A full upgrade must include available rebuilds from every configured
+	// repository. Filtering here can leave custom clients linked against an old
+	// official library ABI. Managed targets remain qualified; their subsequent
+	// sync installations use runOfficial and verify source identity separately.
+	configuration, err := m.Runner.Run(ctx, run.Spec{Name: "pacman-conf", FailureOutput: run.FailureStderr})
+	if err != nil {
+		return err
+	}
+	if _, _, err := archrepo.OfficialConfig(configuration.Stdout); err != nil {
+		return err
+	}
+	_, err = m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: args, Interactive: true, Interaction: "pacman transaction decisions"})
+	return err
 }
 
 func (m Manager) Install(ctx context.Context, packages []string, asDeps bool) error {
