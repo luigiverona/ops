@@ -75,6 +75,153 @@ namespace. Native queries retain access to their state while helper connections
 cannot use the normal session/system bus addresses. This is part of D-R5's
 correction, not a waived source-identity limitation.
 
+The runtime-path regression also exposed hidden `/dev/shm` content. The final
+layout retains the read-only host `/dev` as well as `/run`, replacing only `/proc`
+for the private process namespace. Trusted inventory tools retain their configured
+filesystem paths; the boundary does not claim to sandbox arbitrary hostile code.
+The `/dev/shm` variant failed before this follow-up correction. The earlier
+private-device layout description above is historical and is superseded here.
+
+## Second-resume final disposition
+
+**BLOCKED: zero proven Critical findings; seven Important findings, four corrected
+and three unresolved.** This current disposition supersedes the historical first
+resume report below. No failing provenance regression was disabled or weakened.
+
+| Finding | Disposition |
+| --- | --- |
+| D-R1 copied installed metadata | Unresolved; forged custom content still satisfies declarations, core and AUR providers |
+| D-R2 hidden Flathub trust/source configuration | Unresolved; subsets and disabled summary verification remain accepted |
+| D-R3 excluded custom rebuilds during full upgrade | Preserved correction b8a7476, regression passes |
+| D-R4 official repository-name spoofing | Unresolved; section names do not authenticate mirror/package content |
+| D-R5 native Flatpak inspection writes | Corrected with enforced read-only inventory and preserved runtime/shared-memory paths |
+| D-R6 omitted satisfied transitive build providers | Corrected by qualified dependency-closure materialization and revalidation |
+| D-R7 dropped final AUR bindings | Preserved correction 01ae9bd, regression passes |
+
+The primary forged fixture was rerun and remains accepted, with the same distinct
+archive SHA256 values recorded below. `--needed` again omitted an equal-version
+qualified repair from the printed transaction; the official install code omits
+that flag, so a planned repair selects replacement. The forge defeats planning,
+not that reinstall command. No privileged installation or installed-byte repair
+was performed. The current metadata tuple is insufficient for source-specific
+reconciliation. Authenticating an official archive/manifest and comparing the
+installed inventory/content remains the most direct supportable route. A forced
+reinstall needs independently authenticated source and durable, invalidatable
+transaction evidence to make subsequent read-only readiness meaningful. A local
+mtree, validation-method flag, or unauthenticated sync digest cannot substitute.
+No partial substitute was introduced; these authentication corrections remain
+unfinished Wave D implementation work and block a PR.
+
+Protected configuration preserves the expanded policies in the existing native
+round-trip test, but does not establish independent Arch authenticity. Its
+separate query/mutation processes also do not provide atomic exclusion of
+concurrent administrator changes. General upgrades correctly include configured
+custom rebuilds, while managed official target installation remains qualified.
+Wrong-origin Flatpak behavior, remote approval and reported-option revalidation
+continue to pass existing tests; hidden options keep the overall Flathub identity
+and final-readiness gates blocked. Doctor's Flatpak inventory now cannot perform
+the native file initialization/migration reproduced by D-R5. Its other reviewed
+paths still issue no package synchronization, privileged staging, remote repair,
+app installation or GPG mutation. Missing isolation or needed native migration
+is an inspection error, with no unsandboxed fallback.
+
+Final validation used Go 1.26.7, `GOENV=off`, `GOTOOLCHAIN=local` throughout:
+
+| Validation | Result |
+| --- | --- |
+| `go version`; `go env GOTOOLCHAIN GOENV` | 1.26.7; local; environment-file mechanism disabled |
+| `go mod verify` | Passed |
+| `gofmt -l .` | Empty |
+| `go test -count=1 ./internal/archrepo` | Failed only D-R1 and D-R4 |
+| `go test -count=1 ./internal/resolve` | Passed, 77.934 seconds |
+| `go test -count=1 ./internal/inspect` | Passed |
+| `go test -count=1 ./internal/plan` | Passed |
+| `go test -count=1 ./internal/arch` | Passed |
+| `go test -count=1 ./internal/flatpak` | Failed only D-R2 (summary verification and subset variants) |
+| `go test -count=1 ./internal/app` | Passed |
+| `go test -count=1 ./internal/run` | Passed, 34.185 seconds; subsequent path-only isolation corrections checked with native/race regressions |
+| New adversarial tests | All executed; unresolved provenance assertions remain red |
+| `go test -race -count=1 ./internal/run -run TestReadOnly` | Passed after final runtime/shared-memory corrections |
+| Full requested seven-package targeted race | Not run: zero-blocker prerequisite is not met |
+| `go test -count=1 ./...` | Not run: gate blocked; release tests also generate real signatures, prohibited by this task |
+| `go vet ./...`; `go build ./...` | Passed after final code correction |
+| `git diff --check` | Passed |
+| Full repository race / VM / privileged repair / signing tests | Deliberately not run |
+
+Additional tests in this resume cover transitive official/custom/foreign/versioned
+virtual/cyclic/missing/moved providers, missing or malformed dependency metadata,
+exact named targets with additional virtual providers, native filesystem write
+rejection, mandatory isolation without fallback, missing Flatpak state, and
+retention of read-only `/run/user` and `/dev/shm` inventory paths. Existing source
+forgery, `--needed`, config-policy, origin, approval, final-inspection, and parser
+regressions were preserved and rerun. Optional improvements remain typed qualified
+target APIs, clearer custom-provider planning recovery, and maintenance of core
+repository mappings. The shared policy package still has a coherent responsibility;
+the open architectural boundary is authenticated evidence rather than file count.
+
+No push, PR, merge, tag, release, publication, R2 access, VM mutation, signing,
+toolchain/dependency installation or upgrade, main-branch change, or next-wave
+work occurred. All corrective commits remain local, with signing explicitly
+disabled for these commits. The original implementation and every recovered
+commit remain intact. The worktree is committed clean at the end of this resume.
+
+Final baseline-to-review changed-file list (52 files):
+
+```text
+README.md
+docs/architecture.md
+docs/configuration.md
+docs/package-source-provenance.md
+docs/wave-d-independent-review.md
+docs/workstation-security.md
+internal/app/applications.go
+internal/app/aur_application_test.go
+internal/app/aur_order_test.go
+internal/app/diagnostic_test.go
+internal/app/doctor.go
+internal/app/doctor_test.go
+internal/app/lifecycle.go
+internal/app/lifecycle_test.go
+internal/app/output.go
+internal/app/output_test.go
+internal/app/prepare.go
+internal/app/prepare_test.go
+internal/app/provenance_test.go
+internal/app/review_test.go
+internal/app/terminal_test.go
+internal/arch/manager.go
+internal/arch/manager_test.go
+internal/arch/provenance.go
+internal/arch/provenance_test.go
+internal/arch/review_test.go
+internal/archrepo/cli_test.go
+internal/archrepo/config.go
+internal/archrepo/config_test.go
+internal/archrepo/identity.go
+internal/archrepo/provenance_test.go
+internal/archrepo/query.go
+internal/archrepo/review_test.go
+internal/flatpak/flatpak.go
+internal/flatpak/provenance_test.go
+internal/flatpak/review_test.go
+internal/inspect/inspect.go
+internal/inspect/inspect_test.go
+internal/inspect/provenance_test.go
+internal/plan/plan.go
+internal/plan/plan_test.go
+internal/plan/provenance_test.go
+internal/resolve/applications.go
+internal/resolve/minimal_test.go
+internal/resolve/planning_test.go
+internal/resolve/provenance_test.go
+internal/resolve/resolve.go
+internal/resolve/resolve_test.go
+internal/run/readonly_test.go
+internal/run/run.go
+internal/testpkg/fixture.go
+internal/testpkg/pacman.go
+```
+
 ## First resume checkpoint
 
 State A: clean `fix/package-source-provenance`, no stashes or corrective

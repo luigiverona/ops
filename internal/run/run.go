@@ -64,7 +64,7 @@ func (e Exec) Run(ctx context.Context, spec Spec) (Result, error) {
 			return Result{}, errors.New("read-only inventory cannot request interaction or input")
 		}
 		name = "bwrap"
-		args = append([]string{"--unshare-all", "--die-with-parent", "--new-session", "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "--setenv", "DBUS_SESSION_BUS_ADDRESS", "unix:path=/dev/null", "--setenv", "DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/dev/null", "--", spec.Name}, spec.Args...)
+		args = append([]string{"--unshare-all", "--die-with-parent", "--new-session", "--ro-bind", "/", "/", "--proc", "/proc", "--setenv", "DBUS_SESSION_BUS_ADDRESS", "unix:path=/dev/null", "--setenv", "DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/dev/null", "--", spec.Name}, spec.Args...)
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = spec.Dir

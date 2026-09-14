@@ -43,6 +43,13 @@ func TestReadOnlyFilesystemPreservesRuntimeFiles(t *testing.T) {
 	if runtimeDir == "" {
 		t.Skip("no user runtime directory")
 	}
+	for _, runtimeDir := range []string{runtimeDir, "/dev/shm"} {
+		t.Run(runtimeDir, func(t *testing.T) { checkReadOnlyRuntimePath(t, runtimeDir) })
+	}
+}
+
+func checkReadOnlyRuntimePath(t *testing.T, runtimeDir string) {
+	t.Helper()
 	dir, err := os.MkdirTemp(runtimeDir, "ops-readonly-test-")
 	if err != nil {
 		t.Fatal(err)
@@ -55,5 +62,12 @@ func TestReadOnlyFilesystemPreservesRuntimeFiles(t *testing.T) {
 	result, err := (Exec{}).Run(context.Background(), Spec{Name: "cat", Args: []string{path}, ReadOnlyFilesystem: true})
 	if err != nil || result.Stdout != "existing state" {
 		t.Fatalf("runtime inventory hidden: %q %v", result.Stdout, err)
+	}
+	created := filepath.Join(dir, "must-not-exist")
+	if _, err := (Exec{}).Run(context.Background(), Spec{Name: "touch", Args: []string{created}, ReadOnlyFilesystem: true}); err == nil {
+		t.Fatal("runtime directory was writable")
+	}
+	if _, err := os.Stat(created); !os.IsNotExist(err) {
+		t.Fatalf("runtime inspection wrote host state: %v", err)
 	}
 }
