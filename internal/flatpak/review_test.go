@@ -21,6 +21,40 @@ func (r isolatedFlatpak) Run(ctx context.Context, s run.Spec) (run.Result, error
 	return (run.Exec{}).Run(ctx, s)
 }
 
+type inspectionBoundaryRunner struct{ t *testing.T }
+
+func (r inspectionBoundaryRunner) Run(_ context.Context, s run.Spec) (run.Result, error) {
+	if !s.ReadOnlyFilesystem || s.Name != "flatpak" || (s.Args[0] != "remotes" && s.Args[0] != "list") {
+		r.t.Fatalf("Flatpak inventory lacks a read-only boundary: %+v", s)
+	}
+	return run.Result{Stdout: "[]"}, nil
+}
+
+func TestReviewEveryFlatpakInventoryRequiresReadOnlyFilesystem(t *testing.T) {
+	m := Manager{Runner: inspectionBoundaryRunner{t}}
+	if _, err := m.Remotes(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Applications(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReviewMissingFlatpakInstallationIsNotInitialized(t *testing.T) {
+	if _, err := exec.LookPath("flatpak"); err != nil {
+		t.Skip("flatpak unavailable")
+	}
+	dir := t.TempDir()
+	r := isolatedFlatpak{env: []string{"FLATPAK_USER_DIR=" + filepath.Join(dir, "user"), "XDG_CACHE_HOME=" + filepath.Join(dir, "cache"), "XDG_DATA_HOME=" + filepath.Join(dir, "data"), "XDG_CONFIG_HOME=" + filepath.Join(dir, "config")}}
+	m := Manager{Runner: r}
+	_, _ = m.Remotes(context.Background())
+	_, _ = m.Applications(context.Background())
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("inventory initialized user state: %v %v", entries, err)
+	}
+}
+
 // Build the OSTree repository structure directly so this probe does not import
 // GPG keys, create a real user remote, or contact the network.
 func reviewFlatpak(t *testing.T, options string, legacy bool) isolatedFlatpak {
@@ -63,10 +97,10 @@ func TestReviewFlatpakInspectionMustNotModifyConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = (Manager{Runner: runner}).Remotes(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	// A legacy installation that requires migration may be inconclusive. The
+	// required postcondition is no host mutation, including on query failure.
+	_, _ = (Manager{Runner: runner}).Remotes(context.Background())
+	_, _ = (Manager{Runner: runner}).Applications(context.Background())
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

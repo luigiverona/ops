@@ -162,14 +162,14 @@ func parseRows(output string, keys []string) ([][]string, error) {
 	return rows, nil
 }
 func (m Manager) Remotes(ctx context.Context) (map[string]Remote, error) {
-	result, err := m.Runner.Run(ctx, run.Spec{Name: "flatpak", Args: []string{"remotes", "--user", "--show-disabled", "--columns=options,name,url", "--json"}, FailureOutput: run.FailureStderr})
+	result, err := m.Runner.Run(ctx, run.Spec{Name: "flatpak", Args: []string{"remotes", "--user", "--show-disabled", "--columns=options,name,url", "--json"}, ReadOnlyFilesystem: true, FailureOutput: run.FailureStderr})
 	if err != nil {
 		return nil, err
 	}
 	return ParseRemotes(result.Stdout)
 }
 func (m Manager) Applications(ctx context.Context) (map[string]string, error) {
-	result, err := m.Runner.Run(ctx, run.Spec{Name: "flatpak", Args: []string{"list", "--user", "--app", "--columns=origin,application", "--json"}, FailureOutput: run.FailureStderr})
+	result, err := m.Runner.Run(ctx, run.Spec{Name: "flatpak", Args: []string{"list", "--user", "--app", "--columns=origin,application", "--json"}, ReadOnlyFilesystem: true, FailureOutput: run.FailureStderr})
 	if err != nil {
 		return nil, err
 	}

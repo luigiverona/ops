@@ -19,6 +19,10 @@ type Spec struct {
 	Dir   string
 	Env   []string
 	Stdin io.Reader
+	// ReadOnlyFilesystem prevents native inventory commands from initializing
+	// or migrating host files. Requires bubblewrap; never falls back to a normal
+	// process. This is for trusted query tools, not arbitrary hostile programs.
+	ReadOnlyFilesystem bool
 	// StreamOutput exposes native transaction output without granting stdin access.
 	StreamOutput bool
 	Interactive  bool
@@ -54,7 +58,15 @@ func (e Exec) Run(ctx context.Context, spec Spec) (Result, error) {
 	if spec.Interactive && spec.Interaction == "" {
 		return Result{}, fmt.Errorf("interactive command %q has no declared terminal boundary", spec.Name)
 	}
-	cmd := exec.CommandContext(ctx, spec.Name, spec.Args...)
+	name, args := spec.Name, spec.Args
+	if spec.ReadOnlyFilesystem {
+		if spec.Interactive || spec.StreamOutput || spec.Stdin != nil {
+			return Result{}, errors.New("read-only inventory cannot request interaction or input")
+		}
+		name = "bwrap"
+		args = append([]string{"--unshare-all", "--die-with-parent", "--new-session", "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/run", "--unsetenv", "DBUS_SESSION_BUS_ADDRESS", "--unsetenv", "DBUS_SYSTEM_BUS_ADDRESS", "--", spec.Name}, spec.Args...)
+	}
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = spec.Dir
 	cmd.Env = append(append(os.Environ(), "LC_ALL=C"), spec.Env...)
 	cmd.Stdin = spec.Stdin

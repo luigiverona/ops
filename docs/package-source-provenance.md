@@ -96,6 +96,12 @@ multiple refs/origins for one app ID, missing/unknown fields, non-string values,
 invalid identifiers, null and trailing data fail closed. An empty application
 inventory can be zero bytes; an empty remote inventory must be a JSON array.
 CLI failures and capture truncation are never interpreted as absence.
+Both inventory commands require a read-only filesystem boundary using bubblewrap
+(already required by Arch's Flatpak package), with isolated process, network and
+IPC namespaces. Native queries can otherwise initialize or migrate user state.
+There is no unsandboxed fallback. If existing state needs migration or isolation
+is unavailable, inspection can fail; perform the necessary Flatpak maintenance
+manually and rerun Doctor. No inventory query is allowed to repair that state.
 
 The remote postcondition is: a user remote named exactly `flathub`, URL exactly
 `https://dl.flathub.org/repo/`, enabled, with none of the reported `disabled`,

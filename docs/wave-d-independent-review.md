@@ -33,6 +33,39 @@ The forged-content predicate remains D-R1; the closure correction does not
 claim to authenticate its members. D-R6 is corrected, conditional on that shared
 predicate being repaired before release.
 
+### D-R5 second-resume correction design (recorded before implementation)
+
+Keep Flatpak's native inventory parser, but require a read-only host filesystem
+and isolated network/process/IPC namespaces for inventory commands, enforced by
+bubblewrap at the real execution boundary. Bubblewrap is already a dependency
+of the supported Arch Flatpak package; no package will be installed or upgraded
+by this review. There will be no unsandboxed fallback. Legacy or missing state
+that requires a native write may return an inspection error, which Doctor must
+report without claiming health. This is a deliberate fail-closed recovery policy,
+not restoration of user files after mutation. The existing legacy-config test
+will continue asserting unchanged bytes; it must permit an inconclusive query.
+Both remote and application inventories need this boundary.
+
+D-R5 disposition: corrected. `run.Spec.ReadOnlyFilesystem` is enforced by
+`run.Exec` using bubblewrap with a read-only host root, private process/network/
+IPC namespaces, private `/proc` and `/dev`, and hidden host `/run`. Session/system
+D-Bus address overrides are removed. Only trusted Flatpak inventory commands
+opt into this boundary; mutation commands retain their existing approval path.
+There is no fallback if bubblewrap or namespace creation is unavailable. A legacy
+installation that needs migration can produce an inspection error and require
+manual Flatpak maintenance; it is never silently changed by Doctor.
+
+The original legacy-config reproducer now passes for both remote and application
+inspection. New tests verify absent state is not initialized, both inventory
+specifications require the boundary, native writes fail while reads work, and
+missing bubblewrap cannot cause an unsandboxed fallback. Existing application,
+inspection, architecture and plan suites pass. This does not resolve D-R2:
+read-only observation still lacks complete remote trust configuration.
+
+Source: [Arch Flatpak dependencies](https://archlinux.org/packages/extra/x86_64/flatpak/)
+and [bubblewrap isolation model](https://github.com/containers/bubblewrap/blob/main/README.md).
+The existing installed bubblewrap was used; no dependency was installed or upgraded.
+
 ## First resume checkpoint
 
 State A: clean `fix/package-source-provenance`, no stashes or corrective
