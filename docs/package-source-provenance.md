@@ -103,13 +103,22 @@ There is no unsandboxed fallback. If existing state needs migration or isolation
 is unavailable, inspection can fail; perform the necessary Flatpak maintenance
 manually and rerun Doctor. No inventory query is allowed to repair that state.
 
-The remote postcondition is: a user remote named exactly `flathub`, URL exactly
-`https://dl.flathub.org/repo/`, enabled, with none of the reported `disabled`,
-`oci`, `no-enumerate`, `no-gpg-verify`, or `filtered` options. Unknown reported
-options fail inspection. The bootstrap `.flatpakrepo` URL is distinct from the
-stored repository URL. Application readiness additionally requires that the
-application ID's origin is exactly `flathub`. This checks stored source identity,
-not historical content authenticity or every remote keyring entry.
+The remote postcondition additionally requires bounded, read-only inspection of
+`repo/config` and the exact per-remote `flathub.trustedkeys.gpg` bootstrap keyring.
+CLI columns alone cannot establish trust. The supported state is full OSTree
+Flathub at `https://dl.flathub.org/repo/`, enabled, with effective commit and
+summary verification, no collection ID, no subset/filter, and no noncanonical
+source/trust options. Missing or empty subset/filter values are unrestricted;
+a stored subset `-` is restricted. Unknown security options fail closed.
+Presentation title/comment/description/homepage/icon fields are optional.
+
+The keyring is pinned by SHA256 to the independently reproduced public bootstrap
+material. Missing, altered, extra, or differently serialized keys require manual
+review; production inspection neither imports keys nor invokes GPG. This checks
+configured source/trust identity, not historical installed application bytes.
+Application readiness additionally requires origin exactly `flathub`.
+See [D-R2 evidence and exact predicate](wave-d-r2-correction.md) for defaults,
+collection interaction, supported fields, filter behavior and trust boundaries.
 
 A missing remote is added after approval without `--if-not-exists`; an unexpected
 namesake at execution time aborts. An otherwise canonical disabled remote is

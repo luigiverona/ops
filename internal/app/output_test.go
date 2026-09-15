@@ -324,7 +324,7 @@ func realWorkstationPlan(t *testing.T) plan.Plan {
 		Services:        map[string]bool{"mullvad-daemon.service": true},
 		OfficialMatches: map[string]string{"git": "extra/git", "openssh": "core/openssh", "github-cli": "extra/github-cli", "flatpak": "extra/flatpak", "mullvad-vpn": "extra/mullvad-vpn", "discord": "extra/discord", "spotify-launcher": "extra/spotify-launcher", "steam": "multilib/steam"},
 		Foreign:         map[string]bool{"librewolf-bin": true, "mullvad-browser-bin": true},
-		Flatpaks:        map[string]string{}, Flathub: flatpak.Remote{Name: "flathub", URL: flatpak.FlathubRepositoryURL, Enabled: true}, Multilib: true,
+		Flatpaks:        map[string]string{}, Flathub: flatpak.Remote{SourceTrusted: true, Name: "flathub", URL: flatpak.FlathubRepositoryURL, Enabled: true}, Multilib: true,
 		GitName: "User", GitEmail: "user@example.com",
 		ManagedSSHIdentity: true, UnrelatedSSHIdentities: 1,
 	}

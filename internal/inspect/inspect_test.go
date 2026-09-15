@@ -66,7 +66,7 @@ func (f *stateRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) 
 		return run.Result{}, nil
 	case "flatpak":
 		if len(spec.Args) > 0 && spec.Args[0] == "remotes" {
-			return run.Result{Stdout: testpkg.Flathub}, nil
+			return testpkg.FlatpakRemotes(testpkg.Flathub), nil
 		}
 		return run.Result{Stdout: "[]"}, nil
 	case "git":

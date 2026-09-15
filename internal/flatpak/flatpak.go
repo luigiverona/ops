@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/run"
@@ -22,10 +23,13 @@ type Remote struct {
 	URL     string
 	Enabled bool
 	Options []string
+	// SourceTrusted is established from persistent configuration and the pinned
+	// per-remote keyring. CLI columns alone never establish this evidence.
+	SourceTrusted bool
 }
 
 func (r Remote) Canonical() bool {
-	if r.Name != "flathub" || r.URL != FlathubRepositoryURL {
+	if r.Name != "flathub" || r.URL != FlathubRepositoryURL || !r.SourceTrusted {
 		return false
 	}
 	for _, option := range r.Options {
@@ -162,13 +166,24 @@ func parseRows(output string, keys []string) ([][]string, error) {
 	return rows, nil
 }
 func (m Manager) Remotes(ctx context.Context) (map[string]Remote, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	result, err := m.Runner.Run(ctx, run.Spec{Name: "flatpak", Args: []string{"remotes", "--user", "--show-disabled", "--columns=options,name,url", "--json"}, ReadOnlyFilesystem: true, FailureOutput: run.FailureStderr})
 	if err != nil {
 		return nil, err
 	}
-	return ParseRemotes(result.Stdout)
+	remotes, err := ParseRemotes(result.Stdout)
+	if err != nil {
+		return nil, err
+	}
+	if err := inspectRemoteIdentity(remotes); err != nil {
+		return nil, fmt.Errorf("inspect Flathub source/trust configuration: %w", err)
+	}
+	return remotes, nil
 }
 func (m Manager) Applications(ctx context.Context) (map[string]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	result, err := m.Runner.Run(ctx, run.Spec{Name: "flatpak", Args: []string{"list", "--user", "--app", "--columns=origin,application", "--json"}, ReadOnlyFilesystem: true, FailureOutput: run.FailureStderr})
 	if err != nil {
 		return nil, err
@@ -181,7 +196,7 @@ func (m Manager) VerifyFlathub(ctx context.Context) error {
 		return err
 	}
 	if !remotes["flathub"].Ready() {
-		return fmt.Errorf("user flathub remote is not enabled at the canonical Flathub repository URL")
+		return fmt.Errorf("user flathub remote lacks the supported enabled Flathub source/trust identity; reconcile manually and rerun ops")
 	}
 	return nil
 }
@@ -204,7 +219,7 @@ func (m Manager) EnableFlathub(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if !remotes["flathub"].Canonical() {
+	if !remotes["flathub"].Canonical() || remotes["flathub"].Enabled {
 		return fmt.Errorf("flathub source changed after planning; rerun ops")
 	}
 	_, err = m.Runner.Run(ctx, run.Spec{Name: "flatpak", Args: []string{"remote-modify", "--user", "--enable", "flathub"}, FailureOutput: run.FailureStderr})
@@ -229,6 +244,11 @@ func (m Manager) Install(ctx context.Context, id string) error {
 			return fmt.Errorf("installed app has a different origin; reconcile manually and rerun ops")
 		}
 		return m.Verify(ctx, id)
+	}
+	// Application inventory is a separate process; repeat the complete trust
+	// check immediately before mutation in case it changed during that query.
+	if err := m.VerifyFlathub(ctx); err != nil {
+		return err
 	}
 	_, err = m.Runner.Run(ctx, run.Spec{Name: "flatpak", Args: []string{"install", "--user", "--noninteractive", "--", "flathub", id}, FailureOutput: run.FailureCombined})
 	if err != nil {

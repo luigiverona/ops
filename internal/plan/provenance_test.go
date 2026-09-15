@@ -29,7 +29,7 @@ func TestProvenanceReadinessAndRemediation(t *testing.T) {
 			state.OfficialMatches["flatpak"] = "extra/flatpak"
 			state.Flatpaks = map[string]string{declaration.Identifier: tc.origin}
 			if tc.url != "" {
-				state.Flathub = flatpak.Remote{Name: "flathub", URL: tc.url, Enabled: tc.enabled}
+				state.Flathub = flatpak.Remote{SourceTrusted: true, Name: "flathub", URL: tc.url, Enabled: tc.enabled}
 			}
 			facts := Facts{declaration: {State: Install}}
 			p := Build(cfg, state, facts)
@@ -60,5 +60,17 @@ func TestCustomNativeCannotSatisfyCoreOrDeclaration(t *testing.T) {
 	}
 	if !reflect.DeepEqual(p.UpgradeTargets, []string{"core/openssh", "extra/git", "extra/github-cli"}) {
 		t.Fatalf("upgrade shadows not protected: %v", p.UpgradeTargets)
+	}
+}
+
+func TestFlathubWithoutCompleteTrustEvidenceIsManual(t *testing.T) {
+	app := config.Application{Source: config.Flatpak, Identifier: "org.example.App"}
+	for _, enabled := range []bool{true, false} {
+		state := convergedState()
+		state.Flathub = flatpak.Remote{Name: "flathub", URL: flatpak.FlathubRepositoryURL, Enabled: enabled}
+		p := Build(config.Config{Applications: []config.Application{app}}, state, Facts{app: {State: Install}})
+		if p.AddFlathub || p.EnableFlathub || p.Applications[0].State != Failed {
+			t.Fatalf("untrusted source planned for automatic correction: %+v", p)
+		}
 	}
 }

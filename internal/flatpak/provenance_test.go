@@ -56,7 +56,15 @@ func TestRemoteIdentity(t *testing.T) {
 	} {
 		output := `[{"name":"` + tc.name + `","url":"` + tc.url + `","options":"` + tc.options + `"}]`
 		remotes, err := ParseRemotes(output)
-		if err != nil || remotes[tc.name].Ready() != tc.ready {
+		if err != nil {
+			t.Fatal(err)
+		}
+		remote := remotes[tc.name]
+		if remote.Ready() {
+			t.Fatal("CLI columns established trust without persistent evidence")
+		}
+		remote.SourceTrusted = true
+		if remote.Ready() != tc.ready {
 			t.Fatalf("%s: %+v %v", output, remotes, err)
 		}
 	}
@@ -96,7 +104,7 @@ func (r *provenanceRunner) Run(_ context.Context, s run.Spec) (run.Result, error
 	}
 	switch s.Args[0] {
 	case "remotes":
-		return run.Result{Stdout: r.remote}, nil
+		return testpkg.FlatpakRemotes(r.remote), nil
 	case "list":
 		return run.Result{Stdout: r.apps}, nil
 	case "remote-add", "remote-modify":

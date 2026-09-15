@@ -188,7 +188,7 @@ func (f *aurOrderRunner) Run(_ context.Context, spec run.Spec) (run.Result, erro
 		return run.Result{Stdout: "paru v2\n"}, nil
 	}
 	if spec.Name == "flatpak" && len(spec.Args) > 0 && spec.Args[0] == "remotes" {
-		return run.Result{Stdout: testpkg.Flathub}, nil
+		return testpkg.FlatpakRemotes(testpkg.Flathub), nil
 	}
 	return run.Result{}, errors.New("unexpected command: " + spec.Name + " " + strings.Join(spec.Args, " "))
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -66,7 +67,7 @@ func TestFlathubEnablementRequiresVisibleApprovalAndVerifies(t *testing.T) {
 					if !enabled {
 						value = strings.Replace(value, `"options":""`, `"options":"disabled"`, 1)
 					}
-					return run.Result{Stdout: value}, nil
+					return testpkg.FlatpakRemotes(value), nil
 				}
 				if s.Name == "flatpak" && s.Args[0] == "remote-modify" {
 					if !strings.Contains(out.String(), "Continue?") {
@@ -127,7 +128,7 @@ func TestDoctorProvenanceMismatchesAreReadOnly(t *testing.T) {
 				if s.Name == "flatpak" {
 					switch s.Args[0] {
 					case "remotes":
-						return run.Result{Stdout: tc.remote}, nil
+						return testpkg.FlatpakRemotes(tc.remote), nil
 					case "list":
 						return run.Result{Stdout: tc.apps}, nil
 					default:
@@ -193,7 +194,7 @@ func TestShrinkingAURTransactionReverifiesOmittedRepositoryIdentity(t *testing.T
 }
 
 func TestFinalReinspectionRejectsFlatpakProvenanceDrift(t *testing.T) {
-	for _, drift := range []string{"origin", "URL", "disabled"} {
+	for _, drift := range []string{"origin", "URL", "disabled", "summary", "subset", "filter", "content", "keyring"} {
 		t.Run(drift, func(t *testing.T) {
 			a, out, base := noActionPrepareRuntime(t, false)
 			declaration := config.Application{Source: config.Flatpak, Identifier: "org.example.App"}
@@ -226,7 +227,28 @@ func TestFinalReinspectionRejectsFlatpakProvenanceDrift(t *testing.T) {
 						if final && drift == "disabled" {
 							value = strings.Replace(value, `"options":""`, `"options":"disabled"`, 1)
 						}
-						return run.Result{Stdout: value}, nil
+						result := testpkg.FlatpakRemotes(value)
+						if final {
+							data := string(testpkg.FlatpakConfig())
+							switch drift {
+							case "summary":
+								data = strings.Replace(data, "gpg-verify-summary=true", "gpg-verify-summary=false", 1)
+							case "subset":
+								data += "xa.subset=verified\n"
+							case "filter":
+								data += "xa.filter=/missing/filter\n"
+							case "content":
+								data += "contenturl=https://other/\n"
+							case "keyring":
+								if err := os.WriteFile(filepath.Join(os.Getenv("FLATPAK_USER_DIR"), "repo/flathub.trustedkeys.gpg"), []byte("replaced"), 0600); err != nil {
+									t.Fatal(err)
+								}
+							}
+							if drift != "URL" && drift != "disabled" {
+								testpkg.WriteFlatpakConfig([]byte(data))
+							}
+						}
+						return result, nil
 					}
 				}
 				return base.Run(ctx, s)

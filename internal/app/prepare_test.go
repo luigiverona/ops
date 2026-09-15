@@ -97,9 +97,9 @@ func (f *prepareRunner) Run(_ context.Context, spec run.Spec) (run.Result, error
 	}
 	if spec.Name == "flatpak" && len(spec.Args) > 0 && spec.Args[0] == "remotes" {
 		if f.missingFlathub {
-			return run.Result{Stdout: "[]"}, nil
+			return testpkg.FlatpakRemotes("[]"), nil
 		}
-		return run.Result{Stdout: testpkg.Flathub}, nil
+		return testpkg.FlatpakRemotes(testpkg.Flathub), nil
 	}
 	if spec.Name == "git" && len(spec.Args) >= 4 && spec.Args[0] == "config" && spec.Args[1] == "--global" {
 		switch {
@@ -232,7 +232,7 @@ func readyExecutionState() plan.State {
 	return plan.State{
 		OfficialMatches: map[string]string{"git": "extra/git", "openssh": "core/openssh", "github-cli": "extra/github-cli", "flatpak": "extra/flatpak", "base-devel": "extra/base-devel"}, Installed: map[string]bool{"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true},
 		Explicit: map[string]bool{"git": true, "openssh": true, "github-cli": true, "flatpak": true, "base-devel": true},
-		Foreign:  map[string]bool{}, Flatpaks: map[string]string{}, Flathub: flatpak.Remote{Name: "flathub", URL: flatpak.FlathubRepositoryURL, Enabled: true}, Multilib: true,
+		Foreign:  map[string]bool{}, Flatpaks: map[string]string{}, Flathub: flatpak.Remote{SourceTrusted: true, Name: "flathub", URL: flatpak.FlathubRepositoryURL, Enabled: true}, Multilib: true,
 		GitName: "User", GitEmail: "user@example.com", ManagedSSHIdentity: true, SSHConfigurationReady: true,
 		SSHHostKeyFreshness: plan.SSHHostKeyFreshnessCurrent,
 		GitHubAuth:          true, GitHubKeysKnown: true, ManagedGitHubKeyKnown: true, ManagedGitHubKey: true,

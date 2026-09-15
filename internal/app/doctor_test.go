@@ -45,7 +45,7 @@ func (f *doctorRunner) Run(_ context.Context, spec run.Spec) (run.Result, error)
 		return run.Result{Stdout: "paru v2\n"}, nil
 	}
 	if spec.Name == "flatpak" && len(spec.Args) > 0 && spec.Args[0] == "remotes" {
-		return run.Result{Stdout: testpkg.Flathub}, nil
+		return testpkg.FlatpakRemotes(testpkg.Flathub), nil
 	}
 	if spec.Name == "flatpak" {
 		return run.Result{Stdout: "[]"}, nil

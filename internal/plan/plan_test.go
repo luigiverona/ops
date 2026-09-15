@@ -63,7 +63,7 @@ func TestBuildConvergenceAndServiceDrift(t *testing.T) {
 	state.OfficialMatches["mullvad-vpn"] = "extra/mullvad-vpn"
 	state.Foreign["example"] = true
 	state.Flatpaks["org.example.App"] = "flathub"
-	state.Flathub = flatpak.Remote{Name: "flathub", URL: flatpak.FlathubRepositoryURL, Enabled: true}
+	state.Flathub = flatpak.Remote{SourceTrusted: true, Name: "flathub", URL: flatpak.FlathubRepositoryURL, Enabled: true}
 	state.Services = map[string]bool{"mullvad-daemon.service": true}
 	p := Build(cfg, state, nil)
 	if p.FullUpgrade || p.AddFlathub || len(p.CorePackages) > 0 {

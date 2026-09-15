@@ -1,5 +1,30 @@
 # Wave D independent review, resumed 2026-09-14
 
+## D-R2 corrective pass resumed 2026-09-14
+
+This checkpoint supersedes only the D-R2 disposition below. Recovered state B:
+`fix/package-source-provenance` at `2cd1ff365ac7e9493582782ce0d618ecfa194f99`,
+11 modified files, seven untracked status entries (eight files), nothing staged,
+no stashes and no interrupted-session commits. All recovered work and prior
+history were preserved. Fetch retained the expected merged baseline.
+
+D-R2 is corrected by complete supported persistent source/trust inspection,
+including full-source subset/filter semantics, effective GPG settings and the
+exact independently reproduced public Flathub keyring. Doctor and every
+pre/post/final gate use the same predicate. D-R5's mandatory isolation is
+preserved; native queries now also have deadlines. No D-R1/D-R4 code or test was
+changed, and both original adversarial failures were reproduced separately.
+The detailed recovery, native evidence, exhaustive supported predicate, tests
+and limitations are in [D-R2 correction evidence](wave-d-r2-correction.md).
+
+Validation used Go 1.26.7 exactly with GOENV=off and GOTOOLCHAIN=local.
+Module verification, formatting, all five requested focused packages, helper
+compilation, full race for flatpak/inspect/plan/app/run, additional D-R5 race, vet,
+build and diff checks pass. D-R1 and D-R4 fail separately for their original
+reasons. Full repository tests/race, signing/release and VM validation remain
+excluded. Complete timings and any broader validation limitation are recorded
+in the linked evidence.
+
 ## Second resume checkpoint (2026-09-14)
 
 The second resume found state C, a clean `fix/package-source-provenance` at

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/luigiverona/ops/internal/run"
+	"github.com/luigiverona/ops/internal/testpkg"
 )
 
 type isolatedFlatpak struct{ env []string }
@@ -27,7 +28,7 @@ func (r inspectionBoundaryRunner) Run(_ context.Context, s run.Spec) (run.Result
 	if !s.ReadOnlyFilesystem || s.Name != "flatpak" || (s.Args[0] != "remotes" && s.Args[0] != "list") {
 		r.t.Fatalf("Flatpak inventory lacks a read-only boundary: %+v", s)
 	}
-	return run.Result{Stdout: "[]"}, nil
+	return testpkg.FlatpakRemotes("[]"), nil
 }
 
 func TestReviewEveryFlatpakInventoryRequiresReadOnlyFilesystem(t *testing.T) {
@@ -45,9 +46,13 @@ func TestReviewMissingFlatpakInstallationIsNotInitialized(t *testing.T) {
 		t.Skip("flatpak unavailable")
 	}
 	dir := t.TempDir()
+	t.Setenv("FLATPAK_USER_DIR", filepath.Join(dir, "user"))
 	r := isolatedFlatpak{env: []string{"FLATPAK_USER_DIR=" + filepath.Join(dir, "user"), "XDG_CACHE_HOME=" + filepath.Join(dir, "cache"), "XDG_DATA_HOME=" + filepath.Join(dir, "data"), "XDG_CONFIG_HOME=" + filepath.Join(dir, "config")}}
 	m := Manager{Runner: r}
-	_, _ = m.Remotes(context.Background())
+	remotes, err := m.Remotes(context.Background())
+	if err != nil || len(remotes) != 0 {
+		t.Fatalf("empty installation must be missing: %v %v", remotes, err)
+	}
 	_, _ = m.Applications(context.Background())
 	entries, err := os.ReadDir(dir)
 	if err != nil || len(entries) != 0 {
@@ -63,12 +68,19 @@ func reviewFlatpak(t *testing.T, options string, legacy bool) isolatedFlatpak {
 		t.Skip("flatpak unavailable")
 	}
 	dir := t.TempDir()
+	t.Setenv("FLATPAK_USER_DIR", filepath.Join(dir, "user"))
 	for _, sub := range []string{"repo/objects", "repo/tmp", "repo/refs/heads", "repo/refs/remotes", "repo/extensions", "repo/state"} {
 		if err := os.MkdirAll(filepath.Join(dir, "user", sub), 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	data := "[core]\nrepo_version=1\nmode=bare-user-only\nmin-free-space-size=500MB\n[remote \"flathub\"]\nurl=" + FlathubRepositoryURL + "\ngpg-verify=true\n" + options
+	data := "[core]\nrepo_version=1\nmode=bare-user-only\nmin-free-space-size=500MB\n[remote \"flathub\"]\nurl=" + FlathubRepositoryURL + "\ngpg-verify=true\ngpg-verify-summary=true\n" + options
+	if strings.Contains(options, "gpg-verify-summary=") {
+		data = strings.Replace(data, "gpg-verify-summary=true\n", "", 1)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "user/repo/flathub.trustedkeys.gpg"), testpkg.FlatpakKeyring(), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if legacy {
 		data = strings.Replace(data, "min-free-space-size=500MB\n", "", 1)
 	}
