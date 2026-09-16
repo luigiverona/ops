@@ -32,7 +32,8 @@ type Workstation struct {
 	SkipAgent bool
 }
 
-// Local inspects package and user state without network calls or mutations.
+// Local inspects workstation state without package or configuration mutation.
+// Official content evidence requires independent HTTPS metadata.
 // Optional tools being absent is state, not an inspection failure.
 func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 	state := plan.State{
@@ -72,7 +73,7 @@ func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 	if err != nil {
 		return state, err
 	}
-	if state.Installed["flatpak"] {
+	if state.OfficialMatches["flatpak"] != "" {
 		manager := flatpak.Manager{Runner: w.Runner}
 		state.Flatpaks, err = manager.Applications(ctx)
 		if err != nil {
@@ -97,7 +98,7 @@ func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 	} else {
 		return state, fmt.Errorf("read pacman configuration: %w", err)
 	}
-	if state.Installed["git"] {
+	if state.OfficialMatches["git"] != "" {
 		identity, err := (gitops.Manager{Runner: w.Runner}).Inspect(ctx)
 		if err != nil {
 			return state, err
@@ -133,7 +134,7 @@ func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 			return state, err
 		}
 	}
-	if !w.SkipAgent && state.Installed["openssh"] && (!state.ManagedSSHIdentity || !state.SSHConfigurationReady) {
+	if !w.SkipAgent && state.OfficialMatches["openssh"] != "" && (!state.ManagedSSHIdentity || !state.SSHConfigurationReady) {
 		agentIdentities, available, err := sshManager.AgentIdentities(ctx)
 		if err != nil {
 			return state, fmt.Errorf("inspect ssh-agent identities: %w", err)

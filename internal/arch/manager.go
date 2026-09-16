@@ -123,7 +123,7 @@ func (m Manager) FullUpgrade(ctx context.Context, targets ...string) error {
 	if err != nil {
 		return err
 	}
-	if _, _, err := archrepo.OfficialConfig(configuration.Stdout); err != nil {
+	if err := archrepo.ValidateConfigured(configuration.Stdout); err != nil {
 		return err
 	}
 	_, err = m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: args, Interactive: true, Interaction: "pacman transaction decisions"})
@@ -153,7 +153,7 @@ func (m Manager) Install(ctx context.Context, packages []string, asDeps bool) er
 	// Keep requested targets qualified. runOfficial also excludes custom repos
 	// from implicit dependency resolution. Leaving pulled dependencies implicit
 	// preserves pacman's install reasons. Do not use --needed: an equal version
-	// is not evidence of matching source metadata.
+	// is not evidence of authenticated official contents.
 	args := []string{"-n", "pacman", "-S", "--noconfirm"}
 	if asDeps {
 		args = append(args, "--asdeps")
@@ -170,7 +170,7 @@ func (m Manager) Install(ctx context.Context, packages []string, asDeps bool) er
 			return err
 		}
 		if !match {
-			return fmt.Errorf("installed package does not match official metadata for %s", target)
+			return fmt.Errorf("installed package does not match authenticated official contents for %s", target)
 		}
 	}
 	return nil

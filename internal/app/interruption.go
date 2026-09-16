@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/luigiverona/ops/internal/archrepo"
+	"github.com/luigiverona/ops/internal/archtrust"
 	"github.com/luigiverona/ops/internal/run"
 )
 
@@ -88,4 +90,39 @@ func (a Runtime) claimConclusion() bool {
 		a.interruption.concluded = true
 	}
 	return true
+}
+
+func (r cancellationRunner) OfficialQuery(ctx context.Context, args []string) (run.Result, error) {
+	if err := ctx.Err(); err != nil {
+		return run.Result{}, err
+	}
+	result, err := archrepo.Query(ctx, r.Runner, args)
+	if ctx.Err() != nil {
+		return result, ctx.Err()
+	}
+	return result, err
+}
+func (r cancellationRunner) OfficialInstalled(ctx context.Context, target string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	result, err := archrepo.InstalledContent(ctx, r.Runner, target)
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	return result, err
+}
+
+func (r cancellationRunner) OfficialPrepare(ctx context.Context, targets []string) (*archtrust.Prepared, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	result, err := archrepo.Prepare(ctx, r.Runner, targets)
+	if ctx.Err() != nil {
+		if result != nil {
+			result.Close()
+		}
+		return nil, ctx.Err()
+	}
+	return result, err
 }

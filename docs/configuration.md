@@ -55,10 +55,12 @@ does not establish absence: address the query failure and retry when the source
 is accessible, without changing apps.toml merely because the lookup failed.
 
 `pacman` covers only `core`, `extra`, and `multilib`. A custom repository's
-same-name package does not provide official readiness evidence. Ops compares
-installed metadata with the exact official sync package; pacman does not retain
-historical repository origin. An installed metadata mismatch is shown as an
-official reinstall in the setup plan.
+same-name package does not provide official readiness evidence. Ops independently
+resolves official archives, verifies their digest and official signature, and
+compares installed managed contents. Historical origin is not asserted. Missing
+archive evidence or differing contents produce a visible official repair plan;
+source/read errors are inconclusive. User Server and Include values do not
+authenticate official repository content.
 
 `flatpak` requires origin `flathub` in the user installation and an enabled remote
 with URL `https://dl.flathub.org/repo/`. Ops can add a missing remote or enable an

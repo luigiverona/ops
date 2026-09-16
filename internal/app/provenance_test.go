@@ -160,7 +160,7 @@ func TestCoreCustomShadowCannotPassVerification(t *testing.T) {
 	})
 	p := plan.Plan{Core: readyCore(), ConfigureGit: true}
 	code := (Runtime{Runner: runner, Out: &out, Err: &out}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &out})
-	if code != Fatal || !strings.Contains(out.String(), "does not match current official package metadata") {
+	if code != Fatal || !strings.Contains(out.String(), "does not match authenticated official package contents") {
 		t.Fatalf("%d %s", code, &out)
 	}
 	for _, s := range base.calls {
@@ -258,5 +258,29 @@ func TestFinalReinspectionRejectsFlatpakProvenanceDrift(t *testing.T) {
 				t.Fatalf("code=%d installed=%v final=%v: %s", code, installed, final, out)
 			}
 		})
+	}
+}
+
+func TestOfficialRepairsAreDisclosedBeforeApproval(t *testing.T) {
+	state := readyExecutionState()
+	delete(state.OfficialMatches, "git")
+	declaration := config.Application{Source: config.Pacman, Identifier: "firefox"}
+	state.Installed["firefox"] = true
+	p := resolveAndPlan(context.Background(), config.Config{Applications: []config.Application{declaration}}, state, outputResolver{pacman: map[string]plan.Package{"firefox": {Name: "firefox", Repository: "extra"}}})
+	p.Applications = append(p.Applications, plan.Application{Declaration: config.Application{Source: config.AUR, Identifier: "example"}, State: plan.Install, AURPackages: []plan.BuildPackage{{Name: "compiler", Repository: "extra", Repair: true}}})
+	var out bytes.Buffer
+	runner := diagnosticRunner(func(context.Context, run.Spec) (run.Result, error) {
+		t.Fatal("declined repair issued a command")
+		return run.Result{}, nil
+	})
+	code := (Runtime{Runner: runner, Out: &out, Err: &out}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("n\n"), Out: &out})
+	approval := strings.Index(out.String(), "Continue?")
+	for _, text := range []string{"Repair/reverify existing official prerequisite: git", "Repair/reverify existing official build dependency: extra/compiler", "installed package requires authenticated official content repair/reverification"} {
+		if index := strings.Index(out.String(), text); index < 0 || index > approval {
+			t.Fatalf("repair not disclosed before approval: %s", &out)
+		}
+	}
+	if code != Success {
+		t.Fatalf("declined repair failed: %d %s", code, &out)
 	}
 }

@@ -109,7 +109,7 @@ func applications(ctx context.Context, cfg config.Config, state plan.State, reso
 			}
 			app.Package = metadata
 			if state.Installed[declaration.Identifier] {
-				app.Cause = "installed package does not match current official metadata; reinstall " + metadata.Repository + "/" + metadata.Name + " (pacman does not record historical repository origin)"
+				app.Cause = "installed package requires authenticated official content repair/reverification; reinstall " + metadata.Repository + "/" + metadata.Name + " (current contents, not historical installation origin)"
 			}
 			app.EnableMultilib = metadata.Repository == "multilib"
 		}
@@ -219,7 +219,7 @@ func resolveAURBuild(ctx context.Context, resolver MetadataResolver, source plan
 				return nil, nil, nil, fmt.Errorf("conflicting official provider repositories")
 			}
 			if pkg == nil {
-				pkg = &plan.BuildPackage{Name: packageName, Repository: repo, AsExplicit: declared[packageName] || (installed[packageName] && explicit[packageName] && !foreign[packageName])}
+				pkg = &plan.BuildPackage{Name: packageName, Repository: repo, Repair: installed[packageName], AsExplicit: declared[packageName] || (installed[packageName] && explicit[packageName])}
 				packages[packageName] = pkg
 			}
 			pkg.Purposes = appendUnique(pkg.Purposes, requirement.Purpose)

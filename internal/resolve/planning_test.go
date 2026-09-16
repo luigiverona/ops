@@ -468,7 +468,7 @@ func TestAURInstallReasonIntentDoesNotDependOnApplicationOrder(t *testing.T) {
 	}
 }
 
-func TestAURInstallReasonsPreserveExistingExplicitStateOnlyWithinItsSource(t *testing.T) {
+func TestAURInstallReasonsPreserveOfficialRepairAndAUROutputIntent(t *testing.T) {
 	source := AURSource{Commit: "0123456789012345678901234567890123456789", Metadata: aurmeta.Metadata{
 		PackageBase: "suite", Version: "1-1", Depends: []string{"shared"}, Packages: []aurmeta.Package{
 			{Name: "suite-cli", Depends: []string{"foo=1-1"}}, {Name: "foo"},
@@ -489,9 +489,9 @@ func TestAURInstallReasonsPreserveExistingExplicitStateOnlyWithinItsSource(t *te
 		officialExplicit bool
 	}{
 		{name: "official explicit does not transfer to AUR output", foreign: map[string]bool{}, explicitOutputs: "suite-cli", officialExplicit: true},
-		{name: "foreign explicit does not transfer to official dependency", foreign: map[string]bool{"shared": true, "foo": true}, explicitOutputs: "foo,suite-cli", officialExplicit: false},
+		{name: "official repair preserves foreign explicit reason", foreign: map[string]bool{"shared": true, "foo": true}, explicitOutputs: "foo,suite-cli", officialExplicit: true},
 		{name: "official explicit dependency is preserved", foreign: map[string]bool{"foo": true}, explicitOutputs: "foo,suite-cli", officialExplicit: true},
-		{name: "foreign explicit AUR output is preserved", foreign: map[string]bool{"shared": true, "foo": true}, explicitOutputs: "foo,suite-cli", officialExplicit: false},
+		{name: "foreign explicit AUR output is preserved", foreign: map[string]bool{"shared": true, "foo": true}, explicitOutputs: "foo,suite-cli", officialExplicit: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := readyState()

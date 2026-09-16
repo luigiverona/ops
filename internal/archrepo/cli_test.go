@@ -83,7 +83,7 @@ func TestRealPacmanSourceContracts(t *testing.T) {
 	if _, err := ParseTransaction(transaction); err == nil {
 		t.Fatal("custom dependency accepted")
 	}
-	filtered, _, err := OfficialConfig(configuration)
+	filtered, _, err := OfficialConfig(strings.Replace(configuration, "SigLevel = Never", "SigLevel = Required", 1))
 	if err != nil {
 		t.Fatal(err)
 	}

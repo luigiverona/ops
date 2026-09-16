@@ -8,13 +8,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luigiverona/ops/internal/archtrust"
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/run"
 	"github.com/luigiverona/ops/internal/testpkg"
 )
 
-func TestCustomLocalPacmanCannotOverrideOfficialAPI(t *testing.T) {
+func TestIndependentPacmanRejectsUnexpectedRepository(t *testing.T) {
 	for _, repo := range []string{"custom", "extra"} {
 		runner := &transactionRunner{output: "Repository : " + repo + "\nName : firefox\n"}
 		requests := 0
@@ -26,10 +27,16 @@ func TestCustomLocalPacmanCannotOverrideOfficialAPI(t *testing.T) {
 			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"version":2,"valid":true,"count":1,"page":1,"num_pages":1,"results":[{"pkgname":"firefox","repo":"extra","arch":"x86_64"}]}`))}, nil
 		})}
 		pkg, found, err := (Resolver{Runner: runner, Client: client}).Pacman(context.Background(), "firefox")
+		if repo == "custom" {
+			if err == nil || found || requests != 0 {
+				t.Fatalf("unexpected source identity accepted: %+v %v", pkg, err)
+			}
+			continue
+		}
 		if err != nil || !found || pkg.Repository != "extra" {
 			t.Fatalf("%+v %v", pkg, err)
 		}
-		if (requests == 1) != (repo == "custom") {
+		if requests != 0 {
 			t.Fatalf("API calls %d for %s", requests, repo)
 		}
 	}
@@ -48,7 +55,7 @@ func TestNativeCustomDeclarationIsNotReady(t *testing.T) {
 	state := plan.State{Installed: map[string]bool{"firefox": true}, Foreign: map[string]bool{}}
 	facts := Applications(context.Background(), config.Config{Applications: []config.Application{declaration}}, state, fakeResolver{pacman: map[string]plan.Package{"firefox": {Name: "firefox", Repository: "extra"}}})
 	app := plan.Build(config.Config{Applications: []config.Application{declaration}}, state, facts).Applications[0]
-	if app.State != plan.Install || app.Package.Repository != "extra" || !strings.Contains(app.Cause, "does not match current official metadata") {
+	if app.State != plan.Install || app.Package.Repository != "extra" || !strings.Contains(app.Cause, "requires authenticated official content repair/reverification") {
 		t.Fatalf("%+v", app)
 	}
 }
@@ -64,10 +71,9 @@ func (r *mismatchedInstalledProvider) Run(ctx context.Context, s run.Spec) (run.
 }
 func TestSatisfiedCustomProviderFailsClosed(t *testing.T) {
 	runner := &mismatchedInstalledProvider{dependencyRunner{satisfied: true, transaction: "extra/rust\tcargo\n"}}
-	_, err := (Resolver{Runner: runner}).OfficialDependency(context.Background(), "cargo")
-	var queryErr *QueryError
-	if !errors.As(err, &queryErr) {
-		t.Fatalf("native dependency accepted: %v", err)
+	binding, err := (Resolver{Runner: runner}).OfficialDependency(context.Background(), "cargo")
+	if err != nil || binding.Satisfied || binding.Provider != "extra/rust" {
+		t.Fatalf("custom provider did not require authenticated repair: %+v %v", binding, err)
 	}
 }
 
@@ -104,5 +110,18 @@ func TestClosureRejectsMissingMalformedAndChangedDependencyMetadata(t *testing.T
 		if _, err := (Resolver{Runner: closureMetadataRunner{output}}).OfficialDependency(context.Background(), "builder"); err == nil {
 			t.Fatalf("accepted malformed dependency metadata: %q", output)
 		}
+	}
+}
+
+func TestIndependentSourceOutageCannotBeMaskedByAPI(t *testing.T) {
+	requests := 0
+	client := &http.Client{Transport: roundTrip(func(*http.Request) (*http.Response, error) {
+		requests++
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"version":2,"valid":true,"count":0,"page":1,"num_pages":1,"results":[]}`))}, nil
+	})}
+	_, found, err := (Resolver{Runner: diagnosticPacmanRunner{&archtrust.SourceError{Err: errors.New("offline")}}, Client: client}).Pacman(context.Background(), "git")
+	var queryErr *QueryError
+	if found || !errors.As(err, &queryErr) || requests != 0 {
+		t.Fatalf("outage masked: %v %v requests=%d", found, err, requests)
 	}
 }

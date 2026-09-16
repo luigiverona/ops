@@ -20,8 +20,9 @@ import (
 // PacmanFixture runs real libalpm queries against synthetic databases. It never
 // invokes sudo, refreshes a database, downloads, or runs a package transaction.
 type PacmanFixture struct {
-	Dir  string
-	Conf string
+	Dir      string
+	Conf     string
+	official map[string]FixturePackage
 }
 
 type FixturePackage struct {
@@ -33,7 +34,7 @@ func NewPacmanFixture(t *testing.T) *PacmanFixture {
 	if _, err := exec.LookPath("pacman"); err != nil {
 		t.Skip("pacman unavailable")
 	}
-	f := &PacmanFixture{Dir: t.TempDir()}
+	f := &PacmanFixture{Dir: t.TempDir(), official: map[string]FixturePackage{}}
 	f.Conf = filepath.Join(f.Dir, "pacman.conf")
 	f.Write(t, "db/local/ALPM_DB_VERSION", []byte("9\n"))
 	f.Configure(t, "custom", "core", "extra")
@@ -101,8 +102,16 @@ func (p FixturePackage) desc() string {
 
 func (f *PacmanFixture) Sync(t *testing.T, repo string, packages ...FixturePackage) map[string]string {
 	t.Helper()
+	for target := range f.official {
+		if strings.HasPrefix(target, repo+"/") {
+			delete(f.official, target)
+		}
+	}
 	files, digests := map[string]string{}, map[string]string{}
 	for _, p := range packages {
+		if repo == "core" || repo == "extra" || repo == "multilib" {
+			f.official[repo+"/"+p.Name] = p
+		}
 		pkginfo := fmt.Sprintf("pkgname = %s\npkgver = %s\npkgdesc = fixture\nbuilddate = 1700000000\npackager = %s\nsize = 1\narch = any\n", p.Name, p.Version, p.Packager)
 		archive := fixtureArchive(t, map[string]string{".PKGINFO": pkginfo, "usr/share/" + p.Name: p.Payload})
 		filename := p.Name + "-" + p.Version + "-any.pkg.tar.gz"
@@ -129,4 +138,32 @@ func (f *PacmanFixture) Run(ctx context.Context, s run.Spec) (run.Result, error)
 	}
 	s.Args = append([]string{"--config", f.Conf, "--root", f.Dir, "--dbpath", filepath.Join(f.Dir, "db"), "--logfile", filepath.Join(f.Dir, "pacman.log")}, s.Args...)
 	return (run.Exec{}).Run(ctx, s)
+}
+
+// OfficialQuery runs native libalpm over the explicitly designated synthetic
+// official fixtures, excluding the separately configured custom repository.
+func (f *PacmanFixture) OfficialQuery(ctx context.Context, args []string) (run.Result, error) {
+	conf := "[options]\nArchitecture = x86_64\nSigLevel = Never\n"
+	for _, repo := range []string{"core", "extra", "multilib"} {
+		if _, err := os.Stat(filepath.Join(f.Dir, "db/sync", repo+".db")); err == nil {
+			conf += "[" + repo + "]\nServer = file://" + filepath.Join(f.Dir, "packages", repo) + "\n"
+		}
+	}
+	name := filepath.Join(f.Dir, "official.conf")
+	if err := os.WriteFile(name, []byte(conf), 0600); err != nil {
+		return run.Result{}, err
+	}
+	native := append([]string{"--config", name, "--root", f.Dir, "--dbpath", filepath.Join(f.Dir, "db")}, args...)
+	return (run.Exec{}).Run(ctx, run.Spec{Name: "pacman", Args: native})
+}
+func (f *PacmanFixture) OfficialInstalled(_ context.Context, target string) (bool, error) {
+	p, ok := f.official[target]
+	if !ok {
+		return false, fmt.Errorf("missing official fixture")
+	}
+	data, err := os.ReadFile(filepath.Join(f.Dir, "usr/share", p.Name))
+	if err != nil {
+		return false, err
+	}
+	return string(data) == p.Payload, nil
 }

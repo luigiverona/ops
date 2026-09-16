@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/luigiverona/ops/internal/archrepo"
+	"github.com/luigiverona/ops/internal/archtrust"
 	"github.com/luigiverona/ops/internal/aurmeta"
 	"github.com/luigiverona/ops/internal/pgp"
 	"github.com/luigiverona/ops/internal/plan"
@@ -43,11 +44,15 @@ func (r Resolver) UserPGPKey(ctx context.Context, fingerprint string) (bool, err
 var gitObject = regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$`)
 
 func (r Resolver) Pacman(ctx context.Context, name string) (plan.Package, bool, error) {
-	result, err := r.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Si", "--", name}})
+	result, err := archrepo.Query(ctx, r.Runner, []string{"-Si", "--", name})
 	if err != nil {
-		// pacman's exit status does not distinguish absence from a broken
-		// local repository. Query the same official source's exact-name API;
-		// only its complete valid response can establish absence.
+		var sourceErr *archtrust.SourceError
+		if errors.As(err, &sourceErr) {
+			return plan.Package{}, false, &QueryError{Err: err}
+		}
+		// A native query of the acquired snapshot may miss an exact package.
+		// The Arch API can establish metadata presence/absence, but cannot
+		// replace unavailable independent transaction or archive evidence.
 		pkg, found, lookupErr := r.archPackage(ctx, name)
 		if lookupErr != nil {
 			return pkg, false, errors.Join(err, lookupErr)
@@ -59,7 +64,7 @@ func (r Resolver) Pacman(ctx context.Context, name string) (plan.Package, bool, 
 		return plan.Package{}, false, &QueryError{Err: parseErr}
 	}
 	if fields["Name"] != name || !archrepo.Official(fields["Repository"]) {
-		return r.archPackage(ctx, name)
+		return plan.Package{}, false, &QueryError{Err: errors.New("independent source returned an unexpected package identity")}
 	}
 	return plan.Package{Name: name, Repository: fields["Repository"]}, true, nil
 }
@@ -81,8 +86,14 @@ func (r Resolver) archPackage(ctx context.Context, name string) (plan.Package, b
 	for _, repo := range archrepo.Repositories() {
 		endpoint += "&repo=" + strings.ToUpper(repo[:1]) + repo[1:]
 	}
-	status, err := r.getJSON(ctx, endpoint, &response)
+	data, status, err := r.getBytes(ctx, endpoint)
 	if err != nil {
+		return plan.Package{}, false, err
+	}
+	if err := unambiguousOfficialJSON(data); err != nil {
+		return plan.Package{}, false, err
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
 		return plan.Package{}, false, err
 	}
 	if status != http.StatusOK || response.Version != 2 || !response.Valid || response.Results == nil || response.Count == nil || *response.Count != len(response.Results) || response.Page != 1 || response.Pages != 1 {
@@ -190,7 +201,7 @@ func (r Resolver) OfficialDependency(ctx context.Context, requirement string) (p
 	resolved := map[string]bool{requirement: true}
 	for i := 0; i < len(queue); i++ {
 		target := queue[i]
-		result, err := r.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Si", "--", target}, FailureOutput: run.FailureStderr})
+		result, err := archrepo.Query(ctx, r.Runner, []string{"-Si", "--", target})
 		if err != nil {
 			return binding, &QueryError{Err: err}
 		}
@@ -214,9 +225,7 @@ func (r Resolver) OfficialDependency(ctx context.Context, requirement string) (p
 			if err != nil {
 				return binding, fmt.Errorf("dependency of %s: %w", target, err)
 			}
-			if binding.Satisfied && !child.Satisfied {
-				return binding, &QueryError{Err: fmt.Errorf("installed dependency closure of %s is incomplete", requirement)}
-			}
+			binding.Satisfied = binding.Satisfied && child.Satisfied
 			for _, member := range child.Packages {
 				_, concrete, _ := archrepo.Split(member)
 				if previous := packages[concrete]; previous != "" {
@@ -249,7 +258,7 @@ func (r Resolver) officialDependency(ctx context.Context, requirement string) (p
 		return binding, fmt.Errorf("inspect installed dependency: %w", err)
 	}
 	format := "%r/%n\t%P"
-	result, err = r.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Sp", "--noconfirm", "--print-format", format, "--", requirement}})
+	result, err = archrepo.Query(ctx, r.Runner, []string{"-Sp", "--noconfirm", "--print-format", format, "--", requirement})
 	if err != nil {
 		return binding, &QueryError{Err: err}
 	}
@@ -302,7 +311,7 @@ func (r Resolver) officialDependency(ctx context.Context, requirement string) (p
 				return binding, &QueryError{Err: err}
 			}
 			if !match {
-				return binding, &QueryError{Err: errors.New("installed dependency does not match its official provider; reconcile the package source and rerun ops")}
+				binding.Satisfied = false
 			}
 		}
 	}

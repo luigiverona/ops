@@ -82,7 +82,7 @@ func (a Runtime) markApplicationExplicit(ctx context.Context, am arch.Manager, a
 			return fmt.Errorf("application source changed after planning; rerun ops: %w", err)
 		}
 		if !match {
-			return errors.New("application no longer matches official metadata; rerun ops")
+			return errors.New("application no longer matches authenticated official contents; rerun ops")
 		}
 	case "aur":
 		query = "-Qm"
@@ -230,7 +230,7 @@ func (a Runtime) revalidateOfficialBinding(ctx context.Context, current, planned
 			return fmt.Errorf("revalidate satisfied AUR transaction member %s: %w", target, err)
 		}
 		if !match {
-			return fmt.Errorf("AUR transaction member %s no longer matches planned official metadata; rerun ops", target)
+			return fmt.Errorf("AUR transaction member %s no longer matches authenticated official contents; rerun ops", target)
 		}
 	}
 	return nil

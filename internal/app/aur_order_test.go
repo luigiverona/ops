@@ -39,6 +39,13 @@ type aurOrderRunner struct {
 }
 
 func (f *aurOrderRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
+	{
+		if result, ok := testpkg.OfficialStage(spec); ok {
+			return result, nil
+		}
+	}
+	spec = testpkg.TransactionSpec(spec)
+
 	f.calls = append(f.calls, spec)
 	if spec.Name == "pacman-conf" || spec.Name == "pacman" && (spec.Args[0] == "-Qi" || spec.Args[0] == "-Si" || spec.Args[0] == "-Sl") {
 		result, _ := testpkg.Query(spec)

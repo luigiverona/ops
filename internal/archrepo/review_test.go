@@ -25,8 +25,8 @@ func query(t *testing.T, f *testpkg.PacmanFixture, args ...string) string {
 	return r.Stdout
 }
 
-// This is a release-gate regression: it intentionally stays red until D-R1 is
-// fixed. Synthetic local state represents the custom archive's installed data;
+// Preserved D-R1 adversarial regression. Synthetic local state represents the
+// custom archive's installed data;
 // every pacman command is read-only and redirected to the isolated databases.
 func TestReviewRejectsForgedCustomPackage(t *testing.T) {
 	f := testpkg.NewPacmanFixture(t)
@@ -84,6 +84,31 @@ func TestReviewRejectsForgedCustomPackage(t *testing.T) {
 		if err == nil && binding.Satisfied {
 			t.Errorf("D-R1: forged satisfier accepted for %s: %+v", requirement, binding)
 		}
+	}
+	// Model the forced official repair, then prove idempotence, later custom
+	// replacement, and an official upgrade all use fresh content evidence.
+	f.Local(t, official)
+	for i := 0; i < 2; i++ {
+		if match, err := archrepo.InstalledMatch(context.Background(), f, "extra/git"); err != nil || !match {
+			t.Fatalf("post-repair state not ready: %v", err)
+		}
+	}
+	f.Local(t, forged)
+	if match, err := archrepo.InstalledMatch(context.Background(), f, "extra/git"); err != nil || match {
+		t.Fatalf("later custom replacement retained readiness: %v", err)
+	}
+	upgraded := official
+	upgraded.Version, upgraded.Payload = "2-1", "upgraded official payload"
+	f.Sync(t, "extra", upgraded)
+	if match, err := archrepo.InstalledMatch(context.Background(), f, "extra/git"); err != nil || match {
+		t.Fatalf("changed archive retained readiness: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(f.Dir, "db/local/git-1-1")); err != nil {
+		t.Fatal(err)
+	}
+	f.Local(t, upgraded)
+	if match, err := archrepo.InstalledMatch(context.Background(), f, "extra/git"); err != nil || !match {
+		t.Fatalf("authenticated upgrade did not reestablish readiness: %v", err)
 	}
 }
 
@@ -204,7 +229,7 @@ func TestReviewSatisfiedTransitiveCustomDependency(t *testing.T) {
 }
 
 func TestReviewTransitiveProviderClosure(t *testing.T) {
-	for _, scenario := range []string{"official", "custom", "foreign", "cycle", "missing", "repository drift"} {
+	for _, scenario := range []string{"official", "custom", "foreign", "forged", "cycle", "missing", "repository drift"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := testpkg.NewPacmanFixture(t)
 			builder := testpkg.FixturePackage{Name: "ops-builder", Version: "1-1", Packager: "Official", Payload: "builder", Depends: "ops-virtual>=2"}
@@ -217,6 +242,10 @@ func TestReviewTransitiveProviderClosure(t *testing.T) {
 			f.Sync(t, "custom")
 			f.Local(t, builder)
 			switch scenario {
+			case "forged":
+				forged := compiler
+				forged.Payload = "substituted compiler with copied official metadata"
+				f.Local(t, forged)
 			case "custom", "foreign":
 				other := compiler
 				other.Name, other.Packager, other.Payload = "ops-other", "Custom", "custom compiler"
@@ -231,6 +260,12 @@ func TestReviewTransitiveProviderClosure(t *testing.T) {
 			f.Configure(t, "core", "extra", "custom")
 			resolver := resolve.Resolver{Runner: f}
 			binding, err := resolver.OfficialDependency(context.Background(), "ops-builder")
+			if scenario == "forged" {
+				if err != nil || binding.Satisfied || strings.Join(binding.Packages, ",") != "extra/ops-builder,extra/ops-compiler" {
+					t.Fatalf("forged transitive provider not retained for repair: %+v %v", binding, err)
+				}
+				return
+			}
 			valid := scenario == "official" || scenario == "cycle" || scenario == "repository drift"
 			if (err == nil) != valid {
 				t.Fatalf("binding=%+v err=%v", binding, err)
@@ -281,12 +316,67 @@ func TestReviewExpandedConfigurationPreservesSecurityPolicy(t *testing.T) {
 		t.Fatal(filtered)
 	}
 	roundTrip := expand(filtered)
-	if roundTrip != filtered {
+	canonical, _, canonicalErr := archrepo.OfficialConfig(roundTrip)
+	if canonicalErr != nil {
+		t.Fatal(canonicalErr)
+	}
+	if canonical != filtered {
 		t.Fatalf("effective policy changed during serialization:\nbefore:\n%s\nafter:\n%s", filtered, roundTrip)
 	}
 	for _, field := range []string{"RootDir", "DBPath", "GPGDir", "Architecture", "SigLevel", "LocalFileSigLevel", "RemoteFileSigLevel"} {
 		if !strings.Contains(filtered, field+" = ") {
 			t.Errorf("missing %s", field)
 		}
+	}
+}
+
+func TestNativeEqualVersionRepairPreservesInstallReason(t *testing.T) {
+	if _, err := exec.LookPath("unshare"); err != nil {
+		t.Skip("unshare unavailable")
+	}
+	if _, err := (run.Exec{}).Run(context.Background(), run.Spec{Name: "unshare", Args: []string{"--user", "--map-root-user", "--", "/bin/true"}}); err != nil {
+		t.Skip("unprivileged user namespace unavailable")
+	}
+	for _, reason := range []string{"0", "1"} {
+		t.Run(reason, func(t *testing.T) {
+			f := testpkg.NewPacmanFixture(t)
+			p := testpkg.FixturePackage{Name: "ops-reason-fixture", Version: "1-1", Packager: "Fixture", Payload: "official"}
+			f.Sync(t, "core")
+			f.Sync(t, "extra", p)
+			f.Local(t, p)
+			f.Configure(t, "core", "extra")
+			desc := filepath.Join(f.Dir, "db/local/ops-reason-fixture-1-1/desc")
+			before, err := os.ReadFile(desc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(desc, []byte(strings.Replace(string(before), "%REASON%\n0", "%REASON%\n"+reason, 1)), 0600); err != nil {
+				t.Fatal(err)
+			}
+			for _, dir := range []string{"cache", "hooks"} {
+				if err := os.Mkdir(filepath.Join(f.Dir, dir), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Only disposable local DB state is changed; payload extraction,
+			// scriptlets and system hook paths are outside this probe.
+			args := []string{"--user", "--map-root-user", "--", "pacman", "--config", f.Conf, "--root", f.Dir, "--dbpath", filepath.Join(f.Dir, "db"), "--logfile", filepath.Join(f.Dir, "pacman.log"), "--cachedir", filepath.Join(f.Dir, "cache"), "--hookdir", filepath.Join(f.Dir, "hooks"), "-S", "--noconfirm", "--dbonly", "--noscriptlet", "--", "extra/ops-reason-fixture"}
+			result, err := (run.Exec{}).Run(context.Background(), run.Spec{Name: "unshare", Args: args})
+			if err != nil {
+				t.Fatalf("isolated reason transaction: %v %s", err, result.Stderr)
+			}
+			after, err := os.ReadFile(desc)
+			// libalpm omits REASON for explicit (the default zero value).
+			retained := !strings.Contains(string(after), "%REASON%") || strings.Contains(string(after), "%REASON%\n0\n")
+			if reason == "1" {
+				retained = strings.Contains(string(after), "%REASON%\n1\n")
+			}
+			if err != nil || !retained {
+				t.Fatalf("reinstall changed reason %s: %s %v", reason, after, err)
+			}
+			if !strings.Contains(result.Stdout, "reinstalling") {
+				t.Fatal("equal version repair was skipped", result.Stdout)
+			}
+		})
 	}
 }

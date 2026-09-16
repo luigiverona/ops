@@ -9,8 +9,9 @@ import (
 	"github.com/luigiverona/ops/internal/run"
 )
 
-// InstalledMatch establishes a current metadata match, never historical origin
-// or installed-file authenticity. The local database does not retain a repo.
+// InstalledMatch requires independently authenticated official archive content.
+// Installed metadata is only a preliminary consistency check, never evidence of
+// official identity or historical origin.
 func InstalledMatch(ctx context.Context, runner run.Runner, target string) (bool, error) {
 	repo, name, err := Split(target)
 	if err != nil {
@@ -18,7 +19,13 @@ func InstalledMatch(ctx context.Context, runner run.Runner, target string) (bool
 	}
 	var records []map[string]string
 	for _, args := range [][]string{{"-Qi", "--", name}, {"-Si", "--", target}} {
-		result, err := runner.Run(ctx, run.Spec{Name: "pacman", Args: args, FailureOutput: run.FailureStderr})
+		var result run.Result
+		var err error
+		if args[0] == "-Si" {
+			result, err = Query(ctx, runner, args)
+		} else {
+			result, err = runner.Run(ctx, run.Spec{Name: "pacman", Args: args, FailureOutput: run.FailureStderr})
+		}
 		if err != nil {
 			return false, err
 		}
@@ -43,10 +50,13 @@ func InstalledMatch(ctx context.Context, runner run.Runner, target string) (bool
 		}
 		matches = matches && records[0][key] == records[1][key]
 	}
-	return matches, nil
+	if !matches {
+		return false, nil
+	}
+	return InstalledContent(ctx, runner, target)
 }
 
-// InstalledMatches queries each configured official repository explicitly.
+// InstalledMatches queries the independently authenticated official snapshot.
 // -Sl's inventory identifies exact names before -Si, whose failure alone cannot
 // establish absence. Custom sync databases never provide readiness evidence.
 func InstalledMatches(ctx context.Context, runner run.Runner, names []string) (map[string]string, error) {
@@ -58,7 +68,7 @@ func InstalledMatches(ctx context.Context, runner run.Runner, names []string) (m
 	for _, name := range names {
 		wanted[name] = true
 	}
-	result, err := runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Sl"}, FailureOutput: run.FailureStderr})
+	result, err := Query(ctx, runner, []string{"-Sl"})
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +107,7 @@ func InstalledMatches(ctx context.Context, runner run.Runner, names []string) (m
 		}
 		match, err := InstalledMatch(ctx, runner, target)
 		if err != nil {
-			return nil, fmt.Errorf("inspect official metadata match for %s: %w", target, err)
+			return nil, fmt.Errorf("inspect authenticated official content for %s: %w", target, err)
 		}
 		if match {
 			matches[name] = target
@@ -117,7 +127,7 @@ func Transaction(ctx context.Context, runner run.Runner, targets []string) ([]st
 		}
 	}
 	args := []string{"-Sp", "--noconfirm", "--print-format", "%r/%n", "--"}
-	result, err := runner.Run(ctx, run.Spec{Name: "pacman", Args: append(args, targets...), FailureOutput: run.FailureStderr})
+	result, err := Query(ctx, runner, append(args, targets...))
 	if err != nil {
 		return nil, err
 	}

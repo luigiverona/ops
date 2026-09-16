@@ -2,6 +2,7 @@
 package testpkg
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 
@@ -20,6 +21,9 @@ func Info(target string) string {
 	return "Repository : " + repo + "\nName : " + name + "\nVersion : 1-1\nArchitecture : x86_64\nBuild Date : Thu Jan 1 00:00:00 2026\nPackager : Arch fixture\nDepends On : None\n"
 }
 func Query(s run.Spec) (run.Result, bool) {
+	if result, ok := OfficialStage(s); ok {
+		return result, true
+	}
 	if s.Name == "pacman-conf" && len(s.Args) == 0 {
 		return run.Result{Stdout: "[options]\nArchitecture = x86_64\n[core]\n[extra]\n[multilib]\n"}, true
 	}
@@ -52,4 +56,12 @@ func FlatpakApps(ids ...string) string {
 	}
 	data, _ := json.Marshal(rows)
 	return string(data)
+}
+
+// FakeContent is an explicit synthetic content assertion for command-only unit
+// tests. Native adversarial tests use actual payload comparisons instead.
+func FakeContent(_ context.Context, _ run.Runner, _ string) (bool, error) {
+	// This test double declares its synthetic payload correct. Metadata drift is
+	// still tested by InstalledMatch; real content attacks use PacmanFixture.
+	return true, nil
 }

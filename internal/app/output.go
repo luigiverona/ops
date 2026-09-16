@@ -114,9 +114,19 @@ func (a Runtime) showPlan(p plan.Plan) {
 		fmt.Fprintln(a.Out, "  Upgrade using all configured repositories, including custom repositories.")
 		fmt.Fprintln(a.Out, "  Install managed official targets from core, extra, or multilib; exclude custom repositories from those installations.")
 	}
+	for _, component := range plan.CoreOrder {
+		if p.Core[component] == "official repair/reverification required" {
+			fmt.Fprintf(a.Out, "\nRepair/reverify existing official prerequisite: %s\n", component)
+		}
+	}
 	dependencies := len(p.CorePackages) > 0
 	for _, application := range p.Applications {
 		if application.State == plan.Install {
+			for _, pkg := range application.AURPackages {
+				if pkg.Repair {
+					fmt.Fprintf(a.Out, "\nRepair/reverify existing official build dependency: %s/%s\n", pkg.Repository, pkg.Name)
+				}
+			}
 			dependencies = dependencies || len(application.AURPackages) > 0
 		}
 	}

@@ -56,8 +56,13 @@ func (a Runtime) Prepare(ctx context.Context) (code int) {
 	}
 	defer tty.Close()
 	if guarded, ok := a.Runner.(cancellationRunner); ok {
-		if _, ok := guarded.Runner.(run.Exec); ok {
+		switch runner := guarded.Runner.(type) {
+		case run.Exec:
 			a.Runner = cancellationRunner{run.Exec{In: tty, Out: a.Out, Err: a.Err}}
+		case *archrepo.TrustedRunner:
+			if _, ok := runner.Runner.(run.Exec); ok {
+				a.Runner = cancellationRunner{runner.WithRunner(run.Exec{In: tty, Out: a.Out, Err: a.Err})}
+			}
 		}
 	}
 	terminal := ui.UI{In: tty, Out: tty}
@@ -286,7 +291,7 @@ func (a Runtime) verifyCore(ctx context.Context, p plan.Plan) error {
 			return fmt.Errorf("verify prerequisite %s: %w", pkg, err)
 		}
 		if !match {
-			return fmt.Errorf("prerequisite %s does not match current official package metadata", pkg)
+			return fmt.Errorf("prerequisite %s does not match authenticated official package contents", pkg)
 		}
 	}
 	return nil

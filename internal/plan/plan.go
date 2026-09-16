@@ -32,7 +32,7 @@ type State struct {
 	Services                      map[string]bool // required services enabled and active
 	Installed                     map[string]bool
 	Explicit                      map[string]bool
-	OfficialMatches               map[string]string // name -> repo/name; current metadata match, not historical origin
+	OfficialMatches               map[string]string // name -> repo/name; authenticated current contents, not historical origin
 	Foreign                       map[string]bool
 	Flatpaks                      map[string]string // application ID -> origin
 	Flathub                       flatpak.Remote
@@ -80,6 +80,7 @@ type OfficialDependency struct {
 // BuildPackage is one concrete official package installed before building a
 // pinned AUR source.
 type BuildPackage struct {
+	Repair     bool // existing package needs authenticated repair/reverification
 	Name       string
 	Repository string
 	Purposes   []string
@@ -163,6 +164,9 @@ func Build(cfg config.Config, state State, facts Facts) Plan {
 		if officialInstalled("flatpak", state) {
 			p.Core["flatpak"] = "ready"
 		} else {
+			if state.Installed["flatpak"] {
+				p.Core["flatpak"] = "official repair/reverification required"
+			}
 			p.CorePackages = append(p.CorePackages, "flatpak")
 		}
 		p.Core["flathub"] = "missing"
@@ -267,6 +271,9 @@ func coreState(component string, state State) string {
 	default:
 		if officialInstalled(CorePackages[component], state) {
 			return "ready"
+		}
+		if state.Installed[CorePackages[component]] {
+			return "official repair/reverification required"
 		}
 	}
 	return "missing"

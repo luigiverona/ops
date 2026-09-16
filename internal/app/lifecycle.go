@@ -114,7 +114,7 @@ func (r *execution) observe(p plan.Plan) {
 		default:
 			state = "the declared application is not installed from its selected source"
 			if application.Declaration.Source == config.Pacman {
-				state = "the declared package has no verified current official metadata match"
+				state = "the declared package has no authenticated official content match"
 			}
 		}
 		record(application.Declaration.Identifier, string(application.Declaration.Source), state, application.State != plan.Ready)

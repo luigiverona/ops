@@ -78,13 +78,13 @@ identifiers from the selected source; ops never chooses another source as a
 fallback.
 
 Official/AUR package installation is preceded by one full, interactive `pacman -Syu`.
-Wave D's [independent review](docs/wave-d-independent-review.md) has unresolved
-provenance findings; it is not ready for a PR.
+Wave D's [corrective review](docs/wave-d-independent-review.md) records the
+official-content and Flathub trust models and their validation.
 The general upgrade uses all configured repositories, including custom repositories,
 so their available rebuilds are included. Subsequent managed official installations
-use only `core`, `extra`, and enabled `multilib`.
-Installed official readiness means a match to current official sync metadata,
-not proof of historical repository origin. Flatpak readiness requires the enabled
+use an independent Arch HTTPS source for `core`, `extra`, and enabled `multilib`.
+Installed official readiness requires authenticated archive and managed-content
+evidence; historical repository origin is not asserted. Flatpak readiness requires the enabled
 canonical user Flathub remote and the application's `flathub` origin.
 Prerequisites are installed and checked before dependent work. AUR source review
 precedes its build-dependency installation and normal-user build. A final

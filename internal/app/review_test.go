@@ -7,11 +7,12 @@ import (
 
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/run"
+	"github.com/luigiverona/ops/internal/testpkg"
 	"github.com/luigiverona/ops/internal/ui"
 )
 
 func TestReviewFinalInspectionRevalidatesAURBindings(t *testing.T) {
-	for _, drift := range []string{"", "repository", "addition", "unsatisfied"} {
+	for _, drift := range []string{"", "repository", "addition", "unsatisfied", "payload"} {
 		t.Run(drift, func(t *testing.T) {
 			a, out, local := noActionPrepareRuntime(t, false)
 			p := declaredParuPlan(t)
@@ -55,6 +56,9 @@ func TestReviewFinalInspectionRevalidatesAURBindings(t *testing.T) {
 				}
 				return local.Run(ctx, s)
 			})
+			if drift == "payload" {
+				a.Runner = finalContentRunner{diagnosticRunner: a.Runner.(diagnosticRunner), final: &final}
+			}
 			code := a.preparePlan(context.Background(), cfg, p, ui.UI{In: strings.NewReader("y\n\ny\n"), Out: out})
 			if !ar.artifactInstalled || !final {
 				t.Fatalf("fixture did not build and reinspect: %d %s", code, out)
@@ -70,4 +74,16 @@ func TestReviewFinalInspectionRevalidatesAURBindings(t *testing.T) {
 			}
 		})
 	}
+}
+
+type finalContentRunner struct {
+	diagnosticRunner
+	final *bool
+}
+
+func (r finalContentRunner) OfficialInstalled(ctx context.Context, target string) (bool, error) {
+	if *r.final && target == "extra/rust" {
+		return false, nil
+	}
+	return testpkg.FakeContent(ctx, r, target)
 }

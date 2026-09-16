@@ -19,6 +19,7 @@ import (
 	"github.com/luigiverona/ops/internal/resolve"
 	"github.com/luigiverona/ops/internal/run"
 	sshops "github.com/luigiverona/ops/internal/ssh"
+	"github.com/luigiverona/ops/internal/testpkg"
 	"github.com/luigiverona/ops/internal/ui"
 )
 
@@ -33,6 +34,13 @@ type lifecycleRunner struct {
 }
 
 func (r *lifecycleRunner) Run(ctx context.Context, s run.Spec) (run.Result, error) {
+	{
+		if result, ok := testpkg.OfficialStage(s); ok {
+			return result, nil
+		}
+	}
+	s = testpkg.TransactionSpec(s)
+
 	args := strings.Join(s.Args, " ")
 	r.events = append(r.events, s.Name+" "+args)
 	if s.Name == "uname" {

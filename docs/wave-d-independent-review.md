@@ -1,5 +1,80 @@
 # Wave D independent review, resumed 2026-09-14
 
+## Final resume review, 2026-09-16
+
+This resume found state B, not a clean ready checkpoint: HEAD was
+`8dba1b634480a52faa140b6a26f28b55446e3bcd` with 36 modified tracked files and
+20 untracked files, nothing staged, no stashes, and no later commits. Fetch kept
+`origin/main` at `2fc8614171d8c335ade870d045da4e73f44b79bd`. The implementation
+and reports below were interrupted uncommitted work. Every existing commit and
+the recovered implementation were preserved and reviewed.
+
+The selected official-source/content model remains as described below. This
+resume additionally keeps failed archive stat/read operations inconclusive, and
+adds native key-rotation/certification-revocation and archive I/O regressions.
+The exact recovery, source probes and 56-file corrective scope are recorded in
+[the D-R1/D-R4 evidence](wave-d-r1-r4-correction.md#final-resume-2026-09-16).
+
+Fresh validation on final code passes: all focused packages, targeted race for
+archtrust/archrepo/arch/resolve/inspect/plan/app/testpkg/flatpak, additional read-only
+run race tests, the full non-race repository suite, module verification, formatting,
+vet, build and diff checks. Original D-R1/D-R4 and D-R2 regressions pass. Native
+mount-isolation and equal-version reason tests execute successfully. Public
+integration authenticates the five documented official archives. Full repository
+race is explicitly omitted because of the known I-11 diagnostic stress cost.
+
+**Zero unresolved Critical findings; zero unresolved Important findings.**
+D-R1/D-R4 are corrected within the documented current-content boundary; D-R2 through
+D-R7 remain corrected. The changes are ready for final independent review.
+No push, PR, merge, tag, release, publication, R2 access, preserved-VM mutation,
+actual release signing, toolchain/dependency upgrade or Wave E action occurred.
+
+## Earlier D-R1/D-R4 corrective notes, 2026-09-15
+
+This checkpoint supersedes all historical finding totals below. Recovery found
+state A: clean `fix/package-source-provenance` at
+`8dba1b634480a52faa140b6a26f28b55446e3bcd`, with no interrupted-session commits,
+stashes or uncommitted files. Fetch retained main at
+`2fc8614171d8c335ade870d045da4e73f44b79bd`. Every prior commit was preserved.
+
+**Zero unresolved Critical findings; zero unresolved Important findings.**
+The implementation is ready for final independent review, under the explicit
+current-managed-content contract and trusted-platform boundary recorded in
+[D-R1/D-R4 correction evidence](wave-d-r1-r4-correction.md).
+
+| Finding | Current disposition |
+| --- | --- |
+| D-R1 forged installed metadata/content | Corrected: independent archive digest, official signer certifications and installed payload comparison; visible forced repair when evidence differs or is missing |
+| D-R2 incomplete Flathub trust | Preserved: complete persistent source/trust predicate and bootstrap keyring identity |
+| D-R3 configured custom rebuilds | Preserved: general interactive -Syu retains configured repositories; official corrective operations use independent source |
+| D-R4 official section-name spoofing | Corrected: Arch-operated HTTPS source determines metadata and archives before official transaction resolution; user Server/Include content excluded |
+| D-R5 Flatpak inspection persistence | Preserved: mandatory read-only native inventories, including runtime/shared-memory paths, no unsafe fallback |
+| D-R6 satisfied transitive AUR closure | Preserved and strengthened: all discovered members use authenticated installed-content evidence |
+| D-R7 final retained provider bindings | Preserved: final reinspection retains approved identities and repeats the same strong predicate |
+
+The original forged-package and official-name-spoof regressions pass. Added tests
+cover source replacement across core/extra/multilib and Includes, malicious native
+DB transaction/provider/dependency injection, custom and official signer trust,
+installed content/types/links/modes/ownership/races, backup semantics, repair,
+idempotence, upgrades and install reasons. No Wave D test intentionally fails.
+
+Go 1.26.7 exactly with GOENV=off and GOTOOLCHAIN=local: focused/full repository
+non-race tests, targeted race for every materially affected package plus Flatpak,
+module verification, formatting, vet, build and diff checks pass. Explicit
+integration authenticated current official acl/git/openssh/github-cli/flatpak
+archives; native namespace tests changed only disposable test state. Full
+repository race was omitted because of the known expensive diagnostics suite;
+protected CI must still run it. The requested full suite includes isolated synthetic signature fixtures;
+historical statements excluding those tests below no longer describe this pass.
+No actual release artifacts, release keys or signing infrastructure were used.
+
+The full Wave D baseline diff was re-reviewed, including unchanged D-R2/D-R3/
+D-R5/D-R6/D-R7 corrections, Doctor, approval, pure planning and AUR boundaries.
+No metadata-only official readiness path or user-sync authentication fallback
+remains. No push, PR, merge, tag, release, publishing, R2 access, preserved-VM
+mutation, real signing, toolchain/dependency upgrade or next-wave work occurred.
+Optional maintenance observations are recorded in the correction evidence.
+
 ## D-R2 corrective pass resumed 2026-09-14
 
 This checkpoint supersedes only the D-R2 disposition below. Recovered state B:

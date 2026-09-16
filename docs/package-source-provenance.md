@@ -2,88 +2,174 @@
 
 ## Official Arch contract
 
-The centralized allowlist is `archrepo.Repositories()`: `core`, `extra`,
-`multilib`. Repository names, configured official mirrors, local sync databases,
-pacman's keyring and signature policy are trusted system configuration. Ops does
-not authenticate a mirror or re-audit the root-owned pacman trust configuration.
-Testing/staging repositories and custom repository names are outside this contract.
+Official readiness means **current managed package contents match an independently
+resolved, authenticated official Arch archive**, with the explicit backup and
+shared-directory exceptions below. It does not assert historical installation
+origin or that the system is free of side effects from earlier scripts.
 
-Installed readiness has this precise meaning: the package is installed and its
-name, version, architecture, build date and packager equal the metadata from one
-unambiguous supported official sync package. `pacman -Sl` identifies candidates;
-`pacman -Qi -- name` and `pacman -Si -- repo/name` establish the comparison.
-Missing or malformed metadata is an inspection failure. A differing tuple does
-not establish readiness and setup plans an official reinstall. This may include
-an older official installation when the sync database has a newer version.
+`internal/archtrust` separates three responsibilities: an independent official
+source snapshot, an authenticated archive, and installed-content evidence.
+`archrepo.Repositories()` lists supported namespaces (`core`, `extra`, `multilib`),
+not authentication authorities. User repository names, Server lines, mirror-list
+Includes, local sync databases and custom locally trusted keys cannot establish
+official identity.
 
-This is a **current metadata match**, not historical origin, a signature check
-on installed files, or a cryptographic content comparison. Matching metadata can
-be copied; it cannot authenticate arbitrary previously installed bytes. Pacman's
-local database has no historical repository field. `-Qn`/`-Qm` only classify
-names relative to *all configured sync databases*, including custom ones. Neither
-classification supplies official readiness evidence. AUR's existing foreign
-classification and exact declaration isolation are unchanged.
+### Independent source and signature authentication
 
-Resolution accepts a local `-Si` result only with the exact requested name and
-an allowed repository. A custom result can trigger the existing official Arch
-HTTPS metadata lookup, whose response must identify exactly one allowed package;
-it cannot trigger an AUR fallback. `plan.Package.Repository` survives into the
-application plan and installation target. Multilib facts still request enabling
-multilib before the full upgrade.
+Ops obtains all three x86_64 sync databases directly from
+`https://geo.mirror.pkgbuild.com/$repo/os/x86_64/$repo.db`, with normal HTTPS
+certificate/hostname verification and no redirects. Arch identifies pkgbuild.com
+mirrors as operated by its DevOps team; see the
+[source investigation and integration evidence](wave-d-r1-r4-correction.md).
+The immutable per-run snapshot supplies existence, repository, dependencies,
+providers, transaction members, archive filename, SHA256 and embedded signature.
+It includes `any` packages and multilib even before user multilib is enabled.
+Bounded parsing rejects malformed, duplicate, ambiguous and unsupported records.
+Native libalpm queries use only these bytes in disposable unprivileged scratch
+storage; they do not read or synchronize the live sync databases. The live local
+database provides installed constraints, never official authentication.
 
-Core prerequisites use fixed official targets: `extra/git`, `core/openssh`,
-`extra/github-cli`, and conditional `extra/flatpak`. They use the same installed
-readiness evidence, qualified installation, and metadata verification before
-dependent mutations. Installed managed targets are also qualified in the full
-upgrade, preventing a higher-version custom namesake from remaining in place
-merely because pacman's ordinary upgrade would not downgrade it.
+An archive must match the snapshot's size and SHA256 **and** a supported official
+package signature. Ops uses only the installed distribution files
+`/usr/share/pacman/keyrings/archlinux.gpg`, `archlinux-trusted`, and
+`archlinux-revoked`. GnuPG performs cryptographic verification in a disposable
+home, without imports, keyservers, the user's keyring or pacman's live GPG home.
+Separate certification checks require three distinct current Arch main-key
+certifications on one usable packager UID, with full issuer fingerprints.
+Unknown, invalid, expired, revoked and insufficiently certified signers fail
+closed; the distribution revoked list also overrides inclusion in the public
+keyring. `gpgv` and ordinary pacman trust alone are insufficient. Key material
+is reread for every verification and checked for changes during it; normal
+archlinux-keyring updates provide rotation/revocation updates. Ops does not
+update that trust base during inspection or silently recover missing keys.
 
-Every sync installation first obtains `-Sp --noconfirm --print-format %r/%n`.
-Unknown/custom repositories, malformed records, duplicate names (even across
-repositories), and omitted requested targets fail closed. Actual targets are
-qualified. Managed official installations and AUR artifact `-U` inspect
-`pacman-conf`'s expanded configuration. If custom sections exist,
-ops retains global policy and official repository sections, streams the result
-into a root-owned protected staging directory, validates ownership/type/link
-counts, and invokes pacman with that temporary `--config`. Includes must already
-be expanded; duplicate sections and missing core/extra fail closed. The original
-configuration is preserved. Cleanup also runs on failure.
+The Arch HTTPS API remains supplemental exact-name metadata after an exact
+native miss in an available independent snapshot. It proves only metadata
+presence/absence, never archive bytes, installed content or transaction identity.
+Malformed or duplicate JSON keys, incomplete/ambiguous results, wrong name/repo/
+architecture, network errors and unavailable source evidence are inconclusive.
+An independent-source outage cannot be masked by a successful API response.
+There is no pacman-to-AUR fallback. Actual transaction membership always comes
+from the independent sync snapshot, including after API metadata resolution.
 
-The pre-approval plan discloses that the general interactive `-Syu` uses all
-configured repositories. This includes available custom rebuilds alongside
-official library upgrades. Managed official targets stay qualified, and their
-subsequent installations exclude custom repositories. Ops never performs an
-isolated database refresh followed by a partial official upgrade. Custom/AUR
-packages without compatible available rebuilds remain an administrator concern.
+### Installed-state evidence and repair
 
-Ordinary installations keep additional dependencies implicit so pacman retains
-its dependency reasons. AUR build transactions specify every concrete approved
-`repo/name` with `--asdeps`, then restore the explicit intent already carried by
-the plan. Declared pacman apps are marked explicit after source verification.
-Sync installs omit `--needed`: equal versions alone must not skip a planned
-metadata-mismatch reinstall. Every printed transaction member is verified after
-installation. Local admin changes to databases/configuration concurrently with
-execution are outside the locking guarantees of these separate CLI processes.
+`archrepo.InstalledMatch` is the single shared gate. Local name/version/arch/build
+date/packager are preliminary consistency checks only. Success additionally
+requires an authenticated archive from the standard pacman cache, the exact
+owned-path inventory, and filesystem comparison against the archive's signed
+`.MTREE` and `.PKGINFO`, never the installed local `.MTREE`.
+
+Regular non-backup files require exact SHA256, size, type, mode (including special
+permission bits), UID and GID. Missing files, substituted executables/libraries,
+wrong types and changed symlink targets fail. Symlinks are read as symlinks,
+without following the leaf or any symlink ancestor. Authenticated backup entries
+may contain locally modified bytes, but must retain regular type, existence,
+mode and ownership. Shared directories require directory type and ownership;
+their mode is not attributed exclusively to one package. Hard links are accepted
+only when every link is accounted for by the same authenticated managed inventory.
+Extra owned paths fail. Non-backup runtime-mutated files have no implicit exemption:
+they require repair or manual reconciliation if normal operation changes them
+again. NoUpgrade/NoExtract configurations are unsupported for official operations.
+
+Cache paths are not evidence: regular-file descriptors, size/digest/signature
+verification and stable stat checks authenticate the bytes. Symlinks, nonregular
+files and multiply linked cache archives are rejected. Descriptor-relative
+O_NOFOLLOW traversal, descriptor-based archive reads, observed inode/ctime/mode/
+size/ownership checks and a second complete installed-path pass detect observed
+replacement races. This is not an atomic filesystem snapshot and cannot exclude
+privileged mutation after inspection.
+
+A pre-existing legitimate installation is ready when this evidence is available
+and matches. A missing archive, differing installed content or differing metadata
+produces a visible official repair/reverification plan before `Continue?`.
+Lookup/read/key/source errors instead report unavailable inspection; they do not
+justify destructive repair. Doctor downloads metadata, never package archives.
+After normal approval, repair downloads and authenticates the selected archive,
+forces replacement even at equal version, and verifies every transaction member
+with the same predicate. Official `-S` omits `--needed`. Subsequent matching runs
+are idempotent while the archive remains cached. There are no readiness receipts:
+custom replacement, changed official archive identity, upgrades or payload drift
+are discovered by fresh evidence checks. Cache eviction may require reverification
+through another visible repair. Ops never deletes unrelated cache entries.
+
+### Official transactions versus general upgrades
+
+General interactive `pacman -Syu` deliberately uses the user's complete configured
+repository set, including custom rebuilds. Qualified managed targets in that
+operation do not authenticate the user's repository content; all readiness and
+subsequent official gates remain independent. After a successful full upgrade,
+ops obtains a fresh official snapshot. Before a corrective transaction, every
+pending upgrade in that snapshot must already be included in the transaction;
+otherwise ops stops and asks for reconciliation of the full system upgrade.
+This prevents a lagging user mirror from causing an independent partial upgrade.
+
+Official mutation always stages an independent-source configuration and snapshot
+in a protected root-owned directory. All user repository Server/Include and
+per-repository policy overrides are discarded. Strong package signature policy
+is forced; necessary supported global settings (GPGDir, hooks, DownloadUser,
+ignore policy and ordinary presentation/logging settings) are retained. Only
+standard root, database and cache paths and x86_64 are supported. Custom transfer
+commands, sandbox disabling and content-exclusion settings fail closed. Unsupported
+policy is detected during official inspection before approval.
+
+Authenticated databases and archives are streamed into protected staging and
+rehashed there. Authenticated archives populate only their exact standard cache
+filenames. A private mount namespace mounts the staged sync database read-only
+at the ordinary sync path for the transaction, retaining the real local DB and
+pacman lock. It never replaces host sync databases. Native signature verification
+remains an additional gate. Missing namespace support aborts; no weaker fallback
+exists. Protected-path checks and cleanup also apply on failure. AUR artifact
+`-U` has no repository sections, so it cannot introduce implicit repo downloads.
+
+Ordinary installations leave pulled dependencies implicit. AUR build installs
+use every approved qualified target with `--asdeps`, then restore existing
+explicit reasons (including a repaired custom namesake) and declared application
+intent. Declared apps are deliberately explicit. General repairs otherwise retain
+pacman's reinstall reason behavior. Core `git`, `openssh`, `github-cli`, and
+conditional `flatpak` use the same strong readiness/postcondition predicate.
+
+### Boundary and limitations
+
+The trusted platform consists of ops, the kernel/filesystem, verification tools
+(pacman/libalpm, GnuPG, libarchive and protected staging tools), TLS roots and
+authentic distribution keyring material. Arbitrary custom repositories and
+locally trusted custom package signers are in scope. An administrator or package
+script replacing this entire trust base is outside the guarantee.
+
+The predicate covers the enumerated managed content and permissions, not all
+system behavior: it does not authenticate mutable config bytes, extended
+attributes/ACLs/capabilities, unowned files, running processes or hook side effects.
+A custom archive with equivalent managed bytes could previously have run a
+malicious install script. Reinstall cannot prove that never happened or clean
+arbitrary side effects. Current-content equivalence is not a clean-system or
+historical-provenance attestation. Package scripts and configured system hooks
+run with normal pacman semantics only during approved transactions.
+
+Doctor performs no package synchronization, repair/install, key import, privileged
+staging or persistent repo mutation. Metadata/query/GPG scratch files are temporary
+unprivileged files, removed after use; host package/config state is read only.
+Offline operation cannot establish new authoritative source evidence and reports
+inconclusive inspection. Planning itself remains deterministic and I/O-free.
 
 ## AUR official dependencies
 
-`OfficialDependency` always records its qualified provider and every printed
-transaction member, even when `pacman -T` says the requirement is satisfied.
-It also walks official `Depends On` metadata and records the complete qualified
-dependency closure, including installed providers omitted by the print transaction.
-Each satisfied edge is inspected; cycles are visited once per concrete package.
-The `%r/%n\t%P` output identifies native resolver providers, including virtual
-ones, and every concrete repository. Successful `-T` additionally requires a
-current official metadata match for the selected provider/transaction; a custom
-installed satisfier is not accepted merely because it satisfies a version test.
+`OfficialDependency` records the qualified provider and every transaction member,
+even when `pacman -T` succeeds. It walks independent official `Depends On`
+metadata, retaining the entire closure including satisfied transitive providers.
+Direct, exact, virtual, versioned, transitive and final retained bindings all use
+`InstalledMatch`. A forged same-name satisfier creates visible repair work.
+An unreadable/missing selected installed provider or ambiguous different-name
+custom satisfier fails closed; ops does not infer absence from a query failure.
 
-After pinned-source review and approval, revalidation rejects changed providers,
-changed repositories and new transaction members. Transactions may shrink after
-earlier approved work, but omitted members must still match their planned official
-repository metadata. Concrete installation is checked again immediately before
-mutation. Provider and omitted-member provenance are rechecked after installation,
-before makepkg. The pinned-source, review, signing-key and artifact staging models
-remain intact; no new source fallback or package helper is introduced.
+Native `%r/%n\t%P` resolution uses the independent source. After pinned-source
+review and approval, revalidation rejects changed providers/repositories and new
+members. Transactions may shrink after approved work only if omitted members
+still pass authenticated-content checks. Concrete transactions are revalidated
+before mutation, after installation, before makepkg and during final inspection.
+D-R6 closure discovery and D-R7 retained binding checks remain intact. Pinned AUR
+source review, build-signing-key approval and protected artifact handling remain
+unchanged. These official checks do not authenticate AUR-built output as Arch.
 
 ## User Flathub contract
 
@@ -160,4 +246,5 @@ Verified locally against pacman 7.1.0 / libalpm 16.0.1 and Flatpak 1.18.2:
 
 Tests require no privileged package mutations. Real-CLI tests skip when the
 executable is absent; unsupported/malformed CLI output fails closed. No VM,
-real installation, release, publishing or signing operation is part of this wave.
+real installation, release or publishing operation is part of this wave. Isolated
+package-signing and synthetic release-test fixtures use disposable test keys only.

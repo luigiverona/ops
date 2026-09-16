@@ -56,6 +56,7 @@ func (f *prepareRunner) Run(_ context.Context, spec run.Spec) (run.Result, error
 	if result, ok := testpkg.Query(spec); ok {
 		return result, nil
 	}
+	spec = testpkg.TransactionSpec(spec)
 	joined := strings.Join(spec.Args, " ")
 	if spec.Name == "systemctl" {
 		if spec.Args[0] == "is-enabled" {
