@@ -59,9 +59,11 @@ same-name package does not provide official readiness evidence. Ops independentl
 resolves official archives, verifies their digest and official signature, and
 compares installed managed contents. Historical origin is not asserted. Missing
 cache evidence is reconstructed in disposable temporary storage without an
-installation. Differing contents produce a visible official repair plan;
-unavailable archive/source/read evidence is inconclusive. User Server and Include values do not
-authenticate official repository content.
+installation. Authentication concerns the exact installed version; a genuine
+older version produces normal update work, while missing historical evidence
+remains inconclusive. Differing authenticated contents produce a visible official
+repair plan; unavailable archive/source/read evidence is inconclusive. User Server
+and Include values do not authenticate official repository content.
 
 `flatpak` requires origin `flathub` in the user installation and an enabled remote
 with URL `https://dl.flathub.org/repo/`. Ops can add a missing remote or enable an

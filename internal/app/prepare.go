@@ -77,6 +77,15 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 	}
 	a.showPlan(p)
 	plannedProblems := planIssues(p)
+	for _, component := range plan.CoreOrder {
+		name := plan.CorePackages[component]
+		if component == "flatpak" && p.Core[component] != "not required" {
+			name = "flatpak"
+		}
+		if evidence, ok := p.CoreOfficial[name]; ok && evidence.Action() == archrepo.Manual {
+			return execution{git: p.GitStatus, ssh: p.SSHStatus, github: p.GitHubStatus, problems: plannedProblems}
+		}
+	}
 	if !p.HasActions() {
 		return execution{git: p.GitStatus, ssh: p.SSHStatus, github: p.GitHubStatus, problems: plannedProblems}
 	}
@@ -129,6 +138,13 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 			return stop("Arch system upgrade", "core", err, "package installation cannot continue safely")
 		}
 	}
+	// Reinspect approved repairs after the full upgrade. A completed update must
+	// not trigger an equal-version reinstall from a stale pre-upgrade plan.
+	pending, err := a.pendingCoreRepairs(ctx, p)
+	if err != nil {
+		return stop("core verification", "core", err, "reconcile the full system upgrade before continuing")
+	}
+	p.CorePackages = pending
 	if len(p.CorePackages) > 0 {
 		if err := a.beginMutation(ctx); err != nil {
 			return execution{status: Fatal}
@@ -373,4 +389,28 @@ func coreTargets(names []string) []string {
 		targets = append(targets, archrepo.Prerequisite(name))
 	}
 	return targets
+}
+
+func (a Runtime) pendingCoreRepairs(ctx context.Context, p plan.Plan) ([]string, error) {
+	var pending []string
+	for _, pkg := range p.CorePackages {
+		// Missing packages still need the approved installation. Existing packages
+		// carry typed inspection evidence in production plans.
+		if _, installed := p.CoreOfficial[pkg]; !installed {
+			pending = append(pending, pkg)
+			continue
+		}
+		evidence, err := archrepo.InspectInstalled(ctx, a.Runner, coreTargets([]string{pkg})[0])
+		if err != nil {
+			return nil, err
+		}
+		if evidence.Ready() {
+			continue
+		}
+		if evidence.Action() != archrepo.Repair {
+			return nil, fmt.Errorf("%s: %s; reconcile administrator upgrade policy", pkg, evidence.Description())
+		}
+		pending = append(pending, pkg)
+	}
+	return pending, nil
 }

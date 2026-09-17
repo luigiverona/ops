@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -51,6 +52,7 @@ type Source struct {
 	client   *http.Client
 	database map[string][]byte
 	packages map[string]Package
+	previous map[string]Package
 }
 
 func NewSource() *Source {
@@ -247,4 +249,36 @@ func parseDescription(repo string, data []byte) (Package, error) {
 		return Package{}, fmt.Errorf("malformed official archive identity")
 	}
 	return p, nil
+}
+
+// Only the immediately preceding independent snapshot is retained. This bounds
+// memory and is evidence, not a readiness receipt: keys and payload are rechecked.
+func (s *Source) Next() *Source {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := NewSource()
+	next.previous = s.packages
+	return next
+}
+
+var ErrExactVersionUnavailable = errors.New("authenticated exact installed-version evidence unavailable")
+
+func (s *Source) LookupVersion(ctx context.Context, target, version string) (Package, error) {
+	current, found, err := s.Lookup(ctx, target)
+	if err != nil {
+		return Package{}, err
+	}
+	if !found {
+		return Package{}, ErrExactVersionUnavailable
+	}
+	if current.version == version {
+		return current, nil
+	}
+	s.mu.Lock()
+	previous, ok := s.previous[current.name]
+	s.mu.Unlock()
+	if ok && previous.Target() == target && previous.version == version {
+		return previous, nil
+	}
+	return Package{}, ErrExactVersionUnavailable
 }

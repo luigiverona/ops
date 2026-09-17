@@ -8,8 +8,7 @@ import (
 	"github.com/luigiverona/ops/internal/testpkg"
 )
 
-// D-F5 remains a deliberate failing regression until installed-version evidence
-// and update classification are implemented. Repository movement alone must not
+// Preserved D-F5 regression for installed-version evidence and currency. Repository movement alone must not
 // return the same definite mismatch used to plan forged-content repair.
 func TestFinalRepositoryAdvanceIsNotInstalledContentMismatch(t *testing.T) {
 	f := testpkg.NewPacmanFixture(t)
@@ -24,6 +23,11 @@ func TestFinalRepositoryAdvanceIsNotInstalledContentMismatch(t *testing.T) {
 	next.Version, next.Payload = "2-1", "genuine N+1"
 	f.Sync(t, "extra", next)
 	// No installed metadata, payload, ownership, permissions or cache changed.
+	state, err := archrepo.InspectInstalled(context.Background(), f, "extra/git")
+	if err != nil || state.Authenticity != archrepo.VerifiedOfficial || state.Currency != archrepo.OlderThanCurrent || state.Action() != archrepo.Update {
+		t.Fatalf("D-F5: exact installed N evidence lost: %+v %v", state, err)
+	}
+
 	match, err := archrepo.InstalledMatch(context.Background(), f, "extra/git")
 	if !match && err == nil {
 		t.Fatal("D-F5: genuine unchanged version N classified as definite content mismatch solely because the repository advanced to N+1")

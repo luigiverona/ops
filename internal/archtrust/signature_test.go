@@ -201,6 +201,7 @@ func TestIsolatedOfficialCertificationTrust(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkFinalCacheEviction(t, p, keys, archive, payload)
+	checkHistoricalVersionEvidence(t, p, keys, archive, payload)
 	rootDir := t.TempDir()
 	root, err := os.Open(rootDir)
 	if err != nil {

@@ -88,11 +88,29 @@ func (r *TrustedRunner) Run(ctx context.Context, spec run.Spec) (run.Result, err
 		for _, arg := range spec.Args {
 			if arg == "-Syu" {
 				r.mu.Lock()
-				r.source = archtrust.NewSource()
+				r.source = r.source.Next()
 				r.mu.Unlock()
 				break
 			}
 		}
 	}
 	return result, err
+}
+
+func (r *TrustedRunner) OfficialInstalledVersion(ctx context.Context, target, version string) (bool, error) {
+	return r.officialSource().CachedInstalledVersion(ctx, r.Runner, target, version)
+}
+
+// Legacy explicit test capabilities may authenticate the current identity only.
+// Missing exact-version capability never falls back to authenticating N+1.
+func InstalledVersionContent(ctx context.Context, runner run.Runner, target, version, current string) (bool, error) {
+	if trusted, ok := runner.(interface {
+		OfficialInstalledVersion(context.Context, string, string) (bool, error)
+	}); ok {
+		return trusted.OfficialInstalledVersion(ctx, target, version)
+	}
+	if version != current {
+		return false, archtrust.ErrExactVersionUnavailable
+	}
+	return InstalledContent(ctx, runner, target)
 }

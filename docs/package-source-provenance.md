@@ -2,9 +2,11 @@
 
 ## Official Arch contract
 
-Official readiness means **current managed package contents match an independently
-resolved, authenticated official Arch archive**, with the explicit backup exception below. It does not assert historical installation
-origin or that the system is free of side effects from earlier scripts.
+Official readiness means **the installed version is current at the independently
+trusted source and its managed contents match authenticated official evidence for
+that exact version**, with the explicit backup exception below. Authenticity and
+repository currency are separate observations. It does not assert historical
+installation origin or that the system is free of side effects from earlier scripts.
 
 `internal/archtrust` separates three responsibilities: an independent official
 source snapshot, an authenticated archive, and installed-content evidence.
@@ -53,8 +55,10 @@ from the independent sync snapshot, including after API metadata resolution.
 
 ### Installed-state evidence and repair
 
-`archrepo.InstalledMatch` is the single shared gate. Local name/version/arch/build
-date/packager are preliminary consistency checks only. Success additionally
+`archrepo.InspectInstalled` is the shared typed inspection; `InstalledMatch` is
+its strict ready postcondition. Local name/version/arch/build date/packager are
+preliminary consistency checks only. Build metadata is compared only for the
+same exact version, never across repository advancement. Success additionally
 requires an authenticated archive from the standard pacman cache or a disposable
 unprivileged download of the same snapshot-bound archive, the exact
 owned-path inventory, and filesystem comparison against the archive's signed
@@ -99,12 +103,90 @@ custom replacement, changed official archive identity, upgrades or payload drift
 are discovered by fresh evidence checks. Unobtainable archive evidence is
 inconclusive, not a reason to reinstall. Ops never deletes unrelated cache entries.
 
-Known final-review blocker: the preliminary metadata comparison currently treats
-an unchanged legitimate installed version N as a repair mismatch when the source
-advances to N+1. Old-version authenticated evidence and update classification are
-not implemented. The readiness/idempotence statements above apply while the
-selected version remains current; they do not close version drift. See D-F5 in
-[the final independent review](wave-d-final-independent-review.md).
+### Authenticity, currency and reconciliation
+
+`InstalledState` records independent authenticity and currency axes:
+
+| Authenticity | Meaning |
+| --- | --- |
+| `VerifiedOfficial` | Exact installed-version official evidence authenticates, and installed managed content/inventory matches it. |
+| `InvalidOfficialContent` | Authenticated exact-version evidence is available, but installed content or supporting identity is inconsistent. |
+| `AuthenticityInconclusive` | Trusted exact-version evidence is insufficient; this is not proof of forgery. |
+
+| Currency | Meaning |
+| --- | --- |
+| `Current` | Installed and independently observed source versions compare equal. |
+| `OlderThanCurrent` | Installed version is older. |
+| `NewerThanCurrent` | Installed version is newer; the source may lag or be transitioning. |
+| `CurrencyUnavailable` | The trusted source or ordering cannot be established. |
+
+Ordering uses Arch's native `vercmp`, including epoch and pkgrel, never string
+ordering. Exact evidence selection still requires the exact version string.
+Verified/current means no action. Verified/older means a normal full update,
+not repair. Invalid content remains a repair finding even when an update exists.
+Inconclusive/older can use setup's normal full update, without treating old tools
+as authenticated. Newer-than-source and unavailable-source conditions require
+manual/source reconciliation; ops never infers a downgrade or repair from lag.
+AUR dependency planning continues to fail closed on inconclusive providers.
+
+A genuine installed N with authenticated exact-N evidence remains verified when
+the repository advances to N+1. Doctor reports an update, without repair or any
+mutation. Setup runs its already approved general full upgrade first, refreshes
+the source, then reinspects before deciding whether an approved repair remains.
+Ready N+1 eliminates the earlier repair/reinstall. An administrator policy that
+leaves genuine N installed produces stale/update-required state; it does not
+trigger a provenance reinstall. A new mismatch requires repair authorization in
+a visible plan; execution stops for replanning if only an update was approved.
+The final workstation and retained AUR bindings are inspected again.
+
+### Exact historical evidence policy
+
+The existing evidence design has immutable in-memory repository identities,
+including membership, exact version, filename, size, digest and signature. It
+has no persistent authenticated metadata store or installation receipts. A cache
+archive, local package tuple or detached signature alone cannot reconstruct
+independent historical repository membership. Their presence is not enough.
+
+A source refresh retains the immediately preceding snapshot's identities. If
+that snapshot authenticates exact N, ops selects its identity and freshly checks
+the cached archive, current distribution key policy, signed manifest and installed
+payload. This retains at most one previous generation, not an unbounded history.
+It never caches successful installed-content verdicts. The current snapshot is
+always used for dependency resolution and transactions.
+
+Missing/corrupt cache evidence can still be reconstructed at the fixed source
+using the selected exact filename and digest. For current packages, the prior
+cache-eviction fix is unchanged. For historical N, retrieval may fail after the
+mirror removes N; this is inconclusive historical authenticity, never an N-versus-
+N+1 content comparison. Without retained exact-N identity (including after a
+process restart), ops cannot authenticate historical N even if an old archive
+remains in the cache. It reports inconclusive authenticity plus update availability
+when ordering supports it. The normal setup upgrade generally removes that need.
+An exact-version mismatch remains invalid even for old N; absent evidence never
+makes a forged old package verified. Retained newer-version evidence can likewise
+establish authenticity when the observed source is behind, but cannot authorize
+automatic downgrade.
+
+### Arch Linux Archive design investigation
+
+ALA was investigated and deliberately not added. Arch's
+[infrastructure inventory](https://github.com/archlinux/infrastructure/blob/main/docs/servers.md)
+identifies the official service. Its [documented layout](https://wiki.archlinux.org/title/Arch_Linux_Archive)
+provides package-name/version/architecture filenames and detached signatures under
+`packages/`, and dated repository snapshots under `repos/YYYY/MM/DD/`. Package
+lookup alone does not bind an exact historical repository; a dated database is
+needed for that stronger claim. The installed build date is not an authenticated
+repository snapshot date. Older packages are moved to the Internet Archive with
+redirects; the historical service does not offer the same dated snapshots. There
+is no unconditional permanent availability guarantee. HTTP failures, missing
+files and slow external retrieval would still need an inconclusive result.
+
+Adding bounded historical date discovery, repository transitions, separate
+signature retrieval and redirect/retention policy would materially expand the
+source design. The normal full upgrade already provides a safe reconciliation
+path. ALA would improve historical diagnostic coverage, but is unnecessary for
+ops's current-content reconciliation contract. No runtime Archive dependency,
+archive.org fallback, key-policy relaxation or persistent receipt was added.
 
 ### Official transactions versus general upgrades
 
@@ -184,7 +266,12 @@ inconclusive inspection. Planning itself remains deterministic and I/O-free.
 even when `pacman -T` succeeds. It walks independent official `Depends On`
 metadata, retaining the entire closure including satisfied transitive providers.
 Direct, exact, virtual, versioned, transitive and final retained bindings all use
-`InstalledMatch`. A forged same-name satisfier creates visible repair work.
+the same typed inspection and strict current/authenticated postcondition. Each
+binding retains per-member authenticity/currency. `Satisfied` includes both the
+native requirement check and readiness of its official closure; a false value
+alone never identifies repair. Verified version drift is normal update work,
+including when an old version fails a dependency constraint. A forged same-name
+satisfier creates visible repair work.
 An unreadable/missing selected installed provider or ambiguous different-name
 custom satisfier fails closed; ops does not infer absence from a query failure.
 

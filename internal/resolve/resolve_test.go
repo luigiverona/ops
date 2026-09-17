@@ -143,6 +143,9 @@ type dependencyRunner struct {
 }
 
 func (f *dependencyRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
+	if spec.Name == "pacman" && spec.Args[0] == "-Qq" {
+		return run.Result{}, nil
+	}
 	f.calls = append(f.calls, spec)
 	if spec.Name == "pacman" && (spec.Args[0] == "-Qi" || spec.Args[0] == "-Si") {
 		return run.Result{Stdout: testpkg.Info(spec.Args[len(spec.Args)-1])}, nil

@@ -78,6 +78,25 @@ func (s *Source) CachedInstalled(ctx context.Context, runner run.Runner, target 
 	if err != nil || !found {
 		return false, err
 	}
+	return s.cachedPackage(ctx, runner, p)
+}
+
+func (s *Source) CachedInstalledVersion(ctx context.Context, runner run.Runner, target, version string) (bool, error) {
+	p, err := s.LookupVersion(ctx, target, version)
+	if err != nil {
+		return false, err
+	}
+	match, err := s.cachedPackage(ctx, runner, p)
+	if err != nil && ctx.Err() == nil {
+		current, _, lookupErr := s.Lookup(ctx, target)
+		if lookupErr == nil && current.version != version {
+			return false, fmt.Errorf("%w: %v", ErrExactVersionUnavailable, err)
+		}
+	}
+	return match, err
+}
+
+func (s *Source) cachedPackage(ctx context.Context, runner run.Runner, p Package) (bool, error) {
 	root, err := os.Open("/")
 	if err != nil {
 		return false, err

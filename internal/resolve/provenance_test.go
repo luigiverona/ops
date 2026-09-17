@@ -89,6 +89,8 @@ type closureMetadataRunner struct{ output string }
 
 func (r closureMetadataRunner) Run(_ context.Context, s run.Spec) (run.Result, error) {
 	switch s.Args[0] {
+	case "-Qq":
+		return run.Result{}, nil
 	case "-T":
 		return run.Result{Stdout: "builder\n"}, &run.Error{Name: "pacman", Err: dependencyExit(127)}
 	case "-Sp":

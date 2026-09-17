@@ -1,5 +1,9 @@
 # Final independent Wave D review — 2026-09-16
 
+> Latest disposition: D-F5 closed; zero unresolved Critical/Important findings.
+> See [D-F5 corrective disposition](#d-f5-corrective-disposition--2026-09-17).
+> Earlier BLOCKED statements below record preserved historical checkpoints.
+
 ## Recovery and reviewed input
 
 Recovered state A: clean `fix/package-source-provenance`, HEAD
@@ -274,3 +278,157 @@ fixtures use synthetic test keys only. Final Git identity/status are reported
 in the review response after the report commit.
 
 Wave D final independent review complete: BLOCKED.
+
+## D-F5 corrective disposition — 2026-09-17
+
+**D-F5 CLOSED. Zero unresolved Critical findings; zero unresolved Important
+Wave D findings.** This section supersedes the historical BLOCKED disposition
+above; the original finding and failing-regression history remain preserved.
+
+The interrupted D-F5 session started at
+`d159bd76688f70974af5afa61d06047e688857e4`. This recovery found state B on
+`fix/package-source-provenance` at that same HEAD: 26 modified tracked files and
+six untracked D-F5 implementation/test files, no staged changes, no stashes, and
+no D-F5 commits. Fetch left `origin/main` at
+`2fc8614171d8c335ade870d045da4e73f44b79bd`. All inherited work was inspected and
+preserved, including its draft report; completion claims were freshly validated.
+Recovery copies are in `/tmp/ops-df5-recovery-FaTRPwlX/inherited.diff` and
+`inherited-untracked.tar`. No reset, clean, restore, rebase, amend, squash or
+work deletion occurred. The existing Go 1.26.7 was selected without installation.
+
+The recovered model and regression suite were retained. This recovery also
+preserves multilib enablement when planning a stale declared official package,
+and keeps its typed content-repair diagnostic during final inspection without
+resolution facts. `TestExistingOfficialStatePreservesMultilibAndFinalRepair`
+checks both cases. Manual/source-behind state does not enable multilib.
+This correction is a new commit, `fix: distinguish package updates from provenance
+repair`; its immutable hash is available from Git history, avoiding a
+self-referential report hash.
+
+### Root cause and correction
+
+The preliminary installed/current metadata comparison treated a different version
+as definite content mismatch, before authentication. Archive selection only
+accepted the current snapshot version. Downstream planning consequently conflated
+repository advancement with provenance repair, and reused pre-upgrade repair work
+after the full upgrade.
+
+`InspectInstalled` now returns separate typed authenticity and currency. Authenticity
+is `VerifiedOfficial`, `InvalidOfficialContent`, or `AuthenticityInconclusive`.
+Currency is `Current`, `OlderThanCurrent`, `NewerThanCurrent`, or
+`CurrencyUnavailable`; ordering delegates to native Arch `vercmp`, including
+epoch/pkgrel. Exact-version evidence selection remains exact, regardless of
+comparison equivalence. No local metadata tuple can establish authenticity.
+
+Actions are no action for verified/current, normal full update for verified/older,
+repair for demonstrated invalid current/older content, and manual reconciliation
+for newer-than-source or unavailable source. Inconclusive historical/older state
+may trigger the normal setup update but never authorizes execution of unauthenticated
+core programs. AUR dependency resolution fails closed on inconclusive evidence.
+Forged old content does not become verified merely because an update is available.
+
+The source retains one immediately preceding immutable repository identity map
+across refresh, not installed-content verdicts. It reauthenticates the selected
+exact-version cache archive and currently usable signer, inventory and payload.
+The pre-existing design has no durable authenticated historical membership store:
+old cache files and detached signatures alone cannot substitute for one. If no
+exact identity survives (including on a fresh invocation against an advanced
+source), historical authenticity is explicitly inconclusive. If a known exact
+archive is missing, only that archive may be reconstructed at the fixed source;
+failure is inconclusive, never comparison with N+1. Current-version cache deletion
+continues to reconstruct evidence read-only and remain idempotent.
+
+ALA was investigated but not added. The official service, package/signature layout,
+dated repository membership, limited retention and external redirects are documented
+with primary references in [the source contract](package-source-provenance.md#arch-linux-archive-design-investigation).
+It could improve historical diagnostic coverage, but bounded date discovery and
+additional network/trust policy add unnecessary complexity when the full upgrade
+already reconciles version drift safely. No lifetime availability guarantee is
+assumed, and no external historical source became a runtime dependency.
+
+Setup preserves configured-repository `-Syu` before final package readiness. Its
+successful upgrade refreshes the independent source while retaining one previous
+identity generation. Core and declared-package repairs are reinspected before
+reinstalling; ready N+1 removes obsolete work. IgnorePkg/other policy retaining
+verified N yields update-required/manual reconciliation, without equal-version
+provenance reinstall. Newly mismatched content after an update requires a new
+visible repair plan if repair was not already approved. Source-ahead packages
+never enter automatic downgrade targets. Final workstation inspection and retained
+AUR binding validation remain mandatory.
+
+Doctor reports verified historical N as update available, missing exact evidence
+as authenticity inconclusive, and proven mismatches as content repair. It remains
+read-only. All four core packages and AUR direct/exact/virtual/versioned/transitive
+members share the typed inspection. AUR native requirement satisfaction and each
+member's authenticity/currency are retained separately; a version constraint
+failure is no longer sufficient to label an installed dependency as repair.
+Revalidation still rejects provider/repository/member drift (D-R6/D-R7).
+
+### Regression evidence
+
+| Requirement | Passing coverage |
+| --- | --- |
+| A/B/E/F/G, epoch/pkgrel | `TestInstalledAuthenticityAndCurrency`: current, verified older, forged older, unknown genuine/forged older, verified/unknown/forged newer; native libalpm and vercmp. |
+| Preserved D-F5 | `TestFinalRepositoryAdvanceIsNotInstalledContentMismatch` passes; strengthened to require verified/older/update with exact N evidence. |
+| C/D/N | `TestFullUpgradeReinspectsVersionAndSkipsObsoleteRepair`: successful simulated upgrade, ignored update, forged post-upgrade content, resolved earlier repair, final readiness and idempotence. |
+| H/I, genuine/forged historical archive | Native `TestIsolatedOfficialCertificationTrust` invokes both cache-eviction and historical-version probes with real disposable signatures, archive authentication and filesystem comparison. Missing historical identity/archive is never a content mismatch. One-generation retention is bounded. |
+| J | `TestCoreVersionDriftPlansUpdateNotRepair` covers git, openssh, github-cli, required flatpak and verified/inconclusive/invalid authenticity. |
+| K/L/M | `TestAURProviderVersionDrift` covers direct, virtual and versioned requirements (both satisfied and too-new constraints), transitive pkgrel drift, forged and unknown providers, and build-plan action labels. |
+| D-R7/N | `TestFinalRetainedAURBindingReportsVersionDrift` rejects a verified stale transitive provider with an update diagnostic; original final drift tests remain green. |
+| Doctor/source ahead | `TestVersionDriftDoctorReadOnly`, `TestNewerCoreDoesNotAuthorizeDowngrade`, declared-package drift/source-lag planning. |
+
+The new unsatisfied-dependency inventory read required fixture updates. Native
+local metadata now correctly uses `%SIZE%` instead of sync-only `%ISIZE%`, removing
+warnings that correctly made production `-T` failure evidence inconclusive.
+The final-binding fixture now begins injected final drift only after artifact
+installation, rather than on any inventory query. Existing adversarial assertions
+were retained; the original forged-old regression is unchanged.
+
+### Validation and complete Wave D preservation check
+
+All checks used the existing Go **1.26.7 linux/amd64**, `GOTOOLCHAIN=local`,
+`GOENV=off` (empty reported GOENV path). Modules verified; `gofmt -l .` is empty.
+
+- Focused `go test -count=1`: archtrust, archrepo, arch, resolve, inspect, plan,
+  app, flatpak: **PASS**.
+- Explicit D-R1 forged payload and D-R4 official-name spoof: **PASS**. Also reran
+  satisfied forged transitive dependencies and the complete transitive provider
+  closure matrix. Preserved D-F5: **PASS**, no skip.
+- Explicit D-R2 summary verification, real restricted subset/dash/unrestricted
+  controls, full supported identity, missing/altered trust material and native
+  read-only Flatpak configuration checks: **PASS**, no skip.
+- Native signer/certification/revocation/expiry, cache reconstruction/historical
+  evidence, aggregate archive budget and backup policy: **PASS**, no skip.
+- `go test -race -count=1` for archtrust, archrepo, arch, resolve, inspect, plan,
+  app, testpkg, flatpak: **PASS** (testpkg has no standalone tests).
+- `go test -count=1 ./...`: **PASS**.
+- `go vet ./...`, `go build ./...`, `git diff --check`: **PASS**.
+- Full repository race: explicitly omitted due to the known I-11 diagnostic stress
+  cost; the materially affected package race coverage above passed.
+
+Baseline `2fc8614..HEAD` and the additional correction diff were checked against
+all Wave D invariants. I-07/I-08 and D-R1 through D-R7 remain closed. D-F1 through
+D-F6 are closed. No metadata-only readiness or user-sync official-source fallback
+was added. Configured custom repositories still participate in general upgrades;
+Flatpak trust/isolation is unchanged; Doctor is read-only; planning is pure.
+Directory modes, resource bounds, isolated native probes, aggregate staging,
+signer policy and authenticated backup exceptions remain intact. No later-wave
+implementation entered this correction.
+
+Fresh recovery logs are in `/tmp/ops-df5-recovery-FaTRPwlX`: `focused-final.log`,
+`adversarial.log`, `flathub.log`, `native.log`, `race.log`, `full.log`, and
+`checks.log`. The baseline-to-final diff is `wave-d-final.diff` there.
+Earlier `/tmp/ops-df5-*.log` files and review evidence remain untouched.
+
+Optional follow-ups remain stronger qualified-target types, core mapping/endpoint
+maintenance, and pinned Flathub keyring serialization maintenance. Historical
+coverage deliberately remains inconclusive without retained exact evidence.
+No maximum-size stress or real privileged repair/VM execution was performed;
+filesystem comparison remains non-atomic with respect to later privileged changes.
+These documented boundaries are not unresolved Critical/Important findings.
+
+No push, PR, merge, tag, release, publication, R2 access, preserved-VM mutation,
+release signing, toolchain/dependency upgrade or Wave E action occurred. Tests use
+only disposable package-signature and existing synthetic release-unit fixtures.
+
+Wave D D-F5 correction complete; READY FOR final verification.

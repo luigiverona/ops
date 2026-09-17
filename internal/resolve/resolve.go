@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -226,6 +225,12 @@ func (r Resolver) OfficialDependency(ctx context.Context, requirement string) (p
 				return binding, fmt.Errorf("dependency of %s: %w", target, err)
 			}
 			binding.Satisfied = binding.Satisfied && child.Satisfied
+			for target, evidence := range child.States {
+				if binding.States == nil {
+					binding.States = map[string]archrepo.InstalledState{}
+				}
+				binding.States[target] = evidence
+			}
 			for _, member := range child.Packages {
 				_, concrete, _ := archrepo.Split(member)
 				if previous := packages[concrete]; previous != "" {
@@ -304,17 +309,40 @@ func (r Resolver) officialDependency(ctx context.Context, requirement string) (p
 		binding.Packages = append(binding.Packages, name)
 	}
 	sort.Strings(binding.Packages)
-	if binding.Satisfied {
-		for _, target := range binding.Packages {
-			match, err := archrepo.InstalledMatch(ctx, r.Runner, target)
-			if err != nil {
-				return binding, &QueryError{Err: err}
-			}
-			if !match {
-				binding.Satisfied = false
-			}
+	// Inspect selected installed members even when the installed version fails
+	// the dependency constraint. That is an update, not necessarily a repair.
+	installed := map[string]bool{}
+	if !binding.Satisfied {
+		inventory, err := r.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qq"}, FailureOutput: run.FailureStderr})
+		if err != nil && !(run.Exited(err, 1) && inventory.Stdout == "" && inventory.Stderr == "") {
+			return binding, &QueryError{Err: err}
+		}
+		for _, name := range strings.Fields(inventory.Stdout) {
+			installed[name] = true
 		}
 	}
+	wasSatisfied := binding.Satisfied
+	for _, target := range binding.Packages {
+		_, name, _ := archrepo.Split(target)
+		if !wasSatisfied && !installed[name] {
+			continue
+		}
+		evidence, err := archrepo.InspectInstalled(ctx, r.Runner, target)
+		if err != nil {
+			return binding, &QueryError{Err: err}
+		}
+		if binding.States == nil {
+			binding.States = map[string]archrepo.InstalledState{}
+		}
+		binding.States[target] = evidence
+		if evidence.Authenticity == archrepo.AuthenticityInconclusive || evidence.Action() == archrepo.Manual {
+			return binding, &QueryError{Err: fmt.Errorf("%s: %s", target, evidence.Description())}
+		}
+		if !evidence.Ready() {
+			binding.Satisfied = false
+		}
+	}
+
 	return binding, nil
 }
 
@@ -381,19 +409,7 @@ func providesName(values []string, want string) bool {
 
 // CompareVersions delegates to Arch's supported package version comparator.
 func (r Resolver) CompareVersions(ctx context.Context, left, right string) (int, error) {
-	result, err := r.Runner.Run(ctx, run.Spec{Name: "vercmp", Args: []string{left, right}})
-	if err != nil {
-		return 0, err
-	}
-	fields := strings.Fields(result.Stdout)
-	if len(fields) != 1 {
-		return 0, errors.New("vercmp returned ambiguous output")
-	}
-	comparison, err := strconv.Atoi(fields[0])
-	if err != nil || comparison < -1 || comparison > 1 {
-		return 0, errors.New("vercmp returned invalid output")
-	}
-	return comparison, nil
+	return archrepo.CompareVersions(ctx, r.Runner, left, right)
 }
 
 func (r Resolver) Flatpak(ctx context.Context, id string) (bool, error) {

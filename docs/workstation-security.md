@@ -25,6 +25,12 @@ app origin. Wrong-origin apps and wrong-URL namesakes are reported without
 destructive migration. See [package source contracts](package-source-provenance.md)
 for exact evidence, remediation, and trust limits.
 
+Package authenticity and repository currency are separate: verified older
+packages need a normal update, missing exact historical evidence is inconclusive,
+and a newer installed version never authorizes an automatic downgrade. Exact
+historical identities are retained for one in-memory source generation only;
+there is no persistent readiness receipt or historical archive dependency.
+
 ## AUR
 
 AUR HTTPS source discovery validates the exact package base and a single pinned

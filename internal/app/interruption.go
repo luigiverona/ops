@@ -126,3 +126,24 @@ func (r cancellationRunner) OfficialPrepare(ctx context.Context, targets []strin
 	}
 	return result, err
 }
+
+func (r cancellationRunner) OfficialInstalledVersion(ctx context.Context, target, version string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	// Query the current identity for compatibility with explicit current-only
+	// capabilities; production always has the exact-version capability.
+	result, err := archrepo.Query(ctx, r.Runner, []string{"-Si", "--", target})
+	if err != nil {
+		return false, err
+	}
+	info, err := archrepo.ParseInfo(result.Stdout)
+	if err != nil {
+		return false, err
+	}
+	match, err := archrepo.InstalledVersionContent(ctx, r.Runner, target, version, info["Version"])
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	return match, err
+}

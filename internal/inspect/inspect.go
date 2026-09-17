@@ -69,9 +69,16 @@ func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 		}
 	}
 	var err error
-	state.OfficialMatches, err = archrepo.InstalledMatches(ctx, w.Runner, names)
+	state.OfficialStates, err = archrepo.InstalledStates(ctx, w.Runner, names)
 	if err != nil {
 		return state, err
+	}
+	state.OfficialMatches = map[string]string{}
+	for name, evidence := range state.OfficialStates {
+		// Authenticated older tools are safe to inspect; currency is planned separately.
+		if evidence.Authenticity == archrepo.VerifiedOfficial {
+			state.OfficialMatches[name] = evidence.Target
+		}
 	}
 	if state.OfficialMatches["flatpak"] != "" {
 		manager := flatpak.Manager{Runner: w.Runner}

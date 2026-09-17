@@ -23,7 +23,7 @@ func TestReviewFinalInspectionRevalidatesAURBindings(t *testing.T) {
 				if s.Name == "pacman" {
 					switch s.Args[0] {
 					case "-Qq", "-Qeq":
-						final = true
+						final = ar.artifactInstalled
 						result, err := local.Run(ctx, s)
 						if ar.artifactInstalled {
 							result.Stdout += "paru\n"

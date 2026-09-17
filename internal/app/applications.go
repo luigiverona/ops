@@ -35,12 +35,29 @@ func (a Runtime) installApplication(ctx context.Context, am arch.Manager, au aur
 		if err := a.beginMutation(ctx); err != nil {
 			return err
 		}
-		a.progress("Installing " + name + "...")
+		if application.OfficialState != nil && application.OfficialState.Action() == archrepo.Update {
+			a.progress("Verifying updated " + name + "...")
+		} else {
+			a.progress("Installing " + name + "...")
+		}
 	}
 	switch application.Declaration.Source {
 	case "pacman":
-		if err := am.Install(ctx, []string{application.Package.Repository + "/" + name}, false); err != nil {
-			return err
+		install := true
+		if application.OfficialState != nil {
+			evidence, err := archrepo.InspectInstalled(ctx, a.Runner, application.Package.Repository+"/"+name)
+			if err != nil {
+				return err
+			}
+			install = !evidence.Ready()
+			if install && (application.OfficialState.Action() != archrepo.Repair || evidence.Action() != archrepo.Repair) {
+				return fmt.Errorf("%s: %s; reconcile full upgrade policy and rerun ops", name, evidence.Description())
+			}
+		}
+		if install {
+			if err := am.Install(ctx, []string{application.Package.Repository + "/" + name}, false); err != nil {
+				return err
+			}
 		}
 	case "aur":
 		if err := a.installAURApplication(ctx, am, au, application); err != nil {
@@ -164,7 +181,20 @@ func (a Runtime) installAURApplication(ctx context.Context, am arch.Manager, au 
 			if !missing[pkg.Repository+"/"+pkg.Name] {
 				continue
 			}
+			if pkg.Update || pkg.Repair {
+				evidence, err := archrepo.InspectInstalled(ctx, a.Runner, pkg.Repository+"/"+pkg.Name)
+				if err != nil {
+					return err
+				}
+				if evidence.Ready() {
+					continue
+				}
+				if !pkg.Repair || evidence.Action() != archrepo.Repair {
+					return fmt.Errorf("%s: %s; reconcile full upgrade policy", pkg.Name, evidence.Description())
+				}
+			}
 			packages = append(packages, pkg.Repository+"/"+pkg.Name)
+
 			if pkg.AsExplicit {
 				explicitPackages = append(explicitPackages, pkg.Name)
 			}

@@ -110,6 +110,13 @@ func applications(ctx context.Context, cfg config.Config, state plan.State, reso
 			app.Package = metadata
 			if state.Installed[declaration.Identifier] {
 				app.Cause = "installed package requires authenticated official content repair/reverification; reinstall " + metadata.Repository + "/" + metadata.Name + " (current contents, not historical installation origin)"
+				if evidence, ok := state.OfficialStates[declaration.Identifier]; ok {
+					app.OfficialState = &evidence
+					app.Cause = evidence.Description()
+					if evidence.Action() == archrepo.Manual {
+						app.State = plan.Unavailable
+					}
+				}
 			}
 			app.EnableMultilib = metadata.Repository == "multilib"
 		}
@@ -220,6 +227,10 @@ func resolveAURBuild(ctx context.Context, resolver MetadataResolver, source plan
 			}
 			if pkg == nil {
 				pkg = &plan.BuildPackage{Name: packageName, Repository: repo, Repair: installed[packageName], AsExplicit: declared[packageName] || (installed[packageName] && explicit[packageName])}
+				if evidence, ok := binding.States[target]; ok {
+					pkg.Repair = evidence.Authenticity == archrepo.InvalidOfficialContent
+					pkg.Update = evidence.Action() == archrepo.Update
+				}
 				packages[packageName] = pkg
 			}
 			pkg.Purposes = appendUnique(pkg.Purposes, requirement.Purpose)

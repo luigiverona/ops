@@ -64,6 +64,11 @@ func (a Runtime) verifyFinalAURBindings(ctx context.Context, cfg config.Config, 
 				return fmt.Errorf("final AUR dependency %s: %w", binding.Requirement, err)
 			}
 			if !current.Satisfied {
+				for _, target := range current.Packages {
+					if evidence, ok := current.States[target]; ok && !evidence.Ready() {
+						return fmt.Errorf("final AUR dependency %s: %s: %s", binding.Requirement, target, evidence.Description())
+					}
+				}
 				return fmt.Errorf("final AUR dependency %s is no longer satisfied", binding.Requirement)
 			}
 			if err := a.revalidateOfficialBinding(ctx, current, binding); err != nil {
@@ -116,6 +121,9 @@ func (r *execution) observe(p plan.Plan) {
 			if application.Declaration.Source == config.Pacman {
 				state = "the declared package has no authenticated official content match"
 			}
+		}
+		if application.OfficialState != nil && application.State != plan.Ready {
+			state = application.OfficialState.Description()
 		}
 		record(application.Declaration.Identifier, string(application.Declaration.Source), state, application.State != plan.Ready)
 	}
