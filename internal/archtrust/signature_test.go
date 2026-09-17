@@ -63,9 +63,12 @@ func TestIsolatedOfficialCertificationTrust(t *testing.T) {
 	t.Cleanup(func() {
 		_ = exec.Command("gpgconf", "--homedir", home, "--kill", "gpg-agent").Run()
 	})
-	newKey := func(uid string) string {
+	newKey := func(uid string, options ...string) string {
 		t.Helper()
-		invoke(nil, "--quick-generate-key", uid, "ed25519", "cert,sign", "0")
+		if len(options) == 0 {
+			options = []string{"--faked-system-time", fmt.Sprint(time.Now().Add(-72 * time.Hour).Unix())}
+		}
+		invoke(nil, append(options, "--quick-generate-key", uid, "ed25519", "cert,sign", "0")...)
 		out := invoke(nil, "--with-colons", "--list-keys", uid)
 		for _, line := range strings.Split(string(out), "\n") {
 			fields := strings.Split(line, ":")
@@ -280,5 +283,54 @@ func TestIsolatedOfficialCertificationTrust(t *testing.T) {
 	invoke(nil, "--quick-revoke-uid", packager, originalUID)
 	if err := verify(material(), signature, archive); err == nil {
 		t.Fatal("revoked certified UID authorized signer through unrelated UID")
+	}
+	for _, scenario := range []string{"primary revocation", "key expiry", "certification expiry"} {
+		key := newKey(scenario+" <lifetime@example.invalid>", "--faked-system-time", fmt.Sprint(time.Now().Add(-48*time.Hour).Unix()))
+		for _, root := range roots {
+			invoke(nil, "--local-user", root, "--quick-sign-key", key)
+		}
+		sig := sign(key)
+		if err := verify(material(), sig, archive); err != nil {
+			t.Fatalf("%s control failed: %v", scenario, err)
+		}
+		if scenario == "certification expiry" {
+			// A new UID has just two current main certifications and an expired
+			// third. Keep the fully certified original UID out of the export.
+			uid := "Expired certification <cert-expiry@example.invalid>"
+			invoke(nil, "--faked-system-time", fmt.Sprint(time.Now().Add(-36*time.Hour).Unix()), "--quick-add-uid", key, uid)
+			for i, root := range roots {
+				args := []string{"--local-user", root}
+				if i == 2 {
+					args = append(args, "--faked-system-time", fmt.Sprint(time.Now().Add(-30*time.Hour).Unix()), "--default-cert-expire", "1d")
+				}
+				invoke(nil, append(args, "--quick-sign-key", key, uid)...)
+			}
+			keys := material()
+			dropUID := false
+			keys.public = filterTestPackets(t, keys.public, func(tag byte, body []byte) bool {
+				if tag == 6 || tag == 14 {
+					dropUID = false
+				}
+				if tag == 13 {
+					dropUID = string(body) == scenario+" <lifetime@example.invalid>"
+				}
+				return !dropUID
+			})
+			if err := verify(keys, sig, archive); err == nil {
+				t.Fatal("expired third main certification accepted")
+			}
+			continue
+		} else if scenario == "key expiry" {
+			invoke(nil, "--faked-system-time", fmt.Sprint(time.Now().Add(-36*time.Hour).Unix()), "--quick-set-expire", key, "1d")
+		} else {
+			revocation, err := os.ReadFile(filepath.Join(home, "openpgp-revocs.d", key+".rev"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			invoke(bytes.Replace(revocation, []byte("\n:-----BEGIN"), []byte("\n-----BEGIN"), 1), "--import")
+		}
+		if err := verify(material(), sig, archive); err == nil {
+			t.Fatalf("%s retained package authorization", scenario)
+		}
 	}
 }
