@@ -15,9 +15,10 @@ jobs:
     container:
       # Keep the same official base image as the independent minimal runtime.
       image: archlinux:base@sha256:818793c894d94534c22f2149154a39ebaee57e4e67321023b0866a1d5722036c
-      # Docker's default seccomp filter blocks the nested namespaces used by
-      # bwrap and native pacman tests. Keep the default capability set.
-      options: --security-opt seccomp=unconfined
+      # Default seccomp denies nested namespaces; docker-default AppArmor denies
+      # their mounts (bwrap: Failed to make / slave: Permission denied).
+      # Retain default capabilities: no SYS_ADMIN or privileged container.
+      options: --security-opt seccomp=unconfined --security-opt apparmor=unconfined
     defaults:
       run:
         # Native permission tests must run as an ordinary workstation user.
@@ -35,9 +36,10 @@ jobs:
           # Full upgrade, never a partial Arch upgrade. git precedes checkout.
           # pacman also supplies vercmp and pacman-conf; libarchive supplies bsdtar.
           # OpenSSH, Python and util-linux exercise agent, PTY and namespace tests.
+          # diffutils supplies cmp for the release-script fixtures.
           pacman -Syu --needed --noconfirm \
             archlinux-keyring pacman gnupg libarchive bubblewrap flatpak \
-            git gcc openssh python util-linux
+            git gcc openssh python util-linux diffutils
           useradd --create-home --uid 1000 ops-ci
           install -d -m 0700 -o ops-ci -g ops-ci /run/user/1000
       - uses: actions/checkout@v7
@@ -54,7 +56,7 @@ jobs:
           cat /etc/os-release
           . /etc/os-release
           test "$ID" = arch
-          for tool in pacman pacman-conf vercmp gpg gpgconf bsdtar bwrap flatpak git gcc ssh ssh-keygen ssh-agent ssh-add python3 script unshare mount; do
+          for tool in pacman pacman-conf vercmp gpg gpgconf bsdtar bwrap flatpak git gcc ssh ssh-keygen ssh-agent ssh-add python3 script unshare mount cmp; do
             command -v "$tool"
             pacman -Qo "$(command -v "$tool")"
           done
