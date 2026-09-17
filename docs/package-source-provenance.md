@@ -3,8 +3,7 @@
 ## Official Arch contract
 
 Official readiness means **current managed package contents match an independently
-resolved, authenticated official Arch archive**, with the explicit backup and
-shared-directory exceptions below. It does not assert historical installation
+resolved, authenticated official Arch archive**, with the explicit backup exception below. It does not assert historical installation
 origin or that the system is free of side effects from earlier scripts.
 
 `internal/archtrust` separates three responsibilities: an independent official
@@ -65,8 +64,10 @@ permission bits), UID and GID. Missing files, substituted executables/libraries,
 wrong types and changed symlink targets fail. Symlinks are read as symlinks,
 without following the leaf or any symlink ancestor. Authenticated backup entries
 may contain locally modified bytes, but must retain regular type, existence,
-mode and ownership. Shared directories require directory type and ownership;
-their mode is not attributed exclusively to one package. Hard links are accepted
+mode and ownership. Directories, including shared directories, require matching type, ownership
+and mode; local ownership metadata cannot justify a permission exception.
+Pacman may preserve an existing directory mode during reinstall; a remaining
+permission mismatch requires manual reconciliation, never a ready verdict. Hard links are accepted
 only when every link is accounted for by the same authenticated managed inventory.
 Extra owned paths fail. Non-backup runtime-mutated files have no implicit exemption:
 they require repair or manual reconciliation if normal operation changes them

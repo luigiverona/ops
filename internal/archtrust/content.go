@@ -253,8 +253,8 @@ func parseManifest(data []byte, backups map[string]bool) ([]entry, error) {
 
 // matches checks current managed state, not historical provenance. Backup file
 // bytes may differ, but existence, regular type, ownership and mode still must
-// match. Directories are shared: their type and ownership are checked; their
-// mode is not exclusive to this package. All other files are checked exactly.
+// match. Directory permissions must match too: sharing does not authorize an
+// unsafe mode, and local ownership metadata cannot establish a safe exception.
 func (a authenticatedArchive) matches(ctx context.Context, root *os.File) (bool, error) {
 	observed := make(map[string]os.FileInfo, len(a.entries))
 	for _, e := range a.entries {
@@ -315,7 +315,7 @@ func matchEntry(e entry, f *os.File) (bool, os.FileInfo, error) {
 		return false, nil, err
 	}
 	st := info.Sys().(*syscall.Stat_t)
-	if st.Uid != e.uid || st.Gid != e.gid || (e.kind != "dir" && st.Mode&07777 != e.mode) {
+	if st.Uid != e.uid || st.Gid != e.gid || st.Mode&07777 != e.mode {
 		return false, info, nil
 	}
 	switch e.kind {
