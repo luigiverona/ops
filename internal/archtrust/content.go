@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/luigiverona/ops/internal/run"
@@ -39,6 +40,8 @@ type authenticatedArchive struct {
 }
 
 func authenticateArchive(ctx context.Context, runner run.Runner, p Package, f *os.File, keys keyMaterial) (authenticatedArchive, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
 	var empty authenticatedArchive
 	before, err := f.Stat()
 	if err != nil {
@@ -51,7 +54,7 @@ func authenticateArchive(ctx context.Context, runner run.Runner, p Package, f *o
 		return empty, err
 	}
 	h := sha256.New()
-	n, err := io.Copy(h, io.LimitReader(f, p.size+1))
+	n, err := io.Copy(h, io.LimitReader(contextReader{ctx, f}, p.size+1))
 	if err != nil {
 		return empty, fmt.Errorf("read official archive: %w", err)
 	}
@@ -256,6 +259,12 @@ func parseManifest(data []byte, backups map[string]bool) ([]entry, error) {
 // match. Directory permissions must match too: sharing does not authorize an
 // unsafe mode, and local ownership metadata cannot establish a safe exception.
 func (a authenticatedArchive) matches(ctx context.Context, root *os.File) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	return a.matchesWithin(ctx, root)
+}
+
+func (a authenticatedArchive) matchesWithin(ctx context.Context, root *os.File) (bool, error) {
 	observed := make(map[string]os.FileInfo, len(a.entries))
 	for _, e := range a.entries {
 		if err := ctx.Err(); err != nil {
@@ -268,7 +277,7 @@ func (a authenticatedArchive) matches(ctx context.Context, root *os.File) (bool,
 		if err != nil {
 			return false, err
 		}
-		match, info, err := matchEntry(e, f)
+		match, info, err := matchEntry(ctx, e, f)
 		f.Close()
 		if err != nil || !match {
 			return match, err
@@ -296,6 +305,9 @@ func (a authenticatedArchive) matches(ctx context.Context, root *os.File) (bool,
 	// replacement/renames/in-place writes; no atomic filesystem snapshot or
 	// exclusion of concurrent root mutation after this return is claimed.
 	for name, before := range observed {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		f, err := openPath(root, name)
 		if err != nil {
 			return false, fmt.Errorf("installed package changed during verification: %w", err)
@@ -309,7 +321,7 @@ func (a authenticatedArchive) matches(ctx context.Context, root *os.File) (bool,
 	return true, nil
 }
 
-func matchEntry(e entry, f *os.File) (bool, os.FileInfo, error) {
+func matchEntry(ctx context.Context, e entry, f *os.File) (bool, os.FileInfo, error) {
 	info, err := f.Stat()
 	if err != nil {
 		return false, nil, err
@@ -349,11 +361,25 @@ func matchEntry(e entry, f *os.File) (bool, os.FileInfo, error) {
 		}
 		defer r.Close()
 		h := sha256.New()
-		n, err := io.Copy(h, io.LimitReader(r, e.size+1))
+		n, err := io.Copy(h, io.LimitReader(contextReader{ctx, r}, e.size+1))
 		if err != nil {
 			return false, info, err
 		}
 		return n == e.size && bytes.Equal(h.Sum(nil), e.digest[:]), info, nil
 	}
 	return false, info, fmt.Errorf("unsupported installed object")
+}
+
+// Prevent large local hashes from ignoring cancellation until the entire file
+// has been consumed. Kernel filesystem I/O itself remains a platform boundary.
+type contextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.r.Read(p)
 }

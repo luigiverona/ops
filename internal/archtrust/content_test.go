@@ -56,7 +56,7 @@ func compressed(t *testing.T, data string) []byte {
 }
 
 func TestInstalledContentEquivalence(t *testing.T) {
-	for _, scenario := range []string{"ready", "empty", "large", "executable", "library", "missing", "symlink target", "symlink for file", "file for symlink", "fifo", "hard link", "managed hard link", "mode", "ownership", "backup", "backup symlink", "ancestor symlink"} {
+	for _, scenario := range []string{"ready", "empty", "large", "executable", "library", "same size", "missing", "symlink target", "symlink for file", "file for symlink", "fifo", "hard link", "managed hard link", "mode", "setgid", "ownership", "backup", "backup symlink", "backup missing", "backup mode", "backup ownership", "ancestor symlink"} {
 		t.Run(scenario, func(t *testing.T) {
 			dir := t.TempDir()
 			if err := os.MkdirAll(filepath.Join(dir, "usr/lib"), 0755); err != nil {
@@ -104,6 +104,8 @@ func TestInstalledContentEquivalence(t *testing.T) {
 				write("usr/lib/program", "substituted executable")
 			case "library":
 				write("usr/lib/library", "substituted library")
+			case "same size":
+				write("usr/lib/library", strings.Repeat("x", len(payload)))
 			case "missing":
 				must(os.Remove(program))
 			case "symlink target":
@@ -127,11 +129,19 @@ func TestInstalledContentEquivalence(t *testing.T) {
 				entries[0].uid++
 			case "mode":
 				must(os.Chmod(program, 0755|os.ModeSetuid))
+			case "setgid":
+				must(os.Chmod(program, 0755|os.ModeSetgid))
 			case "backup":
 				write("usr/lib/config", "legitimate modified config")
 			case "backup symlink":
 				must(os.Remove(filepath.Join(dir, "usr/lib/config")))
 				must(os.Symlink("program", filepath.Join(dir, "usr/lib/config")))
+			case "backup missing":
+				must(os.Remove(filepath.Join(dir, "usr/lib/config")))
+			case "backup mode":
+				must(os.Chmod(filepath.Join(dir, "usr/lib/config"), 0777))
+			case "backup ownership":
+				entries[2].gid++
 			case "ancestor symlink":
 				must(os.Rename(filepath.Join(dir, "usr/lib"), filepath.Join(dir, "other")))
 				must(os.Symlink("../other", filepath.Join(dir, "usr/lib")))
@@ -195,7 +205,8 @@ func TestInstalledReplacementDuringVerification(t *testing.T) {
 			checks := 0
 			ctx := changingContext{Context: context.Background(), beforeCheck: func() {
 				checks++
-				if checks != 2 {
+				// Entry check, data read and EOF read precede the next entry.
+				if checks != 4 {
 					return
 				}
 				file := filepath.Join(dir, "first")
@@ -213,8 +224,13 @@ func TestInstalledReplacementDuringVerification(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer root.Close()
-			if match, err := (authenticatedArchive{entries: entries}).matches(ctx, root); match || err == nil {
+			// Exercise the comparison inside its production deadline wrapper so
+			// this deterministic context observer is not hidden by WithTimeout.
+			if match, err := (authenticatedArchive{entries: entries}).matchesWithin(ctx, root); match || err == nil {
 				t.Fatalf("replacement accepted: %v %v", match, err)
+			}
+			if checks < 4 {
+				t.Fatal("replacement probe did not execute")
 			}
 		})
 	}
