@@ -55,7 +55,8 @@ from the independent sync snapshot, including after API metadata resolution.
 
 `archrepo.InstalledMatch` is the single shared gate. Local name/version/arch/build
 date/packager are preliminary consistency checks only. Success additionally
-requires an authenticated archive from the standard pacman cache, the exact
+requires an authenticated archive from the standard pacman cache or a disposable
+unprivileged download of the same snapshot-bound archive, the exact
 owned-path inventory, and filesystem comparison against the archive's signed
 `.MTREE` and `.PKGINFO`, never the installed local `.MTREE`.
 
@@ -82,17 +83,28 @@ replacement races. This is not an atomic filesystem snapshot and cannot exclude
 privileged mutation after inspection.
 
 A pre-existing legitimate installation is ready when this evidence is available
-and matches. A missing archive, differing installed content or differing metadata
+and matches. Missing or digest-mismatching cache evidence is reconstructed by a
+temporary download without populating the cache or performing a transaction.
+Differing installed content or differing metadata
 produces a visible official repair/reverification plan before `Continue?`.
 Lookup/read/key/source errors instead report unavailable inspection; they do not
-justify destructive repair. Doctor downloads metadata, never package archives.
+justify destructive repair. Doctor may download metadata and temporary archive
+evidence; it never installs packages or populates the persistent package cache.
 After normal approval, repair downloads and authenticates the selected archive,
 forces replacement even at equal version, and verifies every transaction member
 with the same predicate. Official `-S` omits `--needed`. Subsequent matching runs
-are idempotent while the archive remains cached. There are no readiness receipts:
+are idempotent even after ordinary cache eviction, while the selected archive
+remains obtainable. There are no readiness receipts:
 custom replacement, changed official archive identity, upgrades or payload drift
-are discovered by fresh evidence checks. Cache eviction may require reverification
-through another visible repair. Ops never deletes unrelated cache entries.
+are discovered by fresh evidence checks. Unobtainable archive evidence is
+inconclusive, not a reason to reinstall. Ops never deletes unrelated cache entries.
+
+Known final-review blocker: the preliminary metadata comparison currently treats
+an unchanged legitimate installed version N as a repair mismatch when the source
+advances to N+1. Old-version authenticated evidence and update classification are
+not implemented. The readiness/idempotence statements above apply while the
+selected version remains current; they do not close version drift. See D-F5 in
+[the final independent review](wave-d-final-independent-review.md).
 
 ### Official transactions versus general upgrades
 
@@ -123,6 +135,13 @@ remains an additional gate. Missing namespace support aborts; no weaker fallback
 exists. Protected-path checks and cleanup also apply on failure. AUR artifact
 `-U` has no repository sections, so it cannot introduce implicit repo downloads.
 
+Evidence acquisition is bounded: each database is limited to 32 MiB compressed
+and 256 MiB expanded, each archive to 8 GiB, and the sum of prepared transaction
+archives to 8 GiB before acquisition. Staging and cache copies require additional
+disk space. Archive authentication and installed-content comparison each have a
+two-minute context deadline; hashing checks cancellation between reads. Limits
+and unavailable space produce errors, not an absence or repair verdict.
+
 Ordinary installations leave pulled dependencies implicit. AUR build installs
 use every approved qualified target with `--asdeps`, then restore existing
 explicit reasons (including a repaired custom namesake) and declared application
@@ -135,8 +154,14 @@ conditional `flatpak` use the same strong readiness/postcondition predicate.
 The trusted platform consists of ops, the kernel/filesystem, verification tools
 (pacman/libalpm, GnuPG, libarchive and protected staging tools), TLS roots and
 authentic distribution keyring material. Arbitrary custom repositories and
-locally trusted custom package signers are in scope. An administrator or package
-script replacing this entire trust base is outside the guarantee.
+locally trusted custom package signers are in scope. Replacing any trusted
+bootstrap component is outside the guarantee. In particular, a custom repository
+can replace `archlinux-keyring` and thereby replace all three distribution trust
+files, changing ops's trust base without replacing ops or the rest of the system.
+Ops does not authenticate the historical origin of those files. Regular-file,
+symlink, bounded-read and replacement-race checks do not prove their authenticity.
+The guarantee therefore requires authentic distribution keyring material before
+ops runs; custom replacement of `archlinux-keyring` itself is explicitly excluded.
 
 The predicate covers the enumerated managed content and permissions, not all
 system behavior: it does not authenticate mutable config bytes, extended

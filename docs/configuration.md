@@ -58,8 +58,9 @@ is accessible, without changing apps.toml merely because the lookup failed.
 same-name package does not provide official readiness evidence. Ops independently
 resolves official archives, verifies their digest and official signature, and
 compares installed managed contents. Historical origin is not asserted. Missing
-archive evidence or differing contents produce a visible official repair plan;
-source/read errors are inconclusive. User Server and Include values do not
+cache evidence is reconstructed in disposable temporary storage without an
+installation. Differing contents produce a visible official repair plan;
+unavailable archive/source/read evidence is inconclusive. User Server and Include values do not
 authenticate official repository content.
 
 `flatpak` requires origin `flathub` in the user installation and an enabled remote
