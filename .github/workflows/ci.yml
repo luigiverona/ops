@@ -15,6 +15,9 @@ jobs:
     container:
       # Keep the same official base image as the independent minimal runtime.
       image: archlinux:base@sha256:818793c894d94534c22f2149154a39ebaee57e4e67321023b0866a1d5722036c
+      # Docker's default seccomp filter blocks the nested namespaces used by
+      # bwrap and native pacman tests. Keep the default capability set.
+      options: --security-opt seccomp=unconfined
     defaults:
       run:
         # Native permission tests must run as an ordinary workstation user.
@@ -83,8 +86,10 @@ jobs:
       - name: Verify namespace boundary
         if: ${{ !cancelled() }}
         run: |
-          unshare --user --map-root-user --mount --propagation private -- /bin/true
-          bwrap --unshare-all --die-with-parent --new-session --ro-bind / / --proc /proc -- cat /etc/os-release
+          status=0
+          unshare --user --map-root-user --mount --propagation private -- /bin/true || status=$?
+          bwrap --unshare-all --die-with-parent --new-session --ro-bind / / --proc /proc -- cat /etc/os-release || status=$?
+          exit "$status"
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
       - name: Vet
