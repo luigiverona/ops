@@ -88,6 +88,15 @@ jobs:
       - name: Verify namespace boundary
         if: ${{ !cancelled() }}
         run: |
+          uname -r
+          cat /proc/self/attr/current
+          for setting in /proc/sys/kernel/apparmor_restrict_unprivileged_userns /proc/sys/kernel/unprivileged_userns_clone /proc/sys/user/max_user_namespaces; do
+            if test -r "$setting"; then
+              printf '%s=' "$setting"
+              cat "$setting"
+            fi
+          done
+          findmnt --noheadings --output TARGET,OPTIONS /proc/sys
           status=0
           unshare --user --map-root-user --mount --propagation private -- /bin/true || status=$?
           bwrap --unshare-all --die-with-parent --new-session --ro-bind / / --proc /proc -- cat /etc/os-release || status=$?
