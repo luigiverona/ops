@@ -8,7 +8,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/luigiverona/ops/internal/run"
 )
 
 func TestFinalHashCancellationDoesNotConsumeInput(t *testing.T) {
@@ -18,6 +21,33 @@ func TestFinalHashCancellationDoesNotConsumeInput(t *testing.T) {
 	_, err := io.Copy(io.Discard, contextReader{ctx, input})
 	if !errors.Is(err, context.Canceled) || input.Len() == 0 {
 		t.Fatalf("cancellation ignored: remaining=%d err=%v", input.Len(), err)
+	}
+}
+
+type emptyTransactionRunner struct{}
+
+func (emptyTransactionRunner) Run(context.Context, run.Spec) (run.Result, error) {
+	return run.Result{}, nil
+}
+
+func TestFinalTransactionArchiveBudgetPrecedesAcquisition(t *testing.T) {
+	s := NewSource()
+	s.database = map[string][]byte{}
+	s.packages = map[string]Package{
+		"one": {repository: "extra", name: "one", filename: "one-1-1-any.pkg.tar.zst", size: 5 << 30},
+		"two": {repository: "extra", name: "two", filename: "two-1-1-any.pkg.tar.zst", size: 5 << 30},
+	}
+	downloaded := false
+	s.client.Transport = transportFunc(func(*http.Request) (*http.Response, error) {
+		downloaded = true
+		return nil, errors.New("must not acquire an oversized transaction")
+	})
+	p, err := s.Prepare(context.Background(), emptyTransactionRunner{}, []string{"extra/one", "extra/two"})
+	if p != nil {
+		p.Close()
+	}
+	if downloaded || err == nil || !strings.Contains(err.Error(), "transaction archive budget") {
+		t.Fatalf("D-F6: aggregate limit did not precede acquisition: downloaded=%v err=%v", downloaded, err)
 	}
 }
 

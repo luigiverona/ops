@@ -25,6 +25,8 @@ type Archive struct {
 	File             *os.File
 }
 
+const transactionArchiveLimit int64 = 8 << 30
+
 func (p *Prepared) Close() {
 	for _, a := range p.Archives {
 		name := a.File.Name()
@@ -59,6 +61,22 @@ func (s *Source) Prepare(ctx context.Context, runner run.Runner, targets []strin
 			return nil, fmt.Errorf("configured full upgrade is not current with the independent official source (%s remains); reconcile the system upgrade and rerun ops", target)
 		}
 	}
+	// Every archive survives until the transaction closes. Bound their combined
+	// temporary storage before acquisition; per-response limits alone do not
+	// bound a multi-package transaction. Retain these exact snapshot identities.
+	var selected []Package
+	var total int64
+	for _, target := range targets {
+		p, found, err := s.Lookup(ctx, target)
+		if err != nil || !found {
+			return nil, fmt.Errorf("official transaction target unavailable: %s: %v", target, err)
+		}
+		if p.size <= 0 || p.size > transactionArchiveLimit-total {
+			return nil, fmt.Errorf("official transaction archive budget exceeds 8 GiB; reconcile this transaction manually")
+		}
+		total += p.size
+		selected = append(selected, p)
+	}
 	prepared := &Prepared{Databases: database}
 	defer func() {
 		if returnErr != nil {
@@ -69,16 +87,12 @@ func (s *Source) Prepare(ctx context.Context, runner run.Runner, targets []strin
 	if err != nil {
 		return nil, err
 	}
-	for _, target := range targets {
-		p, found, err := s.Lookup(ctx, target)
-		if err != nil || !found {
-			return nil, fmt.Errorf("official transaction target unavailable: %s: %v", target, err)
-		}
+	for _, p := range selected {
 		file, err := s.download(ctx, p)
 		if err != nil {
 			return nil, err
 		}
-		prepared.Archives = append(prepared.Archives, Archive{Target: target, Filename: p.filename, Digest: p.digest, Signature: p.signature, File: file})
+		prepared.Archives = append(prepared.Archives, Archive{Target: p.Target(), Filename: p.filename, Digest: p.digest, Signature: p.signature, File: file})
 		if _, err := authenticateArchive(ctx, runner, p, file, keys); err != nil {
 			return nil, err
 		}
