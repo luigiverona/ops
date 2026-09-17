@@ -16,6 +16,26 @@ import (
 	"github.com/luigiverona/ops/internal/ui"
 )
 
+type unverifiedDoctorRunner struct{ diagnosticRunner }
+
+func (unverifiedDoctorRunner) OfficialInstalled(context.Context, string) (bool, error) {
+	return false, nil
+}
+
+func TestDoctorDoesNotExecuteUnverifiedCoreTools(t *testing.T) {
+	a, out, base := noActionPrepareRuntime(t, false)
+	a.Runner = unverifiedDoctorRunner{diagnosticRunner(func(ctx context.Context, s run.Spec) (run.Result, error) {
+		switch s.Name {
+		case "git", "gh", "ssh", "ssh-keygen", "ssh-add", "flatpak", "sudo":
+			t.Fatalf("unverified program or mutation reached Doctor: %s", s.Name)
+		}
+		return base.Run(ctx, s)
+	})}
+	if code := a.Doctor(context.Background()); code != Issues || strings.Contains(out.String(), "Workstation healthy") {
+		t.Fatalf("code=%d %s", code, out)
+	}
+}
+
 func TestAURRepositoryDriftIsRejectedBeforeDependencyMutation(t *testing.T) {
 	for _, drift := range []struct{ name, from, to string }{
 		{"provider", "extra/rust\t", "core/rust\t"},

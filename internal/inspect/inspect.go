@@ -111,42 +111,45 @@ func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 			state.GitEmail = ""
 		}
 	}
-	sshManager := sshops.Manager{Home: w.Home, Runner: w.Runner, HTTP: w.SSHHTTP, MetadataURL: w.SSHMetadataURL}
-	identities, err := sshManager.Discover(ctx)
-	if err != nil {
-		return state, fmt.Errorf("inspect SSH identities: %w", err)
-	}
-	managedPrivate := filepath.Join(w.Home, ".ssh", "ops")
-	managedPublic := managedPrivate + ".pub"
-	for _, identity := range identities {
-		if identity.PrivatePath == managedPrivate {
-			if identity.PublicPath == managedPublic {
-				state.ManagedSSHIdentity = true
-				state.ManagedSSHFingerprint = identity.Fingerprint
-			}
-			continue
-		}
-		state.UnrelatedSSHIdentities++
-	}
-	if state.ManagedSSHIdentity {
-		state.SSHConfigurationReady, err = sshManager.InspectLocalGitHubConfiguration(ctx)
+	if state.OfficialMatches["openssh"] != "" {
+		sshManager := sshops.Manager{Home: w.Home, Runner: w.Runner, HTTP: w.SSHHTTP, MetadataURL: w.SSHMetadataURL}
+		identities, err := sshManager.Discover(ctx)
 		if err != nil {
-			return state, err
+			return state, fmt.Errorf("inspect SSH identities: %w", err)
 		}
-	}
-	if !w.SkipAgent && state.OfficialMatches["openssh"] != "" && (!state.ManagedSSHIdentity || !state.SSHConfigurationReady) {
-		agentIdentities, available, err := sshManager.AgentIdentities(ctx)
-		if err != nil {
-			return state, fmt.Errorf("inspect ssh-agent identities: %w", err)
-		}
-		state.SSHAgentAvailable = available
-		for _, identity := range agentIdentities {
-			if state.ManagedSSHFingerprint != "" && identity.Fingerprint == state.ManagedSSHFingerprint {
-				state.ManagedSSHAgentIdentity = true
+		managedPrivate := filepath.Join(w.Home, ".ssh", "ops")
+		managedPublic := managedPrivate + ".pub"
+		for _, identity := range identities {
+			if identity.PrivatePath == managedPrivate {
+				if identity.PublicPath == managedPublic {
+					state.ManagedSSHIdentity = true
+					state.ManagedSSHFingerprint = identity.Fingerprint
+				}
 				continue
 			}
-			state.UnrelatedSSHAgentIdentities++
+			state.UnrelatedSSHIdentities++
 		}
+		if state.ManagedSSHIdentity {
+			state.SSHConfigurationReady, err = sshManager.InspectLocalGitHubConfiguration(ctx)
+			if err != nil {
+				return state, err
+			}
+		}
+		if !w.SkipAgent && state.OfficialMatches["openssh"] != "" && (!state.ManagedSSHIdentity || !state.SSHConfigurationReady) {
+			agentIdentities, available, err := sshManager.AgentIdentities(ctx)
+			if err != nil {
+				return state, fmt.Errorf("inspect ssh-agent identities: %w", err)
+			}
+			state.SSHAgentAvailable = available
+			for _, identity := range agentIdentities {
+				if state.ManagedSSHFingerprint != "" && identity.Fingerprint == state.ManagedSSHFingerprint {
+					state.ManagedSSHAgentIdentity = true
+					continue
+				}
+				state.UnrelatedSSHAgentIdentities++
+			}
+		}
+
 	}
 
 	for _, app := range w.Applications {
@@ -185,7 +188,7 @@ func serviceState(value string, states ...string) bool {
 // It never logs in, authorizes sudo, or writes user files.
 func (w Workstation) External(ctx context.Context, state plan.State) (plan.State, error) {
 	sshManager := sshops.Manager{Home: w.Home, Runner: w.Runner, HTTP: w.SSHHTTP, MetadataURL: w.SSHMetadataURL}
-	if state.ManagedSSHIdentity {
+	if state.OfficialMatches["openssh"] != "" && state.ManagedSSHIdentity {
 		configuration, inspectErr := sshManager.InspectGitHubConfiguration(ctx)
 		state.SSHConfigurationReady = configuration.LocalReady
 		switch configuration.Freshness {
@@ -203,14 +206,14 @@ func (w Workstation) External(ctx context.Context, state plan.State) (plan.State
 		}
 	}
 	githubManager := githubops.Manager{Runner: w.Runner}
-	if state.Installed["github-cli"] {
+	if state.OfficialMatches["github-cli"] != "" {
 		var err error
 		state.GitHubAuth, err = githubManager.InspectAuthentication(ctx)
 		if err != nil {
 			return state, err
 		}
 	}
-	if state.GitHubAuth {
+	if state.OfficialMatches["github-cli"] != "" && state.GitHubAuth {
 		keys, err := githubManager.Keys(ctx)
 		if err != nil {
 			if githubops.IsSSHKeyScopeError(err) {
