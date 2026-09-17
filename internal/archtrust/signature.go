@@ -141,6 +141,9 @@ func signatureStatus(output string, revoked map[string]bool) (string, error) {
 			if len(fields) != 12 || !fingerprint.MatchString(fields[2]) || !fingerprint.MatchString(fields[11]) || revoked[fields[2]] || revoked[fields[11]] || (fields[9] != "8" && fields[9] != "9" && fields[9] != "10" && fields[9] != "11") || fields[10] != "00" {
 				return "", fmt.Errorf("unsupported or revoked official archive signer")
 			}
+			if !validTime(fields[4], fields[5], time.Now().Unix()) {
+				return "", fmt.Errorf("official archive signature is not currently valid")
+			}
 			valid++
 			signer = fields[11]
 		case "GOODSIG":

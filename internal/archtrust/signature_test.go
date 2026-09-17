@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luigiverona/ops/internal/run"
 )
@@ -113,6 +114,40 @@ func TestIsolatedOfficialCertificationTrust(t *testing.T) {
 		}
 	}
 	keys := material()
+	// GnuPG can report VALIDSIG for future-dated signatures. Authorization must
+	// enforce their lifetime independently of successful cryptography.
+	futurePath := filepath.Join(home, "future.sig")
+	invoke(archive, "--faked-system-time", fmt.Sprint(time.Now().Add(24*time.Hour).Unix()), "--local-user", packager+"!", "--output", futurePath, "--detach-sign")
+	future, err := os.ReadFile(futurePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verify(keys, future, archive); err == nil {
+		t.Error("future-dated package signature accepted")
+	}
+	// A properly bound signing subkey is authorized through its primary key.
+	invoke(nil, "--quick-add-key", packager, "ed25519", "sign", "0")
+	listing := invoke(nil, "--with-colons", "--list-keys", packager)
+	var subkey string
+	for _, line := range strings.Split(string(listing), "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) > 9 && fields[0] == "fpr" && fields[9] != packager {
+			subkey = fields[9]
+		}
+	}
+	if subkey == "" {
+		t.Fatal("missing native signing subkey")
+	}
+	subSignature := sign(subkey)
+	if err := verify(material(), subSignature, archive); err != nil {
+		t.Fatalf("bound signing subkey rejected: %v", err)
+	}
+	// Revocation is a real OpenPGP packet, imported only into this test home.
+	invoke([]byte("key 1\nrevkey\ny\n0\n\ny\nsave\n"), "--command-fd", "0", "--edit-key", packager)
+	if err := verify(material(), subSignature, archive); err == nil {
+		t.Error("revoked signing subkey accepted")
+	}
+	keys = material()
 	// Exercise the complete archive -> signature -> authenticated manifest ->
 	// installed payload path with real GnuPG and libarchive, without network.
 	if _, err := exec.LookPath("bsdtar"); err != nil {
