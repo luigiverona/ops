@@ -70,9 +70,9 @@ func (s *Source) Query(ctx context.Context, runner run.Runner, args []string) (r
 	return result, nil
 }
 
-// CachedInstalled performs read-only archive and installed-content checks. It
-// never downloads a package archive. Missing cache evidence requires visible
-// authenticated repair/reverification; source/key/read failures are inconclusive.
+// CachedInstalled authenticates installed content using the ordinary cache when
+// available, otherwise a disposable read-only download. Missing cache evidence
+// never requires a package transaction. Source/key/read failures are inconclusive.
 func (s *Source) CachedInstalled(ctx context.Context, runner run.Runner, target string) (bool, error) {
 	p, found, err := s.Lookup(ctx, target)
 	if err != nil || !found {
@@ -83,39 +83,11 @@ func (s *Source) CachedInstalled(ctx context.Context, runner run.Runner, target 
 		return false, err
 	}
 	defer root.Close()
-	cache, err := openPath(root, "var/cache/pacman/pkg/"+p.filename)
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	defer cache.Close()
-	f, err := regularReader(cache)
-	if err != nil {
-		return false, err
-	}
-	defer f.Close()
 	keys, err := systemKeys()
 	if err != nil {
 		return false, err
 	}
-	a, err := authenticateArchive(ctx, runner, p, f, keys)
-	if errors.Is(err, ErrArchiveMismatch) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-
-	inventory, err := runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qlq", "--", p.name}, FailureOutput: run.FailureStderr})
-	if err != nil {
-		return false, err
-	}
-	if !a.inventoryMatches(inventory.Stdout) {
-		return false, nil
-	}
-	match, err := a.matches(ctx, root)
+	match, err := s.installed(ctx, runner, p, root, keys)
 	if err != nil {
 		return false, err
 	}
@@ -124,6 +96,43 @@ func (s *Source) CachedInstalled(ctx context.Context, runner run.Runner, target 
 		return false, fmt.Errorf("official trust material changed during inspection")
 	}
 	return match, nil
+}
+
+// root and keys are explicit so isolated tests exercise the production evidence
+// path without touching the workstation's filesystem or distribution keyring.
+func (s *Source) installed(ctx context.Context, runner run.Runner, p Package, root *os.File, keys keyMaterial) (bool, error) {
+	var a authenticatedArchive
+	cache, err := openPath(root, "var/cache/pacman/pkg/"+p.filename)
+	if err == nil {
+		defer cache.Close()
+		f, e := regularReader(cache)
+		if e != nil {
+			return false, e
+		}
+		defer f.Close()
+		a, err = authenticateArchive(ctx, runner, p, f, keys)
+	}
+	if os.IsNotExist(err) || errors.Is(err, ErrArchiveMismatch) {
+		// Authenticate against the SAME snapshot identity, including its embedded
+		// signature. Never re-resolve a filename/version from a newer generation.
+		f, e := s.download(ctx, p)
+		if e != nil {
+			return false, e
+		}
+		defer func() { f.Close(); os.Remove(f.Name()) }()
+		a, err = authenticateArchive(ctx, runner, p, f, keys)
+	}
+	if err != nil {
+		return false, err
+	}
+	inventory, err := runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qlq", "--", p.name}, FailureOutput: run.FailureStderr})
+	if err != nil {
+		return false, err
+	}
+	if !a.inventoryMatches(inventory.Stdout) {
+		return false, nil
+	}
+	return a.matches(ctx, root)
 }
 
 // Local ownership inventory is supporting evidence only; every expected object

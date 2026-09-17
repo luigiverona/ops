@@ -74,28 +74,11 @@ func (s *Source) Prepare(ctx context.Context, runner run.Runner, targets []strin
 		if err != nil || !found {
 			return nil, fmt.Errorf("official transaction target unavailable: %s: %v", target, err)
 		}
-		file, err := os.CreateTemp("", "ops-official-archive-*")
+		file, err := s.download(ctx, p)
 		if err != nil {
 			return nil, err
 		}
 		prepared.Archives = append(prepared.Archives, Archive{Target: target, Filename: p.filename, Digest: p.digest, Signature: p.signature, File: file})
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, Endpoint+"/"+p.repository+"/os/x86_64/"+p.filename, nil)
-		if err != nil {
-			return nil, err
-		}
-		response, err := s.client.Do(request)
-		if err != nil {
-			return nil, err
-		}
-		if response.StatusCode != http.StatusOK || (response.ContentLength >= 0 && response.ContentLength != p.size) {
-			response.Body.Close()
-			return nil, fmt.Errorf("official package source changed or unavailable")
-		}
-		n, err := io.Copy(file, io.LimitReader(response.Body, p.size+1))
-		response.Body.Close()
-		if err != nil || n != p.size {
-			return nil, fmt.Errorf("incomplete official package download: %v", err)
-		}
 		if _, err := authenticateArchive(ctx, runner, p, file, keys); err != nil {
 			return nil, err
 		}
@@ -108,4 +91,40 @@ func (s *Source) Prepare(ctx context.Context, runner run.Runner, targets []strin
 		return nil, fmt.Errorf("official keyring changed during transaction preparation")
 	}
 	return prepared, nil
+}
+
+// download retrieves exactly one snapshot-bound archive into unprivileged
+// temporary storage. It never writes pacman's cache or changes package state.
+// The caller must authenticate the bytes and close/remove the returned file.
+func (s *Source) download(ctx context.Context, p Package) (_ *os.File, returnErr error) {
+	file, err := os.CreateTemp("", "ops-official-archive-*")
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if returnErr != nil {
+			file.Close()
+			os.Remove(file.Name())
+		}
+	}()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, Endpoint+"/"+p.repository+"/os/x86_64/"+p.filename, nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := s.client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("official archive evidence unavailable: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || (response.ContentLength >= 0 && response.ContentLength != p.size) {
+		return nil, fmt.Errorf("official archive evidence changed or unavailable (HTTP %d)", response.StatusCode)
+	}
+	n, err := io.Copy(file, io.LimitReader(response.Body, p.size+1))
+	if err != nil || n != p.size {
+		return nil, fmt.Errorf("incomplete official archive evidence: %v", err)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	return file, nil
 }
