@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -242,17 +240,13 @@ func (r isolatedPacmanRunner) Run(ctx context.Context, spec run.Spec) (run.Resul
 }
 
 func TestRealPacmanProviderPrintFormatInIsolatedDatabase(t *testing.T) {
-	if _, err := exec.LookPath("pacman"); err != nil {
-		t.Skip("pacman is unavailable")
-	}
-	if _, err := os.Stat("/var/lib/pacman/sync"); err != nil {
-		t.Skip("pacman sync databases are unavailable")
-	}
-	dbpath := t.TempDir()
-	if err := os.Symlink("/var/lib/pacman/sync", filepath.Join(dbpath, "sync")); err != nil {
-		t.Fatal(err)
-	}
-	resolver := Resolver{Runner: isolatedPacmanRunner{dbpath: dbpath}}
+	f := testpkg.NewPacmanFixture(t)
+	f.Sync(t, "core", testpkg.FixturePackage{Name: "base-devel", Version: "1-1", Packager: "Fixture", Depends: "cargo"})
+	f.Sync(t, "extra",
+		testpkg.FixturePackage{Name: "rust", Version: "1-1", Packager: "Fixture", Provides: "cargo"},
+		testpkg.FixturePackage{Name: "jdk-openjdk", Version: "26-1", Packager: "Fixture", Provides: "java-runtime=26"})
+	f.Sync(t, "custom", testpkg.FixturePackage{Name: "custom-rust", Version: "1-1", Packager: "Custom", Provides: "cargo"})
+	resolver := Resolver{Runner: f}
 	for _, requirement := range []string{"cargo", "base-devel", "java-runtime>=26"} {
 		binding, err := resolver.OfficialDependency(context.Background(), requirement)
 		if err != nil {

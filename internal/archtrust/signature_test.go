@@ -142,6 +142,18 @@ func TestIsolatedOfficialCertificationTrust(t *testing.T) {
 	if err := verify(material(), subSignature, archive); err != nil {
 		t.Fatalf("bound signing subkey rejected: %v", err)
 	}
+	withoutBinding := material()
+	removedBindings := 0
+	withoutBinding.public = filterTestPackets(t, withoutBinding.public, func(tag byte, body []byte) bool {
+		if tag == 2 && len(body) > 1 && body[0] == 4 && body[1] == 0x18 {
+			removedBindings++
+			return false
+		}
+		return true
+	})
+	if removedBindings == 0 || verify(withoutBinding, subSignature, archive) == nil {
+		t.Fatal("unbound signing subkey accepted or probe did not remove a binding")
+	}
 	// Revocation is a real OpenPGP packet, imported only into this test home.
 	invoke([]byte("key 1\nrevkey\ny\n0\n\ny\nsave\n"), "--command-fd", "0", "--edit-key", packager)
 	if err := verify(material(), subSignature, archive); err == nil {
@@ -241,5 +253,32 @@ func TestIsolatedOfficialCertificationTrust(t *testing.T) {
 	invoke(nil, "--local-user", roots[0], "--quick-revoke-sig", rotated, roots[0])
 	if err := verify(material(), rotatedSignature, archive); err == nil {
 		t.Fatal("revoked main-key certification still authorized signer")
+	}
+	// Preserve another usable UID, but remove the self-signature of the only
+	// UID with three root certifications. A primary signature remains valid;
+	// authorization must not migrate those certifications to the other UID.
+	originalUID := "Package Builder <package-test@example.invalid>"
+	invoke(nil, "--quick-add-uid", packager, "Uncertified UID <other@example.invalid>")
+	missingSelf := material()
+	inOriginal, removedSelf := false, 0
+	missingSelf.public = filterTestPackets(t, missingSelf.public, func(tag byte, body []byte) bool {
+		if tag == 13 {
+			inOriginal = string(body) == originalUID
+		}
+		if tag == 6 || tag == 14 {
+			inOriginal = false
+		}
+		if inOriginal && tag == 2 && len(body) > 1 && body[1] >= 0x10 && body[1] <= 0x13 && testSignatureIssuer(body, packager) {
+			removedSelf++
+			return false
+		}
+		return true
+	})
+	if removedSelf == 0 || verify(missingSelf, signature, archive) == nil {
+		t.Fatal("certified UID without self-signature accepted or probe did not remove self-signature")
+	}
+	invoke(nil, "--quick-revoke-uid", packager, originalUID)
+	if err := verify(material(), signature, archive); err == nil {
+		t.Fatal("revoked certified UID authorized signer through unrelated UID")
 	}
 }
