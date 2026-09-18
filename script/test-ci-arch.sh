@@ -5,7 +5,7 @@ set -euo pipefail
 trap 'echo "Guest command failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 test "$(systemd-detect-virt --vm)" = kvm
-test "$(hostname)" = ops-ci
+test "$(cat /proc/sys/kernel/hostname)" = ops-ci
 test "$(id -un)" = ops-ci
 test "$(id -u)" = 1000
 . /etc/os-release

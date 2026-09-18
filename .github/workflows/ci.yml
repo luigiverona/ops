@@ -13,6 +13,10 @@ jobs:
   ci:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    defaults:
+      run:
+        # Explicit bash enables pipefail, including SSH through the log tail.
+        shell: bash
     env:
       GOENV: off
       GOTOOLCHAIN: local
