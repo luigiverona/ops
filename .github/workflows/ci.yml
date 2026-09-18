@@ -11,120 +11,90 @@ permissions:
 
 jobs:
   ci:
-    runs-on: ubuntu-latest
-    container:
-      # Keep the same official base image as the independent minimal runtime.
-      image: archlinux:base@sha256:818793c894d94534c22f2149154a39ebaee57e4e67321023b0866a1d5722036c
-      # Default seccomp denies nested namespaces; docker-default AppArmor denies
-      # their mounts (bwrap: Failed to make / slave: Permission denied).
-      # Retain default capabilities: no SYS_ADMIN or privileged container.
-      options: --security-opt seccomp=unconfined --security-opt apparmor=unconfined
-    defaults:
-      run:
-        # Native permission tests must run as an ordinary workstation user.
-        shell: runuser -u ops-ci -- bash --noprofile --norc -e -o pipefail {0}
+    # The host policy below specifically targets Ubuntu 24.04 user namespaces.
+    runs-on: ubuntu-24.04
     env:
       GOENV: off
       GOTOOLCHAIN: local
-      GOPATH: /home/ops-ci/go
-      GOCACHE: /home/ops-ci/.cache/go-build
-      XDG_RUNTIME_DIR: /run/user/1000
     steps:
-      - name: Bootstrap Arch native test environment
-        shell: bash
-        run: |
-          # Full upgrade, never a partial Arch upgrade. git precedes checkout.
-          # pacman also supplies vercmp and pacman-conf; libarchive supplies bsdtar.
-          # OpenSSH, Python and util-linux exercise agent, PTY and namespace tests.
-          # diffutils supplies cmp for the release-script fixtures.
-          pacman -Syu --needed --noconfirm \
-            archlinux-keyring pacman gnupg libarchive bubblewrap flatpak \
-            git gcc openssh python util-linux diffutils
-          useradd --create-home --uid 1000 ops-ci
-          install -d -m 0700 -o ops-ci -g ops-ci /run/user/1000
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: '1.26.7'
-          cache: true
-      - name: Prepare unprivileged validation
-        shell: bash
-        run: chown -R ops-ci:ops-ci "$GITHUB_WORKSPACE" /home/ops-ci
-      - name: Verify native Arch dependencies
+          # Only provision the toolchain here; caches live inside Arch.
+          cache: false
+      - name: Verify host and capture exact Go toolchain
         run: |
-          test "$(id -u)" = 1000
           cat /etc/os-release
           . /etc/os-release
-          test "$ID" = arch
-          for tool in pacman pacman-conf vercmp gpg gpgconf bsdtar bwrap flatpak git gcc ssh ssh-keygen ssh-agent ssh-add python3 script unshare mount cmp; do
-            command -v "$tool"
-            pacman -Qo "$(command -v "$tool")"
-          done
-          for keyring in archlinux.gpg archlinux-trusted archlinux-revoked; do
-            test -r "/usr/share/pacman/keyrings/$keyring"
-            pacman -Qo "/usr/share/pacman/keyrings/$keyring"
-          done
-          pacman --version
-          bsdtar --version
-          bwrap --version
-          flatpak --version
-          gcc --version
-      - name: Verify toolchain
-        run: |
+          test "$ID" = ubuntu
+          test "$VERSION_ID" = 24.04
           test "$(go env GOVERSION)" = go1.26.7
           test "$(go version)" = 'go version go1.26.7 linux/amd64'
-          test "$GOENV" = off
-          test "$(go env GOTOOLCHAIN)" = local
-          go version
-          printf 'GOENV=%s GOTOOLCHAIN=%s\n' "$GOENV" "$GOTOOLCHAIN"
-          go env GOENV GOTOOLCHAIN CGO_ENABLED
-          go mod verify
-      - name: Native Arch regressions
-        run: go test -v -count=1 ./internal/resolve -run '^TestReal(PacmanProviderPrintFormatInIsolatedDatabase|VerCmpArchVersionSemantics)$'
-      - name: Native Flatpak tests
-        env:
-          GOFLAGS: -v
-        run: go test -count=1 ./internal/flatpak
-      - name: Verify namespace boundary
-        if: ${{ !cancelled() }}
+          printf 'CI_GOROOT=%s\n' "$(realpath "$(go env GOROOT)")" >> "$GITHUB_ENV"
+      - name: Load reviewed Ubuntu bwrap user-namespace policy
         run: |
-          uname -r
-          cat /proc/self/attr/current
-          for setting in /proc/sys/kernel/apparmor_restrict_unprivileged_userns /proc/sys/kernel/unprivileged_userns_clone /proc/sys/user/max_user_namespaces; do
-            if test -r "$setting"; then
-              printf '%s=' "$setting"
-              cat "$setting"
+          sysctl kernel.apparmor_restrict_unprivileged_userns kernel.unprivileged_userns_clone
+          test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" = 1
+          test "$(sysctl -n kernel.unprivileged_userns_clone)" = 1
+          sudo apt-get update
+          sudo apt-get install --yes apparmor apparmor-utils apparmor-profiles
+          dpkg-query -W apparmor apparmor-utils apparmor-profiles
+          profile=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+          test -f "$profile"
+          dpkg-query -S "$profile"
+          cat "$profile"
+          # Reviewed Ubuntu package policy: only /usr/bin/bwrap attaches;
+          # sandbox children stack unpriv_bwrap, which denies capabilities.
+          # Fail closed if the supplied policy changes and needs fresh review.
+          printf '%s  %s\n' 11d39094f044f0cda0febb3ad517b830301da6b2ce929664af09ee9e4dd264f9 "$profile" | sha256sum --check
+          test ! -e /etc/apparmor.d/local/bwrap-userns-restrict
+          test ! -e /etc/apparmor.d/local/unpriv_bwrap
+          test "$(sudo apparmor_parser --names "$profile")" = "$(printf 'bwrap\nunpriv_bwrap')"
+          # Never replace or later unload a profile owned by the runner.
+          sudo cat /sys/kernel/security/apparmor/profiles > "$RUNNER_TEMP/ops-apparmor-before"
+          if grep -Eq '^(bwrap|unpriv_bwrap)(//| )' "$RUNNER_TEMP/ops-apparmor-before"; then
+            echo 'bwrap policy already loaded; refusing to replace host policy' >&2
+            exit 1
+          fi
+          touch "$RUNNER_TEMP/ops-bwrap-policy-owned"
+          sudo apparmor_parser --add "$profile"
+          sudo aa-status
+          sudo cat /sys/kernel/security/apparmor/profiles > "$RUNNER_TEMP/ops-apparmor-loaded"
+          grep -Fx 'bwrap (enforce)' "$RUNNER_TEMP/ops-apparmor-loaded"
+          grep -Fx 'unpriv_bwrap (enforce)' "$RUNNER_TEMP/ops-apparmor-loaded"
+      - name: Run native Arch validation as UID 1000
+        run: |
+          sysctl kernel.apparmor_restrict_unprivileged_userns kernel.unprivileged_userns_clone
+          test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" = 1
+          test "$(sysctl -n kernel.unprivileged_userns_clone)" = 1
+          # Default seccomp blocks nested namespaces. docker-default inherits
+          # its file execution policy and denies mounts, preventing bwrap's
+          # executable profile transition. Start unconfined so /usr/bin/bwrap
+          # attaches to the packaged policy; the helper MUST prove attachment.
+          # No added capabilities: retain Docker's normal capability set.
+          docker run --rm --platform linux/amd64 \
+            --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
+            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/workspace,readonly" \
+            --mount "type=bind,src=$CI_GOROOT,dst=/opt/go,readonly" \
+            --workdir /workspace \
+            archlinux:base@sha256:818793c894d94534c22f2149154a39ebaee57e4e67321023b0866a1d5722036c \
+            bash /workspace/script/test-ci-arch.sh
+      - name: Record AppArmor denials on failure
+        if: failure()
+        run: sudo journalctl --dmesg --no-pager --grep='apparmor="DENIED"' --lines=100
+      - name: Remove only this job's bwrap policy
+        if: always()
+        run: |
+          if test -f "$RUNNER_TEMP/ops-bwrap-policy-owned"; then
+            sudo apparmor_parser --remove /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+            rm "$RUNNER_TEMP/ops-bwrap-policy-owned"
+            sudo cat /sys/kernel/security/apparmor/profiles > "$RUNNER_TEMP/ops-apparmor-after"
+            if grep -Eq '^(bwrap|unpriv_bwrap)(//| )' "$RUNNER_TEMP/ops-apparmor-after"; then
+              echo 'Job bwrap policy still loaded' >&2
+              exit 1
             fi
-          done
-          findmnt --noheadings --output TARGET,OPTIONS /proc/sys
-          status=0
-          unshare --user --map-root-user --mount --propagation private -- /bin/true || status=$?
-          bwrap --unshare-all --die-with-parent --new-session --ro-bind / / --proc /proc -- cat /etc/os-release || status=$?
-          exit "$status"
-      - name: Check formatting
-        run: test -z "$(gofmt -l .)"
-      - name: Vet
-        run: go vet ./...
-      - name: Test
-        env:
-          GOFLAGS: -v
-        run: |
-          go test -count=1 ./... | tee /home/ops-ci/test.log
-          # Only the separately opt-in network integration may skip.
-          if grep -E '^[[:space:]]*--- SKIP:' /home/ops-ci/test.log | grep -v -- '--- SKIP: TestOfficialArchIntegration '; then
-            echo 'Unexpected test skip' >&2
-            exit 1
           fi
-      - name: Race test
-        env:
-          GOFLAGS: -v
-        run: |
-          go test -race -count=1 -timeout=30m ./... | tee /home/ops-ci/race.log
-          if grep -E '^[[:space:]]*--- SKIP:' /home/ops-ci/race.log | grep -v -- '--- SKIP: TestOfficialArchIntegration '; then
-            echo 'Unexpected race test skip' >&2
-            exit 1
-          fi
-      - name: Build
-        run: go build ./...
-      - name: Validate shell syntax
-        run: sh -n script/install.sh script/prepare-release.sh script/render-install.sh script/publish-release.sh script/test-minimal-arch.sh
+          sysctl kernel.apparmor_restrict_unprivileged_userns kernel.unprivileged_userns_clone
+          test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" = 1
+          test "$(sysctl -n kernel.unprivileged_userns_clone)" = 1
