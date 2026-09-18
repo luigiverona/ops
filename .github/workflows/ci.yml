@@ -11,90 +11,242 @@ permissions:
 
 jobs:
   ci:
-    # The host policy below specifically targets Ubuntu 24.04 user namespaces.
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     env:
       GOENV: off
       GOTOOLCHAIN: local
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
         with:
-          go-version: '1.26.7'
-          # Only provision the toolchain here; caches live inside Arch.
-          cache: false
-      - name: Verify host and capture exact Go toolchain
+          persist-credentials: false
+      - name: Prepare host and prove KVM
         run: |
           cat /etc/os-release
           . /etc/os-release
           test "$ID" = ubuntu
           test "$VERSION_ID" = 24.04
-          test "$(go env GOVERSION)" = go1.26.7
-          test "$(go version)" = 'go version go1.26.7 linux/amd64'
-          printf 'CI_GOROOT=%s\n' "$(realpath "$(go env GOROOT)")" >> "$GITHUB_ENV"
-      - name: Load reviewed Ubuntu bwrap user-namespace policy
-        run: |
-          sysctl kernel.apparmor_restrict_unprivileged_userns kernel.unprivileged_userns_clone
-          test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" = 1
-          test "$(sysctl -n kernel.unprivileged_userns_clone)" = 1
+          nproc
+          free -h
+          df -h "$RUNNER_TEMP"
+          vm=$(mktemp -d "$RUNNER_TEMP/ops-arch-vm.XXXXXXXX")
+          echo "CI_VM=$vm" >> "$GITHUB_ENV"
+          # QMP commands are bounded and reject errors, including unavailable KVM.
+          cat > "$vm/qmp.py" <<'PY'
+          import json, socket, sys
+          with socket.socket(socket.AF_UNIX) as sock:
+              sock.settimeout(10)
+              sock.connect(sys.argv[1])
+              stream = sock.makefile('rwb')
+              assert 'QMP' in json.loads(stream.readline())
+              def command(name, arguments):
+                  stream.write((json.dumps({'execute': name, 'arguments': arguments}) + '\n').encode())
+                  stream.flush()
+                  while True:
+                      reply = json.loads(stream.readline())
+                      if 'event' in reply:
+                          continue
+                      assert 'error' not in reply, reply
+                      return reply['return']
+              command('qmp_capabilities', {})
+              result = command(sys.argv[2], json.loads(sys.argv[3]) if len(sys.argv) > 3 else {})
+              if sys.argv[2] == 'query-kvm':
+                  assert result == {'enabled': True, 'present': True}, result
+              print(result if isinstance(result, str) else json.dumps(result))
+          PY
           sudo apt-get update
-          sudo apt-get install --yes apparmor apparmor-utils apparmor-profiles
-          dpkg-query -W apparmor apparmor-utils apparmor-profiles
-          profile=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
-          test -f "$profile"
-          dpkg-query -S "$profile"
-          cat "$profile"
-          # Reviewed Ubuntu package policy: only /usr/bin/bwrap attaches;
-          # sandbox children stack unpriv_bwrap, which denies capabilities.
-          # Fail closed if the supplied policy changes and needs fresh review.
-          printf '%s  %s\n' 11d39094f044f0cda0febb3ad517b830301da6b2ce929664af09ee9e4dd264f9 "$profile" | sha256sum --check
-          test ! -e /etc/apparmor.d/local/bwrap-userns-restrict
-          test ! -e /etc/apparmor.d/local/unpriv_bwrap
-          test "$(sudo apparmor_parser --names "$profile")" = "$(printf 'bwrap\nunpriv_bwrap')"
-          # Never replace or later unload a profile owned by the runner.
-          sudo cat /sys/kernel/security/apparmor/profiles > "$RUNNER_TEMP/ops-apparmor-before"
-          if grep -Eq '^(bwrap|unpriv_bwrap)(//| )' "$RUNNER_TEMP/ops-apparmor-before"; then
-            echo 'bwrap policy already loaded; refusing to replace host policy' >&2
-            exit 1
+          sudo apt-get install --yes --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils
+          qemu-system-x86_64 --version
+          test -c /dev/kvm || { echo 'KVM unavailable: use a dedicated Arch runner or a runner with guaranteed virtualization'; exit 1; }
+          ls -l /dev/kvm
+          if ! test -r /dev/kvm || ! test -w /dev/kvm; then
+            stat -c %u /dev/kvm > "$vm/kvm-owner"
+            sudo chown "$(id -u)" /dev/kvm
           fi
-          touch "$RUNNER_TEMP/ops-bwrap-policy-owned"
-          sudo apparmor_parser --add "$profile"
-          sudo aa-status
-          sudo cat /sys/kernel/security/apparmor/profiles > "$RUNNER_TEMP/ops-apparmor-loaded"
-          grep -Fx 'bwrap (enforce)' "$RUNNER_TEMP/ops-apparmor-loaded"
-          grep -Fx 'unpriv_bwrap (enforce)' "$RUNNER_TEMP/ops-apparmor-loaded"
-      - name: Run native Arch validation as UID 1000
+          # Daemonization returns only after initialization. QMP proves KVM is active.
+          # No TCG fallback. A failed smoke test stops before image/toolchain work.
+          qemu-system-x86_64 -enable-kvm -machine accel=kvm -cpu host \
+            -m 128 -smp 1 -S -nodefaults -display none -monitor none -serial none \
+            -qmp "unix:$vm/qmp.sock,server=on,wait=off" \
+            -pidfile "$vm/qemu.pid" -daemonize
+          python3 "$vm/qmp.py" "$vm/qmp.sock" query-kvm
+          python3 "$vm/qmp.py" "$vm/qmp.sock" quit
+          for attempt in {1..20}; do
+            test ! -e "$vm/qemu.pid" && break
+            sleep 0.25
+          done
+          test ! -e "$vm/qemu.pid"
+          echo 'QEMU KVM initialization: PASS'
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.7'
+          check-latest: false
+          cache: false
+      - name: Prepare verified Arch image and ephemeral access
         run: |
-          sysctl kernel.apparmor_restrict_unprivileged_userns kernel.unprivileged_userns_clone
-          test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" = 1
-          test "$(sysctl -n kernel.unprivileged_userns_clone)" = 1
-          # Default seccomp blocks nested namespaces. docker-default inherits
-          # its file execution policy and denies mounts, preventing bwrap's
-          # executable profile transition. Start unconfined so /usr/bin/bwrap
-          # attaches to the packaged policy; the helper MUST prove attachment.
-          # No added capabilities: retain Docker's normal capability set.
-          docker run --rm --platform linux/amd64 \
-            --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
-            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/workspace,readonly" \
-            --mount "type=bind,src=$CI_GOROOT,dst=/opt/go,readonly" \
-            --workdir /workspace \
-            archlinux:base@sha256:818793c894d94534c22f2149154a39ebaee57e4e67321023b0866a1d5722036c \
-            bash /workspace/script/test-ci-arch.sh
-      - name: Record AppArmor denials on failure
-        if: failure()
-        run: sudo journalctl --dmesg --no-pager --grep='apparmor="DENIED"' --lines=100
-      - name: Remove only this job's bwrap policy
-        if: always()
+          test "$(go version)" = 'go version go1.26.7 linux/amd64'
+          echo "CI_GOROOT=$(realpath "$(go env GOROOT)")" >> "$GITHUB_ENV"
+          cd "$CI_VM"
+          # Official Arch arch-boxes cloud image, published by Arch's GitLab CI:
+          # https://gitlab.archlinux.org/archlinux/arch-boxes
+          # Upstream documents distribution through mirror.pkgbuild.com/images/.
+          # Release v20260915.594445; checksum signature verified during pin review
+          # against arch-boxes key 1B9A16984A4E8CB448712D2AE0B78BF4326C6F8F.
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --max-time 300 \
+            -o base.qcow2 https://geo.mirror.pkgbuild.com/images/v20260915.594445/Arch-Linux-x86_64-cloudimg-20260915.594445.qcow2
+          echo 'd7cc7c86a21b32d6678c001464714f71f4ef7e0d7bbbfca65e99123ac5afc25b  base.qcow2' | sha256sum --check
+          chmod 0444 base.qcow2
+          # Reserve at least half host RAM and 6 GiB disk for the host.
+          python3 - <<'PY'
+          import os, pathlib, shutil
+          root = pathlib.Path(os.environ['CI_VM'])
+          mem = dict(line.split(':', 1) for line in pathlib.Path('/proc/meminfo').read_text().splitlines())
+          ram = min(8192, int(mem['MemTotal'].split()[0]) // 2048,
+                    int(mem['MemAvailable'].split()[0]) // 1024 - 2048)
+          cpus = min(4, len(os.sched_getaffinity(0)))
+          disk = min(32, shutil.disk_usage(root).free // 2**30 - 6)
+          assert ram >= 2048 and disk >= 16, (ram, disk)
+          print(f'VM allocation: {cpus} vCPUs, {ram} MiB RAM, {disk} GiB disk')
+          if cpus < 4 or ram < 8192 or disk < 32:
+              print('Scaling VM conservatively to available host resources')
+          (root / 'resources').write_text(f'VM_CPUS={cpus}\nVM_RAM={ram}\nVM_DISK={disk}\n')
+          PY
+          source resources
+          qemu-img create -f qcow2 -F qcow2 -b "$CI_VM/base.qcow2" overlay.qcow2 "${VM_DISK}G"
+          umask 077
+          ssh-keygen -q -t ed25519 -N '' -f identity
+          ssh-keygen -q -t ed25519 -N '' -f host-key
+          # No password, no default image user, and a pinned ephemeral SSH host key.
+          python3 - <<'PY'
+          import json, pathlib
+          p = pathlib.Path('.')
+          config = {
+              'users': [{'name': 'ops-ci', 'uid': 1000, 'shell': '/bin/bash',
+                         'lock_passwd': True, 'sudo': ['ALL=(ALL) NOPASSWD:ALL'],
+                         'ssh_authorized_keys': [p.joinpath('identity.pub').read_text().strip()]}],
+              'disable_root': True, 'ssh_pwauth': False,
+              'ssh_keys': {'ed25519_private': p.joinpath('host-key').read_text(),
+                           'ed25519_public': p.joinpath('host-key.pub').read_text()},
+              'growpart': {'mode': 'auto', 'devices': ['/'], 'ignore_growroot_disabled': False},
+              'resize_rootfs': True,
+          }
+          p.joinpath('user-data').write_text('#cloud-config\n' + json.dumps(config))
+          p.joinpath('meta-data').write_text('instance-id: ops-ci\nlocal-hostname: ops-ci\n')
+          PY
+          cloud-localds seed.img user-data meta-data
+      - name: Boot Arch VM
+        timeout-minutes: 8
         run: |
-          if test -f "$RUNNER_TEMP/ops-bwrap-policy-owned"; then
-            sudo apparmor_parser --remove /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
-            rm "$RUNNER_TEMP/ops-bwrap-policy-owned"
-            sudo cat /sys/kernel/security/apparmor/profiles > "$RUNNER_TEMP/ops-apparmor-after"
-            if grep -Eq '^(bwrap|unpriv_bwrap)(//| )' "$RUNNER_TEMP/ops-apparmor-after"; then
-              echo 'Job bwrap policy still loaded' >&2
-              exit 1
+          cd "$CI_VM"
+          source resources
+          # Port zero lets QEMU bind an available ephemeral port atomically.
+          # Read the actual port from its user-network monitor after startup.
+          qemu-system-x86_64 -enable-kvm -machine accel=kvm -cpu host \
+            -smp "$VM_CPUS" -m "$VM_RAM" -display none -monitor none \
+            -drive "file=$CI_VM/overlay.qcow2,if=virtio,format=qcow2" \
+            -drive "file=$CI_VM/seed.img,if=virtio,format=raw,readonly=on" \
+            -netdev user,id=net0,hostfwd=tcp:127.0.0.1:0-:22 -device virtio-net-pci,netdev=net0 \
+            -chardev ringbuf,id=console,size=1048576 -serial chardev:console \
+            -qmp "unix:$CI_VM/qmp.sock,server=on,wait=off" \
+            -pidfile "$CI_VM/qemu.pid" -daemonize
+          python3 qmp.py qmp.sock query-kvm
+          python3 qmp.py qmp.sock human-monitor-command '{"command-line":"info usernet"}' > usernet.txt
+          cat usernet.txt
+          port=$(awk '$1 == "TCP[HOST_FORWARD]" && $3 == "127.0.0.1" && $6 == "22" {print $4}' usernet.txt)
+          test "$port" -gt 0
+          test "$port" -le 65535
+          printf '[127.0.0.1]:%s %s\n' "$port" "$(cat host-key.pub)" > known_hosts
+          cat > ssh-config <<EOF
+          Host arch-ci
+            HostName 127.0.0.1
+            Port $port
+            User ops-ci
+            IdentityFile $CI_VM/identity
+            IdentitiesOnly yes
+            BatchMode yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile $CI_VM/known_hosts
+            ConnectTimeout 5
+            ConnectionAttempts 1
+            ServerAliveInterval 15
+            ServerAliveCountMax 3
+          EOF
+          for attempt in {1..60}; do
+            if ssh -F ssh-config arch-ci true 2>ssh-boot.log; then
+              ssh -F ssh-config arch-ci 'timeout 180 cloud-init status --wait && test "$(id -u)" = 1000'
+              echo 'Arch guest boot: PASS'
+              exit 0
+            fi
+            test -s qemu.pid
+            kill -0 "$(cat qemu.pid)"
+            sleep 3
+          done
+          cat ssh-boot.log
+          echo 'Arch guest SSH boot timeout' >&2
+          exit 1
+      - name: Transfer exact checkout and Go, then run guest validation
+        timeout-minutes: 70
+        run: |
+          trap 'echo "Failed host/SSH command at line $LINENO: $BASH_COMMAND" >&2' ERR
+          ssh -F "$CI_VM/ssh-config" arch-ci 'mkdir -p /home/ops-ci/source /home/ops-ci/go-transfer'
+          # Read tracked files from this checkout, including executable modes and
+          # symlinks. Tests create their own Git fixtures; no host .git or secrets.
+          echo "Source checkout: $(git rev-parse HEAD)"
+          git diff --exit-code HEAD
+          git ls-files -z | tar --null -T - -cf - | \
+            ssh -F "$CI_VM/ssh-config" arch-ci 'tar -xf - -C /home/ops-ci/source'
+          tar -C "$CI_GOROOT" -cf - . | \
+            ssh -F "$CI_VM/ssh-config" arch-ci 'tar -xf - -C /home/ops-ci/go-transfer && sudo mv /home/ops-ci/go-transfer /opt/go1.26.7 && sudo chown -R root:root /opt/go1.26.7'
+          # Guest output is capped by the helper; retain only a 2 MiB host tail.
+          # pipefail preserves the SSH/test exit status through tail.
+          ssh -F "$CI_VM/ssh-config" arch-ci \
+            'cd /home/ops-ci/source && bash script/test-ci-arch.sh' \
+            2>&1 | tee /dev/stderr | tail -c 2097152 > "$CI_VM/guest-test.log"
+      - name: Capture bounded console diagnostics
+        if: always() && env.CI_VM != ''
+        run: |
+          if test -S "$CI_VM/qmp.sock" && test -s "$CI_VM/qemu.pid"; then
+            python3 "$CI_VM/qmp.py" "$CI_VM/qmp.sock" ringbuf-read \
+              '{"device":"console","size":1048576}' > "$CI_VM/serial.log"
+          fi
+      - name: Surface failure evidence
+        if: failure() && env.CI_VM != ''
+        run: |
+          for log in serial.log ssh-boot.log guest-test.log; do
+            if test -f "$CI_VM/$log"; then
+              echo "Last 100 lines: $log"
+              tail -n 100 "$CI_VM/$log" | tail -c 32768
+            fi
+          done
+      - uses: actions/upload-artifact@v7
+        if: failure() && env.CI_VM != ''
+        with:
+          name: arch-vm-failure
+          path: |
+            ${{ env.CI_VM }}/serial.log
+            ${{ env.CI_VM }}/ssh-boot.log
+            ${{ env.CI_VM }}/guest-test.log
+            ${{ env.CI_VM }}/resources
+          if-no-files-found: ignore
+          retention-days: 3
+      - name: Clean up disposable Arch VM
+        if: always() && env.CI_VM != ''
+        run: |
+          if test -s "$CI_VM/qemu.pid"; then
+            pid=$(cat "$CI_VM/qemu.pid")
+            # Match this VM's unique command line before signaling a recorded PID.
+            if test -r "/proc/$pid/cmdline" && tr '\0' '\n' < "/proc/$pid/cmdline" | grep -Fxq "$CI_VM/qemu.pid"; then
+              kill "$pid"
+              for attempt in {1..30}; do
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 1
+              done
+              if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid"; fi
             fi
           fi
-          sysctl kernel.apparmor_restrict_unprivileged_userns kernel.unprivileged_userns_clone
-          test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" = 1
-          test "$(sysctl -n kernel.unprivileged_userns_clone)" = 1
+          if test -f "$CI_VM/kvm-owner"; then
+            sudo chown "$(cat "$CI_VM/kvm-owner")" /dev/kvm
+          fi
+          rm -rf -- "$CI_VM"
+          test ! -e "$CI_VM"
+          echo 'VM, overlay, base image, seed, SSH keys and temporary logs removed: PASS'

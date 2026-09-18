@@ -1,44 +1,64 @@
 #!/bin/bash
-# Destructive only inside a fresh disposable CI container; never on a workstation.
-# Host AppArmor preparation and Docker security options belong to ci.yml.
+# Bootstrap and validate ONLY the disposable Arch QEMU guest created by ci.yml.
+# Never run on a workstation. All tests remain the ordinary UID 1000 user.
 set -euo pipefail
+trap 'echo "Guest command failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
-test -f /.dockerenv
-test "$(id -u)" = 0
+test "$(systemd-detect-virt --vm)" = kvm
+test "$(hostname)" = ops-ci
+test "$(id -un)" = ops-ci
+test "$(id -u)" = 1000
 . /etc/os-release
 test "$ID" = arch
-test -x /opt/go/bin/go
+test -x /opt/go1.26.7/bin/go
+cd /home/ops-ci/source
+mkdir -p "$HOME/ci-logs"
 
-printf '::group::Bootstrap disposable Arch container\n'
-# Full upgrade, never a partial Arch upgrade. Do not install rolling Arch Go.
-pacman -Syu --needed --noconfirm \
+printf '::group::Bootstrap disposable Arch VM\n'
+# Full upgrade before dependencies; never install Arch's rolling Go package.
+sudo pacman -Syu --noconfirm
+sudo pacman -S --needed --noconfirm \
     archlinux-keyring pacman gnupg libarchive bubblewrap flatpak \
     git gcc openssh python util-linux diffutils
-useradd --create-home --uid 1000 ops-ci
-install -d -m 0700 -o ops-ci -g ops-ci /run/user/1000
+sudo install -d -m 0700 -o ops-ci -g ops-ci /run/user/1000
+# Bootstrap is over: remove the cloud-init sudo grant before running tests.
+sudo rm /etc/sudoers.d/90-cloud-init-users
+if sudo -n true 2>/dev/null; then
+    echo 'Unexpected sudo access after bootstrap' >&2
+    exit 1
+fi
+export PATH=/opt/go1.26.7/bin:/usr/bin GOENV=off GOTOOLCHAIN=local
+export GOROOT=/opt/go1.26.7 GOPATH=/home/ops-ci/go
+export GOCACHE=/home/ops-ci/.cache/go-build GOMODCACHE=/home/ops-ci/go/pkg/mod
+export XDG_RUNTIME_DIR=/run/user/1000
 printf '::endgroup::\n'
-
-runuser -u ops-ci -- env \
-    HOME=/home/ops-ci PATH=/opt/go/bin:/usr/bin \
-    GOENV=off GOTOOLCHAIN=local GOROOT=/opt/go \
-    GOPATH=/home/ops-ci/go GOCACHE=/home/ops-ci/.cache/go-build \
-    GOMODCACHE=/home/ops-ci/go/pkg/mod XDG_RUNTIME_DIR=/run/user/1000 \
-    bash --noprofile --norc <<'TEST'
-set -euo pipefail
-cd /workspace
-# Checkout belongs to the host runner and is deliberately mounted read-only.
-git config --global --add safe.directory /workspace
 
 # Keep verbose output and audit even if go test itself fails.
 audit_test() {
     local log=$1 status=0
     shift
-    "$@" 2>&1 | tee "$HOME/$log" || status=$?
-    if grep -E '^[[:space:]]*--- SKIP:' "$HOME/$log" | grep -v -- '--- SKIP: TestOfficialArchIntegration '; then
+    # Cap each log at 16 MiB while continuing to drain the command's output.
+    # Exceeding the cap fails CI, rather than silently losing skip evidence.
+    "$@" 2>&1 | python3 -c '
+import sys
+limit = 16 * 1024 * 1024
+size = 0
+with open(sys.argv[1], "wb") as log:
+    for chunk in iter(lambda: sys.stdin.buffer.read1(65536), b""):
+        size += len(chunk)
+        if size <= limit:
+            log.write(chunk)
+            sys.stdout.buffer.write(chunk)
+            sys.stdout.buffer.flush()
+if size > limit:
+    sys.exit("CI test output exceeded 16 MiB limit")
+' "$HOME/ci-logs/$log" || status=$?
+    if grep -E '^[[:space:]]*--- SKIP:' "$HOME/ci-logs/$log" | grep -v -- '--- SKIP: TestOfficialArchIntegration '; then
         echo "Unexpected test skip in $log" >&2
         return 1
     fi
-    return "$status"
+    test "$status" = 0 || return "$status"
+    echo "Unexpected-skip audit ($log): PASS"
 }
 
 printf '::group::Verify native Arch dependencies\n'
@@ -60,8 +80,14 @@ flatpak --version
 gcc --version
 printf '::endgroup::\n'
 
-printf '::group::Prove non-root bwrap isolation and AppArmor attachment\n'
-test "$(cat /proc/self/attr/current)" = unconfined
+printf '::group::Prove non-root namespaces and bwrap isolation\n'
+uname -a
+sysctl user.max_user_namespaces user.max_mnt_namespaces user.max_net_namespaces
+if test -e /proc/sys/kernel/unprivileged_userns_clone; then
+    sysctl kernel.unprivileged_userns_clone
+fi
+unshare --user --map-root-user -- /bin/true
+echo 'Non-root unshare: PASS'
 export CI_OUTER_USER_NS CI_OUTER_MOUNT_NS CI_OUTER_NET_NS
 CI_OUTER_USER_NS=$(readlink /proc/self/ns/user)
 CI_OUTER_MOUNT_NS=$(readlink /proc/self/ns/mnt)
@@ -74,13 +100,8 @@ import socket
 import struct
 
 assert os.getuid() == 1000
-# PID 1 is bwrap's namespace supervisor; the payload has the stacked child policy.
-parent = Path('/proc/1/attr/current').read_text().strip()
-child = Path('/proc/self/attr/current').read_text().strip()
-print(f'bwrap supervisor AppArmor: {parent}', flush=True)
-print(f'bwrap payload AppArmor: {child}', flush=True)
-assert parent == 'bwrap (enforce)', parent
-assert child == 'bwrap//&unpriv_bwrap (enforce)', child
+assert Path('/proc/self/mountinfo').is_file()
+assert any(line.split()[4] == '/proc' and ' - proc ' in line for line in Path('/proc/self/mountinfo').read_text().splitlines())
 for kind, outer in [('user', 'CI_OUTER_USER_NS'), ('mnt', 'CI_OUTER_MOUNT_NS'), ('net', 'CI_OUTER_NET_NS')]:
     inner = os.readlink(f'/proc/self/ns/{kind}')
     print(f'{kind}: outside={os.environ[outer]} inside={inner}')
@@ -102,17 +123,19 @@ printf '::group::Verify exact Go toolchain\n'
 test "$(go env GOVERSION)" = go1.26.7
 test "$(go version)" = 'go version go1.26.7 linux/amd64'
 test "$GOENV" = off
+# Go reports an empty GOENV filename when environment-file loading is disabled.
+test -z "$(go env GOENV)"
 test "$(go env GOTOOLCHAIN)" = local
 go version
 printf 'GOENV=%s GOTOOLCHAIN=%s\n' "$GOENV" "$GOTOOLCHAIN"
-go env GOENV GOTOOLCHAIN CGO_ENABLED
+go env GOVERSION GOENV GOTOOLCHAIN CGO_ENABLED
 go mod verify
 printf '::endgroup::\n'
 
 printf '::group::Native Arch regressions\n'
 audit_test native-arch.log go test -v -count=1 ./internal/resolve -run '^TestReal(PacmanProviderPrintFormatInIsolatedDatabase|VerCmpArchVersionSemantics)$'
-grep -E '^--- PASS: TestRealPacmanProviderPrintFormatInIsolatedDatabase ' "$HOME/native-arch.log"
-grep -E '^--- PASS: TestRealVerCmpArchVersionSemantics ' "$HOME/native-arch.log"
+grep -E '^--- PASS: TestRealPacmanProviderPrintFormatInIsolatedDatabase ' "$HOME/ci-logs/native-arch.log"
+grep -E '^--- PASS: TestRealVerCmpArchVersionSemantics ' "$HOME/ci-logs/native-arch.log"
 printf '::endgroup::\n'
 
 printf '::group::Native Flatpak tests\n'
@@ -122,6 +145,7 @@ printf '::endgroup::\n'
 printf '::group::Formatting and vet\n'
 test -z "$(gofmt -l .)"
 go vet ./...
+echo 'Formatting and vet: PASS'
 printf '::endgroup::\n'
 
 export GOFLAGS=-v
@@ -139,4 +163,4 @@ go build ./...
 sh -n script/install.sh script/prepare-release.sh script/render-install.sh script/publish-release.sh script/test-minimal-arch.sh
 bash -n script/test-ci-arch.sh
 printf '::endgroup::\n'
-TEST
+echo 'Build and shell validation: PASS'
