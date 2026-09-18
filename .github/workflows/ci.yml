@@ -193,12 +193,25 @@ jobs:
         run: |
           trap 'echo "Failed host/SSH command at line $LINENO: $BASH_COMMAND" >&2' ERR
           ssh -F "$CI_VM/ssh-config" arch-ci 'mkdir -p /home/ops-ci/source /home/ops-ci/go-transfer'
-          # Read tracked files from this checkout, including executable modes and
-          # symlinks. Tests create their own Git fixtures; no host .git or secrets.
+          # Read tracked files from this checkout, including modes and symlinks.
+          # render-install's test needs Git root discovery. Supply a fresh, shallow
+          # metadata directory with ONLY this exact commit and its tree objects;
+          # never copy the host's Git configuration, hooks, credentials or history.
           echo "Source checkout: $(git rev-parse HEAD)"
           git diff --exit-code HEAD
           git ls-files -z | tar --null -T - -cf - | \
             ssh -F "$CI_VM/ssh-config" arch-ci 'tar -xf - -C /home/ops-ci/source'
+          git init --quiet --template= "$CI_VM/source-metadata"
+          git rev-parse HEAD > "$CI_VM/source-metadata/.git/HEAD"
+          git rev-parse HEAD > "$CI_VM/source-metadata/.git/shallow"
+          {
+            git rev-parse HEAD
+            git rev-list --objects --no-object-names 'HEAD^{tree}'
+          } | git pack-objects --stdout | git -C "$CI_VM/source-metadata" index-pack --stdin
+          git -C "$CI_VM/source-metadata" read-tree HEAD
+          tar -C "$CI_VM/source-metadata" -cf - .git | \
+            ssh -F "$CI_VM/ssh-config" arch-ci 'tar -xf - -C /home/ops-ci/source'
+          git rev-parse HEAD | ssh -F "$CI_VM/ssh-config" arch-ci 'cat > /home/ops-ci/checkout-sha'
           tar -C "$CI_GOROOT" -cf - . | \
             ssh -F "$CI_VM/ssh-config" arch-ci 'tar -xf - -C /home/ops-ci/go-transfer && sudo mv /home/ops-ci/go-transfer /opt/go1.26.7 && sudo chown -R root:root /opt/go1.26.7'
           # Guest output is capped by the helper; retain only a 2 MiB host tail.

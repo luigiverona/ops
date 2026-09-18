@@ -61,7 +61,11 @@ if size > limit:
     echo "Unexpected-skip audit ($log): PASS"
 }
 
-printf '::group::Verify native Arch dependencies\n'
+printf '::group::Verify exact source and native Arch dependencies\n'
+test "$(git rev-parse HEAD)" = "$(cat "$HOME/checkout-sha")"
+git diff --exit-code HEAD
+test -z "$(git status --porcelain)"
+printf 'Exact source checkout: %s\n' "$(git rev-parse HEAD)"
 test "$(id -u)" = 1000
 id
 cat /etc/os-release
