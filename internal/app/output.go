@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/luigiverona/ops/internal/archrepo"
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/run"
@@ -15,6 +16,15 @@ import (
 
 func planIssues(p plan.Plan) []issue {
 	problems := make([]issue, 0)
+	for _, component := range plan.CoreOrder {
+		name := plan.CorePackages[component]
+		if component == "flatpak" && p.Core[component] != "not required" {
+			name = "flatpak"
+		}
+		if evidence, ok := p.CoreOfficial[name]; ok && evidence.Action() == archrepo.Manual {
+			problems = append(problems, issue{State: "Unavailable", Name: component, Cause: evidence.Description(), Action: "Reconcile the trusted source and administrator package policy manually."})
+		}
+	}
 	for _, application := range p.Applications {
 		if !application.State.Problem() {
 			continue
@@ -34,7 +44,7 @@ func (a Runtime) showPlan(p plan.Plan) {
 		return
 	}
 	fmt.Fprintln(a.Out, "Workstation setup")
-	var install, configure, services []string
+	var install, update, configure, services []string
 	seenServices := map[string]bool{}
 	for _, application := range p.Applications {
 		if application.State.Actionable() {
@@ -48,7 +58,14 @@ func (a Runtime) showPlan(p plan.Plan) {
 		label := application.Declaration.Identifier + " (" + sourceLabel(application.Declaration.Source) + ")"
 		switch application.State {
 		case "install":
-			install = append(install, label)
+			if application.Cause != "" {
+				label += "; " + application.Cause
+			}
+			if application.OfficialState != nil && application.OfficialState.Action() == archrepo.Update {
+				update = append(update, label)
+			} else {
+				install = append(install, label)
+			}
 		case "configure":
 			configure = append(configure, label)
 		}
@@ -57,6 +74,12 @@ func (a Runtime) showPlan(p plan.Plan) {
 		fmt.Fprintln(a.Out, "\nInstall")
 		for _, name := range install {
 			fmt.Fprintf(a.Out, "  %s\n", ui.PrintableASCII(name))
+		}
+	}
+	if len(update) > 0 {
+		fmt.Fprintln(a.Out, "\nUpdate")
+		for _, label := range update {
+			fmt.Fprintf(a.Out, "  %s\n", ui.PrintableASCII(label))
 		}
 	}
 	if p.ConfigureGit {
@@ -81,6 +104,9 @@ func (a Runtime) showPlan(p plan.Plan) {
 		configure = append(configure, "GitHub SSH keys")
 	}
 
+	if p.EnableFlathub {
+		configure = append(configure, "Enable existing user flathub remote at https://dl.flathub.org/repo/")
+	}
 	if p.AddFlathub {
 		configure = append(configure, "Flathub for user Flatpak applications")
 	}
@@ -105,10 +131,30 @@ func (a Runtime) showPlan(p plan.Plan) {
 	}
 	if p.FullUpgrade {
 		fmt.Fprintln(a.Out, "\nThe system will be updated.")
+		fmt.Fprintln(a.Out, "  Upgrade using all configured repositories, including custom repositories.")
+		fmt.Fprintln(a.Out, "  Install managed official targets from core, extra, or multilib; exclude custom repositories from those installations.")
+	}
+	for _, component := range plan.CoreOrder {
+		if p.Core[component] == "official repair/reverification required" || p.Core[component] == "installed official package content requires repair" {
+			fmt.Fprintf(a.Out, "\nRepair/reverify existing official prerequisite: %s\n", component)
+		}
+	}
+	for _, component := range plan.CoreOrder {
+		if strings.Contains(p.Core[component], "update available") || strings.Contains(p.Core[component], "could not be established") || strings.Contains(p.Core[component], "newer than") {
+			fmt.Fprintf(a.Out, "\n%s: %s\n", component, p.Core[component])
+		}
 	}
 	dependencies := len(p.CorePackages) > 0
 	for _, application := range p.Applications {
 		if application.State == plan.Install {
+			for _, pkg := range application.AURPackages {
+				if pkg.Update {
+					fmt.Fprintf(a.Out, "\nOfficial package update available for build dependency: %s/%s\n", pkg.Repository, pkg.Name)
+				}
+				if pkg.Repair {
+					fmt.Fprintf(a.Out, "\nRepair/reverify existing official build dependency: %s/%s\n", pkg.Repository, pkg.Name)
+				}
+			}
 			dependencies = dependencies || len(application.AURPackages) > 0
 		}
 	}

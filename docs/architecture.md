@@ -44,8 +44,12 @@ the single external Go module.
 3. Present one top-level setup approval. Acquire and refresh sudo only if
    privileged work is required.
 4. Prepare required repositories; perform one full interactive `pacman -Syu`
-   before package installations. A no-op does not upgrade the system.
-5. Install missing foundational official packages and verify their presence.
+   over all configured repositories before package installations, including
+   available custom rebuilds. Subsequent managed official installations exclude
+   user repository sources using an independently authenticated snapshot and protected configuration. The
+   workstation configuration is preserved. A no-op does not upgrade the system.
+5. Install foundational packages with qualified official targets and verify
+   their authenticated official managed-content match.
 6. Configure user Flathub only for declared Flatpak applications.
 7. Apply applications in source/identifier order. Before each AUR build, fetch
    the pinned commit, paginate tracked source files, obtain default-no
@@ -69,6 +73,18 @@ automatic orphan cleanup is performed. Core failures stop dependent execution;
 after a partial fatal failure use doctor before retrying.
 
 ## Managed dependencies
+
+`archrepo` centralizes the supported repositories and validates `repo/name`
+transaction identities. `plan.Package` and `BuildPackage` retain `Repository`;
+official dependency bindings retain both qualified provider and transaction
+members. Revalidation checks repository identity even for already-satisfied
+providers and transaction members omitted after earlier approved installs.
+`archtrust` authenticates the independent source, archive and installed content.
+`State.OfficialMatches` records authenticated current managed-content matches, independently
+of pacman's native/foreign classification. `State.Flatpaks` maps IDs to origins;
+`State.Flathub` records validated remote identity and options. Initial inspection,
+Doctor, and final reinspection use the same readiness rules.
+See [source contracts and CLI evidence](package-source-provenance.md).
 
 | Dependency | When managed | Capability / reason |
 | --- | --- | --- |

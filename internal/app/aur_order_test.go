@@ -15,6 +15,7 @@ import (
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/run"
+	"github.com/luigiverona/ops/internal/testpkg"
 	"github.com/luigiverona/ops/internal/ui"
 )
 
@@ -38,17 +39,31 @@ type aurOrderRunner struct {
 }
 
 func (f *aurOrderRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
+	{
+		if result, ok := testpkg.OfficialStage(spec); ok {
+			return result, nil
+		}
+	}
+	spec = testpkg.TransactionSpec(spec)
+
 	f.calls = append(f.calls, spec)
+	if spec.Name == "pacman" && spec.Args[0] == "-Qq" {
+		return run.Result{}, nil
+	}
+	if spec.Name == "pacman-conf" || spec.Name == "pacman" && (spec.Args[0] == "-Qi" || spec.Args[0] == "-Si" || spec.Args[0] == "-Sl") {
+		result, _ := testpkg.Query(spec)
+		return result, nil
+	}
 	if spec.Name == "sudo" {
 		args := strings.Join(spec.Args, " ")
 		switch {
 		case args == "-v":
 			f.events = append(f.events, "sudo-v")
 			return run.Result{}, nil
-		case args == "-n pacman -Syu":
+		case strings.HasPrefix(args, "-n pacman -Syu"):
 			f.events = append(f.events, "upgrade")
 			return run.Result{}, nil
-		case strings.HasPrefix(args, "-n pacman -S --needed --noconfirm --asdeps -- "):
+		case strings.HasPrefix(args, "-n pacman -S --noconfirm --asdeps -- "):
 			f.events = append(f.events, "dependencies")
 			f.reviewVisibleAtDependencyInstall = strings.Contains(f.output.String(), "Build and install paru?")
 			if f.failDependencies {
@@ -112,7 +127,7 @@ func (f *aurOrderRunner) Run(_ context.Context, spec run.Spec) (run.Result, erro
 			return run.Result{Stdout: requirement + "\n"}, &run.Error{Name: "pacman", Err: diagnosticExit(127)}
 		}
 		if len(spec.Args) > 0 && spec.Args[0] == "-Sp" {
-			if len(spec.Args) > 4 && spec.Args[4] == "%n" {
+			if len(spec.Args) > 3 && spec.Args[3] == "%r/%n" {
 				separator := 0
 				for i, arg := range spec.Args {
 					if arg == "--" {
@@ -122,18 +137,18 @@ func (f *aurOrderRunner) Run(_ context.Context, spec run.Spec) (run.Result, erro
 				}
 				transaction := append([]string(nil), spec.Args[separator+1:]...)
 				if f.transactionChanged {
-					transaction = append(transaction, "surprise-package")
+					transaction = append(transaction, "extra/surprise-package")
 				}
 				return run.Result{Stdout: strings.Join(transaction, "\n") + "\n"}, nil
 			}
 			switch spec.Args[len(spec.Args)-1] {
 			case "base-devel":
-				return run.Result{Stdout: "base-devel\t\n"}, nil
+				return run.Result{Stdout: "extra/base-devel\t\n"}, nil
 			case "cargo":
 				if f.providerChanged {
-					return run.Result{Stdout: "rustup\tcargo\n"}, nil
+					return run.Result{Stdout: "extra/rustup\tcargo\n"}, nil
 				}
-				return run.Result{Stdout: "rust\tcargo rustfmt\nllvm-libs\t\n"}, nil
+				return run.Result{Stdout: "extra/rust\tcargo rustfmt\nextra/llvm-libs\t\n"}, nil
 			}
 		}
 		if len(spec.Args) > 0 && spec.Args[0] == "-Q" {
@@ -183,7 +198,7 @@ func (f *aurOrderRunner) Run(_ context.Context, spec run.Spec) (run.Result, erro
 		return run.Result{Stdout: "paru v2\n"}, nil
 	}
 	if spec.Name == "flatpak" && len(spec.Args) > 0 && spec.Args[0] == "remotes" {
-		return run.Result{Stdout: "flathub\n"}, nil
+		return testpkg.FlatpakRemotes(testpkg.Flathub), nil
 	}
 	return run.Result{}, errors.New("unexpected command: " + spec.Name + " " + strings.Join(spec.Args, " "))
 }
@@ -201,8 +216,8 @@ func declaredParuPlan(t *testing.T) plan.Plan {
 	p := resolveAndPlan(context.Background(), config.Config{Version: 2, Applications: []config.Application{{Source: "aur", Identifier: "paru"}}}, state, outputResolver{
 		aur: map[string]plan.Package{"paru": {Name: "paru", PackageBase: "paru"}}, source: &source,
 		deps: map[string]plan.OfficialDependency{
-			"base-devel": {Requirement: "base-devel", Provider: "base-devel", Packages: []string{"base-devel"}},
-			"cargo":      {Requirement: "cargo", Provider: "rust", Packages: []string{"llvm-libs", "rust"}},
+			"base-devel": {Requirement: "base-devel", Provider: "extra/base-devel", Packages: []string{"extra/base-devel"}},
+			"cargo":      {Requirement: "cargo", Provider: "extra/rust", Packages: []string{"extra/llvm-libs", "extra/rust"}},
 		},
 	})
 	return p
@@ -246,7 +261,7 @@ func TestDeclaredAURReviewDependencyBuildOrder(t *testing.T) {
 	for _, call := range runner.calls {
 		if call.Name == "sudo" && len(call.Args) > 2 && call.Args[2] == "-S" {
 			args := strings.Join(call.Args, " ")
-			if strings.Contains(args, " cargo") || !strings.Contains(args, " base-devel") || !strings.Contains(args, " llvm-libs") || !strings.Contains(args, " rust") {
+			if strings.Contains(args, " cargo") || !strings.Contains(args, " extra/base-devel") || !strings.Contains(args, " extra/llvm-libs") || !strings.Contains(args, " extra/rust") {
 				t.Fatalf("unresolved or incomplete dependency transaction reached mutation: %s", args)
 			}
 		}
@@ -392,7 +407,7 @@ func TestIntentionalAURSkipContinuesAndReinspects(t *testing.T) {
 			}
 			p := declaredParuPlan(t)
 			// A separate declared pacman app must still be installed after skip.
-			p.Applications = append(p.Applications, plan.Application{Declaration: config.Application{Source: config.Pacman, Identifier: "firefox"}, State: plan.Install})
+			p.Applications = append(p.Applications, plan.Application{Package: plan.Package{Name: "firefox", Repository: "extra"}, Declaration: config.Application{Source: config.Pacman, Identifier: "firefox"}, State: plan.Install})
 			for _, app := range p.Applications {
 				cfg.Applications = append(cfg.Applications, app.Declaration)
 			}
@@ -456,7 +471,7 @@ func TestPreparePlanParuProviderDriftFailsBeforeBuildDependencyMutation(t *testi
 	var output bytes.Buffer
 	runner := &aurOrderRunner{output: &output, providerChanged: true}
 	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n\ny\n"), Out: &output})
-	if code != Issues || !strings.Contains(output.String(), "provider changed after planning") {
+	if code != Issues || !strings.Contains(output.String(), "provider or repository changed after planning") {
 		t.Fatalf("code=%d events=%v\n%s", code, runner.events, output.String())
 	}
 	for _, event := range runner.events {

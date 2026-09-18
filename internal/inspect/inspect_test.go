@@ -16,6 +16,7 @@ import (
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/run"
 	sshops "github.com/luigiverona/ops/internal/ssh"
+	"github.com/luigiverona/ops/internal/testpkg"
 )
 
 type stateRunner struct {
@@ -49,6 +50,9 @@ func TestMalformedPacmanConfigurationFailsClosed(t *testing.T) {
 }
 
 func (f *stateRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
+	if result, ok := testpkg.Query(spec); ok {
+		return result, nil
+	}
 	switch spec.Name {
 	case "pacman":
 		if len(spec.Args) > 0 && spec.Args[0] == "-Qq" {
@@ -62,9 +66,9 @@ func (f *stateRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) 
 		return run.Result{}, nil
 	case "flatpak":
 		if len(spec.Args) > 0 && spec.Args[0] == "remotes" {
-			return run.Result{Stdout: "flathub\n"}, nil
+			return testpkg.FlatpakRemotes(testpkg.Flathub), nil
 		}
-		return run.Result{}, nil
+		return run.Result{Stdout: "[]"}, nil
 	case "git":
 		if spec.Args[len(spec.Args)-1] == "user.name" {
 			return run.Result{Stdout: "User\n"}, nil

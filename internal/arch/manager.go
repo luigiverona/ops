@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/luigiverona/ops/internal/archrepo"
 	"github.com/luigiverona/ops/internal/run"
 )
 
@@ -104,8 +105,28 @@ func (m Manager) EnableMultilib(ctx context.Context) error {
 	return nil
 }
 
-func (m Manager) FullUpgrade(ctx context.Context) error {
-	_, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "pacman", "-Syu"}, Interactive: true, Interaction: "pacman transaction decisions"})
+func (m Manager) FullUpgrade(ctx context.Context, targets ...string) error {
+	args := []string{"-n", "pacman", "-Syu"}
+	for _, target := range targets {
+		if _, _, err := archrepo.Split(target); err != nil {
+			return err
+		}
+	}
+	if len(targets) > 0 {
+		args = append(append(args, "--"), targets...)
+	}
+	// A full upgrade must include available rebuilds from every configured
+	// repository. Filtering here can leave custom clients linked against an old
+	// official library ABI. Managed targets remain qualified; their subsequent
+	// sync installations use runOfficial and verify source identity separately.
+	configuration, err := m.Runner.Run(ctx, run.Spec{Name: "pacman-conf", FailureOutput: run.FailureStderr})
+	if err != nil {
+		return err
+	}
+	if err := archrepo.ValidateConfigured(configuration.Stdout); err != nil {
+		return err
+	}
+	_, err = m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: args, Interactive: true, Interaction: "pacman transaction decisions"})
 	return err
 }
 
@@ -113,14 +134,46 @@ func (m Manager) Install(ctx context.Context, packages []string, asDeps bool) er
 	if len(packages) == 0 {
 		return nil
 	}
-	args := []string{"-n", "pacman", "-S", "--needed", "--noconfirm"}
+	transaction, err := archrepo.Transaction(ctx, m.Runner, packages)
+	if err != nil {
+		return fmt.Errorf("validate official installation transaction: %w", err)
+	}
+	if asDeps && len(transaction) != len(packages) {
+		return errors.New("official dependency transaction changed after planning; rerun ops")
+	}
+	selected := map[string]bool{}
+	for _, target := range transaction {
+		selected[target] = true
+	}
+	for _, target := range packages {
+		if !selected[target] {
+			return fmt.Errorf("official transaction omitted requested target %s", target)
+		}
+	}
+	// Keep requested targets qualified. runOfficial also excludes custom repos
+	// from implicit dependency resolution. Leaving pulled dependencies implicit
+	// preserves pacman's install reasons. Do not use --needed: an equal version
+	// is not evidence of authenticated official contents.
+	args := []string{"-n", "pacman", "-S", "--noconfirm"}
 	if asDeps {
 		args = append(args, "--asdeps")
 	}
 	args = append(args, "--")
 	args = append(args, packages...)
-	_, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: args, StreamOutput: true, AllowTruncatedOutput: true})
-	return err
+	err = m.runOfficial(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: args, StreamOutput: true, AllowTruncatedOutput: true})
+	if err != nil {
+		return err
+	}
+	for _, target := range transaction {
+		match, err := archrepo.InstalledMatch(ctx, m.Runner, target)
+		if err != nil {
+			return err
+		}
+		if !match {
+			return fmt.Errorf("installed package does not match authenticated official contents for %s", target)
+		}
+	}
+	return nil
 }
 
 // InstallArtifacts copies already-open normal-user artifacts into a protected
@@ -246,7 +299,7 @@ func (m Manager) installArtifacts(ctx context.Context, paths []string, asDeps bo
 	}
 	args = append(args, "--")
 	args = append(args, paths...)
-	if _, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: args, StreamOutput: true, AllowTruncatedOutput: true}); err != nil {
+	if err := m.runOfficial(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: args, StreamOutput: true, AllowTruncatedOutput: true}); err != nil {
 		return err
 	}
 	return nil

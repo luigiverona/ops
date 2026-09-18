@@ -12,12 +12,16 @@ import (
 	"testing"
 
 	"github.com/luigiverona/ops/internal/run"
+	"github.com/luigiverona/ops/internal/testpkg"
 )
 
 type managerRunner struct{ calls []run.Spec }
 
 func (f *managerRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
 	f.calls = append(f.calls, spec)
+	if result, ok := testpkg.Query(spec); ok {
+		return result, nil
+	}
 	args := spec.Args
 	if spec.Name == "sudo" && len(args) > 0 && args[0] == "-n" {
 		args = args[1:]
@@ -47,21 +51,27 @@ func TestPacmanCommandsNeverCreatePartialUpgrade(t *testing.T) {
 	if err := m.FullUpgrade(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Install(context.Background(), []string{"firefox"}, false); err != nil {
+	if err := m.Install(context.Background(), []string{"extra/firefox"}, false); err != nil {
 		t.Fatal(err)
 	}
-	first := strings.Join(f.calls[0].Args, " ")
-	second := strings.Join(f.calls[1].Args, " ")
-	if f.calls[0].Name != "sudo" || !f.calls[0].Interactive || first != "-n pacman -Syu" {
-		t.Fatalf("full upgrade changed from its interactive command shape: %#v", f.calls[0])
+	first := strings.Join(f.calls[1].Args, " ")
+	var transaction run.Spec
+	for _, call := range f.calls {
+		if call.Name == "sudo" && len(call.Args) > 1 && call.Args[1] == "unshare" {
+			transaction = call
+		}
+	}
+	second := strings.Join(testpkg.TransactionSpec(transaction).Args, " ")
+	if f.calls[1].Name != "sudo" || !f.calls[1].Interactive || first != "-n pacman -Syu" {
+		t.Fatalf("full upgrade changed from its interactive command shape: %#v", f.calls[1])
 	}
 	if strings.Contains(first, "--noconfirm") || strings.Contains(first, "pacman -Sy ") {
 		t.Fatalf("unsafe upgrade: %s", first)
 	}
-	if !strings.Contains(second, "pacman -S --needed") || strings.Contains(second, " -Sy") {
+	if !strings.Contains(second, "pacman -S --noconfirm") || strings.Contains(second, " -Sy") {
 		t.Fatalf("unsafe install: %s", second)
 	}
-	if !f.calls[1].StreamOutput || f.calls[1].Interactive || f.calls[1].Stdin != nil {
+	if !transaction.StreamOutput || transaction.Interactive || transaction.Stdin != nil {
 		t.Fatalf("approved transaction must stream output without consuming input: %#v", f.calls[1])
 	}
 }
@@ -90,17 +100,27 @@ func TestManagerEnablesFixtureAtomically(t *testing.T) {
 func TestBootstrapPackageCommandsAreExactNoninteractiveSudoTransactions(t *testing.T) {
 	runner := &managerRunner{}
 	manager := Manager{Runner: runner}
-	if err := manager.Install(context.Background(), []string{"llvm-libs", "rust"}, true); err != nil {
+	if err := manager.Install(context.Background(), []string{"extra/llvm-libs", "extra/rust"}, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.MarkExplicit(context.Background(), []string{"rust"}); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
-		"-n pacman -S --needed --noconfirm --asdeps -- llvm-libs rust",
+		"-n pacman -S --noconfirm --asdeps -- extra/llvm-libs extra/rust",
 		"-n pacman -D --asexplicit -- rust",
 	}
-	for i, call := range runner.calls {
+	var mutations []run.Spec
+	for _, call := range runner.calls {
+		native := testpkg.TransactionSpec(call)
+		if native.Name == "sudo" && len(native.Args) > 1 && native.Args[1] == "pacman" {
+			mutations = append(mutations, native)
+		}
+	}
+	if len(mutations) != len(want) {
+		t.Fatalf("missing transactions: %v", mutations)
+	}
+	for i, call := range mutations {
 		if call.Name != "sudo" || call.Interactive || strings.Join(call.Args, " ") != want[i] {
 			t.Fatalf("call[%d]=%#v want=%q", i, call, want[i])
 		}
@@ -125,6 +145,13 @@ type artifactStageRunner struct {
 }
 
 func (f *artifactStageRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
+	if strings.Contains(strings.Join(spec.Args, " "), "ops-paru-OFFICIAL") {
+		if result, ok := testpkg.OfficialStage(spec); ok {
+			return result, nil
+		}
+	}
+	spec = testpkg.TransactionSpec(spec)
+
 	f.calls = append(f.calls, spec)
 	if spec.Name == "pacman" && len(spec.Args) == 2 && spec.Args[0] == "-Qe" {
 		if f.failExplicitVerify {
@@ -133,6 +160,9 @@ func (f *artifactStageRunner) Run(_ context.Context, spec run.Spec) (run.Result,
 		return run.Result{}, nil
 	}
 	if spec.Name != "sudo" || len(spec.Args) < 2 || spec.Args[0] != "-n" {
+		if result, ok := testpkg.Query(spec); ok {
+			return result, nil
+		}
 		return run.Result{}, errors.New("unexpected non-privileged staging command")
 	}
 	args := spec.Args[1:]
@@ -530,13 +560,24 @@ type failingSudoRunner struct{ calls []run.Spec }
 
 func (f *failingSudoRunner) Run(_ context.Context, spec run.Spec) (run.Result, error) {
 	f.calls = append(f.calls, spec)
+	if spec.Name == "pacman" || spec.Name == "pacman-conf" {
+		if result, ok := testpkg.Query(spec); ok {
+			return result, nil
+		}
+	}
 	return run.Result{}, errors.New("sudo timestamp unavailable")
 }
 
 func TestBootstrapSudoFailureNeverRetriesInteractively(t *testing.T) {
 	runner := &failingSudoRunner{}
-	err := (Manager{Runner: runner}).Install(context.Background(), []string{"rust"}, true)
-	if err == nil || len(runner.calls) != 1 || runner.calls[0].Interactive || strings.Join(runner.calls[0].Args, " ") != "-n pacman -S --needed --noconfirm --asdeps -- rust" {
+	err := (Manager{Runner: runner}).Install(context.Background(), []string{"extra/rust"}, true)
+	var sudoCalls []run.Spec
+	for _, call := range runner.calls {
+		if call.Name == "sudo" {
+			sudoCalls = append(sudoCalls, call)
+		}
+	}
+	if err == nil || len(sudoCalls) != 1 || sudoCalls[0].Interactive || sudoCalls[0].Args[0] != "-n" {
 		t.Fatalf("err=%v calls=%#v", err, runner.calls)
 	}
 }

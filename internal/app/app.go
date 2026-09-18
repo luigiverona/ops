@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/luigiverona/ops/internal/archrepo"
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/inspect"
 	"github.com/luigiverona/ops/internal/plan"
@@ -55,5 +56,5 @@ func (a Runtime) inspectState(ctx context.Context, cfg config.Config) (plan.Stat
 
 func DefaultRuntime() Runtime {
 	home, _ := os.UserHomeDir()
-	return Runtime{Runner: run.Exec{In: os.Stdin, Out: os.Stdout, Err: os.Stderr}, Out: os.Stdout, Err: os.Stderr, Home: home, EUID: os.Geteuid}
+	return Runtime{Runner: archrepo.NewTrustedRunner(run.Exec{In: os.Stdin, Out: os.Stdout, Err: os.Stderr}), Out: os.Stdout, Err: os.Stderr, Home: home, EUID: os.Geteuid}
 }

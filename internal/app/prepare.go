@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/luigiverona/ops/internal/arch"
+	"github.com/luigiverona/ops/internal/archrepo"
 	"github.com/luigiverona/ops/internal/aur"
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/flatpak"
@@ -55,8 +56,13 @@ func (a Runtime) Prepare(ctx context.Context) (code int) {
 	}
 	defer tty.Close()
 	if guarded, ok := a.Runner.(cancellationRunner); ok {
-		if _, ok := guarded.Runner.(run.Exec); ok {
+		switch runner := guarded.Runner.(type) {
+		case run.Exec:
 			a.Runner = cancellationRunner{run.Exec{In: tty, Out: a.Out, Err: a.Err}}
+		case *archrepo.TrustedRunner:
+			if _, ok := runner.Runner.(run.Exec); ok {
+				a.Runner = cancellationRunner{runner.WithRunner(run.Exec{In: tty, Out: a.Out, Err: a.Err})}
+			}
 		}
 	}
 	terminal := ui.UI{In: tty, Out: tty}
@@ -71,6 +77,15 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 	}
 	a.showPlan(p)
 	plannedProblems := planIssues(p)
+	for _, component := range plan.CoreOrder {
+		name := plan.CorePackages[component]
+		if component == "flatpak" && p.Core[component] != "not required" {
+			name = "flatpak"
+		}
+		if evidence, ok := p.CoreOfficial[name]; ok && evidence.Action() == archrepo.Manual {
+			return execution{git: p.GitStatus, ssh: p.SSHStatus, github: p.GitHubStatus, problems: plannedProblems}
+		}
+	}
 	if !p.HasActions() {
 		return execution{git: p.GitStatus, ssh: p.SSHStatus, github: p.GitHubStatus, problems: plannedProblems}
 	}
@@ -119,17 +134,24 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 			return execution{status: Fatal}
 		}
 		a.progress("Updating system...")
-		if err := archManager.FullUpgrade(ctx); err != nil {
+		if err := archManager.FullUpgrade(ctx, p.UpgradeTargets...); err != nil {
 			return stop("Arch system upgrade", "core", err, "package installation cannot continue safely")
 		}
 	}
+	// Reinspect approved repairs after the full upgrade. A completed update must
+	// not trigger an equal-version reinstall from a stale pre-upgrade plan.
+	pending, err := a.pendingCoreRepairs(ctx, p)
+	if err != nil {
+		return stop("core verification", "core", err, "reconcile the full system upgrade before continuing")
+	}
+	p.CorePackages = pending
 	if len(p.CorePackages) > 0 {
 		if err := a.beginMutation(ctx); err != nil {
 			return execution{status: Fatal}
 		}
 		a.progress("Installing packages...")
 	}
-	if err := archManager.Install(ctx, p.CorePackages, false); err != nil {
+	if err := archManager.Install(ctx, coreTargets(p.CorePackages), false); err != nil {
 		return stop("core packages", "core", err, "required workstation capabilities are unavailable")
 	}
 
@@ -145,6 +167,16 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		}
 		a.progress("Preparing Flatpak applications...")
 		if err := flatpakManager.AddFlathub(ctx); err != nil {
+			return stop("flathub", "core", err, "Flatpak application support is unavailable")
+		}
+	}
+
+	if p.EnableFlathub {
+		if err := a.beginMutation(ctx); err != nil {
+			return execution{status: Fatal}
+		}
+		a.progress("Enabling user Flathub...")
+		if err := flatpakManager.EnableFlathub(ctx); err != nil {
 			return stop("flathub", "core", err, "Flatpak application support is unavailable")
 		}
 	}
@@ -270,8 +302,12 @@ func (a Runtime) verifyCore(ctx context.Context, p plan.Plan) error {
 		packages = append(packages, "flatpak")
 	}
 	for _, pkg := range packages {
-		if _, err := a.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Q", pkg}}); err != nil {
+		match, err := archrepo.InstalledMatch(ctx, a.Runner, coreTargets([]string{pkg})[0])
+		if err != nil {
 			return fmt.Errorf("verify prerequisite %s: %w", pkg, err)
+		}
+		if !match {
+			return fmt.Errorf("prerequisite %s does not match authenticated official package contents", pkg)
 		}
 	}
 	return nil
@@ -344,4 +380,37 @@ func (a Runtime) reviewAUR(ctx context.Context, terminal ui.UI, application plan
 		return errReviewDeclined
 	}
 	return nil
+}
+
+// Core prerequisites have fixed official identities on the supported Arch baseline.
+func coreTargets(names []string) []string {
+	targets := make([]string, 0, len(names))
+	for _, name := range names {
+		targets = append(targets, archrepo.Prerequisite(name))
+	}
+	return targets
+}
+
+func (a Runtime) pendingCoreRepairs(ctx context.Context, p plan.Plan) ([]string, error) {
+	var pending []string
+	for _, pkg := range p.CorePackages {
+		// Missing packages still need the approved installation. Existing packages
+		// carry typed inspection evidence in production plans.
+		if _, installed := p.CoreOfficial[pkg]; !installed {
+			pending = append(pending, pkg)
+			continue
+		}
+		evidence, err := archrepo.InspectInstalled(ctx, a.Runner, coreTargets([]string{pkg})[0])
+		if err != nil {
+			return nil, err
+		}
+		if evidence.Ready() {
+			continue
+		}
+		if evidence.Action() != archrepo.Repair {
+			return nil, fmt.Errorf("%s: %s; reconcile administrator upgrade policy", pkg, evidence.Description())
+		}
+		pending = append(pending, pkg)
+	}
+	return pending, nil
 }

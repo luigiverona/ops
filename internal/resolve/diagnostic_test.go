@@ -153,3 +153,18 @@ func TestInconclusiveTransactionMetadataIsAQueryFailure(t *testing.T) {
 		}
 	}
 }
+
+func TestOfficialAPIAmbiguousJSON(t *testing.T) {
+	for _, body := range []string{
+		`{"version":2,"valid":true,"valid":false,"count":0,"page":1,"num_pages":1,"results":[]}`,
+		`{"version":2,"valid":true,"count":1,"page":1,"num_pages":1,"results":[{"pkgname":"example","repo":"custom","repo":"extra","arch":"x86_64"}]}`,
+		`{"version":2,"valid":true,"count":2,"page":1,"num_pages":1,"results":[{"pkgname":"example","repo":"core","arch":"any"},{"pkgname":"example","repo":"extra","arch":"x86_64"}]}`,
+	} {
+		client := &http.Client{Transport: roundTrip(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+		})}
+		if _, found, err := (Resolver{Client: client}).archPackage(context.Background(), "example"); err == nil || found {
+			t.Fatal("ambiguous official API evidence accepted", body)
+		}
+	}
+}

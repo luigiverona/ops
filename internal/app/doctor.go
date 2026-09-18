@@ -45,7 +45,7 @@ func (a Runtime) Doctor(ctx context.Context) (code int) {
 	if state.ManagedSSHIdentity && state.SSHConfigurationReady {
 		p.SSHStatus = "ready"
 	}
-	if state.Installed["github-cli"] {
+	if state.OfficialMatches["github-cli"] != "" {
 		configured, err := (githubops.Manager{Runner: a.Runner}).Configured(ctx)
 		if err != nil {
 			return a.doctorFatal(fmt.Errorf("could not inspect local GitHub configuration; run gh auth status to diagnose: %w", err))
@@ -85,7 +85,7 @@ func (a Runtime) reportDoctor(p plan.Plan, configErr error, missingConfig bool) 
 		reportEvidence(a.Out, application.Err)
 		if application.State.Actionable() {
 			prepare = true
-			if application.State == plan.Install {
+			if application.State == plan.Install && application.Cause == "" {
 				fmt.Fprintln(a.Out, "    The declared application is not installed.")
 			}
 			if len(application.Services) > 0 {

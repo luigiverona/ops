@@ -6,6 +6,7 @@ import (
 
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/plan"
+	"github.com/luigiverona/ops/internal/resolve"
 	"github.com/luigiverona/ops/internal/ui"
 )
 
@@ -35,6 +36,8 @@ func (a Runtime) preparePlan(ctx context.Context, cfg config.Config, p plan.Plan
 		}
 		if err != nil {
 			result.inspectionErr = err
+		} else if err := a.verifyFinalAURBindings(ctx, cfg, observed, p); err != nil {
+			result.inspectionErr = err
 		} else {
 			result.observe(plan.Build(cfg, observed, nil))
 		}
@@ -42,9 +45,43 @@ func (a Runtime) preparePlan(ctx context.Context, cfg config.Config, p plan.Plan
 	return a.reportExecution(result)
 }
 
+// Keep approved AUR source bindings alive across subsequent application work.
+// Local presence alone cannot prove that an earlier build's official providers
+// still have the identities approved for that build. This performs queries only.
+func (a Runtime) verifyFinalAURBindings(ctx context.Context, cfg config.Config, observed plan.State, approved plan.Plan) error {
+	declared := make(map[config.Application]bool, len(cfg.Applications))
+	for _, declaration := range cfg.Applications {
+		declared[declaration] = true
+	}
+	resolver := resolve.Resolver{Runner: a.Runner}
+	for _, application := range approved.Applications {
+		if application.Declaration.Source != config.AUR || !declared[application.Declaration] || !plan.IsInstalled(application.Declaration, observed) {
+			continue
+		}
+		for _, binding := range application.AURDependencies {
+			current, err := resolver.OfficialDependency(ctx, binding.Requirement)
+			if err != nil {
+				return fmt.Errorf("final AUR dependency %s: %w", binding.Requirement, err)
+			}
+			if !current.Satisfied {
+				for _, target := range current.Packages {
+					if evidence, ok := current.States[target]; ok && !evidence.Ready() {
+						return fmt.Errorf("final AUR dependency %s: %s: %s", binding.Requirement, target, evidence.Description())
+					}
+				}
+				return fmt.Errorf("final AUR dependency %s is no longer satisfied", binding.Requirement)
+			}
+			if err := a.revalidateOfficialBinding(ctx, current, binding); err != nil {
+				return fmt.Errorf("final AUR dependency %s: %w", binding.Requirement, err)
+			}
+		}
+	}
+	return nil
+}
+
 // observe attaches the final state to the matching issue rather than inventing
-// a second command failure. Source resolution is deliberately not repeated:
-// the final inspection proves local state, not source availability.
+// a second command failure. Declaration discovery is not repeated; approved
+// AUR bindings are revalidated separately before observing local readiness.
 func (r *execution) observe(p plan.Plan) {
 	r.inspected = true
 	r.git, r.ssh, r.github = p.GitStatus, p.SSHStatus, p.GitHubStatus
@@ -81,6 +118,12 @@ func (r *execution) observe(p plan.Plan) {
 			}
 		default:
 			state = "the declared application is not installed from its selected source"
+			if application.Declaration.Source == config.Pacman {
+				state = "the declared package has no authenticated official content match"
+			}
+		}
+		if application.OfficialState != nil && application.State != plan.Ready {
+			state = application.OfficialState.Description()
 		}
 		record(application.Declaration.Identifier, string(application.Declaration.Source), state, application.State != plan.Ready)
 	}

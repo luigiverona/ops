@@ -151,10 +151,10 @@ func TestPromptTerminalHelper(t *testing.T) {
 		}
 	}
 	for _, call := range runner.calls {
-		if call.Name == "sudo" && mode == "git-after" {
+		if (call.Name == "sudo" || call.Name == "pacman-conf") && mode == "git-after" {
 			continue
 		}
-		if call.Name == "pacman" && len(call.Args) > 0 && call.Args[0] == "-Q" {
+		if call.Name == "pacman" && len(call.Args) > 0 && (call.Args[0] == "-Q" || call.Args[0] == "-Qi" || call.Args[0] == "-Si") {
 			continue
 		}
 		if call.Name == "git" && len(call.Args) > 2 && call.Args[2] == "--get" {
@@ -195,7 +195,7 @@ func TestCancellationAfterMutationStopsEntireLifecycle(t *testing.T) {
 	a := Runtime{Runner: runner, Out: &out, Err: &out}
 	p := plan.Plan{FullUpgrade: true, CorePackages: []string{"git"}, ConfigureGit: true, CreateSSHIdentity: true}
 	code := a.preparePlan(ctx, config.Config{}, p, ui.UI{In: strings.NewReader("y\n"), Out: &out})
-	if code != Fatal || runner.mutations != 1 || len(runner.calls) != 2 || strings.Contains(out.String(), "Git name:") || strings.Count(out.String(), "Interrupted.") != 1 || strings.Contains(out.String(), "Issues") {
+	if code != Fatal || runner.mutations != 1 || len(runner.calls) != 3 || strings.Contains(out.String(), "Git name:") || strings.Count(out.String(), "Interrupted.") != 1 || strings.Contains(out.String(), "Issues") {
 		t.Fatalf("code=%d calls=%v\n%s", code, runner.calls, &out)
 	}
 }

@@ -10,7 +10,9 @@ import (
 	"strings"
 
 	"github.com/luigiverona/ops/internal/arch"
+	"github.com/luigiverona/ops/internal/archrepo"
 	"github.com/luigiverona/ops/internal/config"
+	"github.com/luigiverona/ops/internal/flatpak"
 	gitops "github.com/luigiverona/ops/internal/git"
 	githubops "github.com/luigiverona/ops/internal/github"
 	"github.com/luigiverona/ops/internal/plan"
@@ -30,12 +32,13 @@ type Workstation struct {
 	SkipAgent bool
 }
 
-// Local inspects package and user state without network calls or mutations.
+// Local inspects workstation state without package or configuration mutation.
+// Official content evidence requires independent HTTPS metadata.
 // Optional tools being absent is state, not an inspection failure.
 func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 	state := plan.State{
 		Services:  map[string]bool{},
-		Installed: map[string]bool{}, Explicit: map[string]bool{}, Foreign: map[string]bool{}, Flatpaks: map[string]bool{},
+		Installed: map[string]bool{}, Explicit: map[string]bool{}, Foreign: map[string]bool{}, Flatpaks: map[string]string{},
 		SSHHostKeyFreshness: plan.SSHHostKeyFreshnessUnknown,
 	}
 	if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Qq"}}); err == nil {
@@ -53,22 +56,43 @@ func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 	} else {
 		return state, err
 	}
-	if state.Installed["flatpak"] {
-		if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "flatpak", Args: []string{"list", "--user", "--app", "--columns=application"}}); err == nil {
-			addLines(state.Flatpaks, result.Stdout)
-		} else {
+	var names []string
+	wanted := map[string]bool{"git": true, "openssh": true, "github-cli": true, "flatpak": true}
+	for _, app := range w.Applications {
+		if app.Source == config.Pacman {
+			wanted[app.Identifier] = true
+		}
+	}
+	for name := range wanted {
+		if state.Installed[name] {
+			names = append(names, name)
+		}
+	}
+	var err error
+	state.OfficialStates, err = archrepo.InstalledStates(ctx, w.Runner, names)
+	if err != nil {
+		return state, err
+	}
+	state.OfficialMatches = map[string]string{}
+	for name, evidence := range state.OfficialStates {
+		// Authenticated older tools are safe to inspect; currency is planned separately.
+		if evidence.Authenticity == archrepo.VerifiedOfficial {
+			state.OfficialMatches[name] = evidence.Target
+		}
+	}
+	if state.OfficialMatches["flatpak"] != "" {
+		manager := flatpak.Manager{Runner: w.Runner}
+		state.Flatpaks, err = manager.Applications(ctx)
+		if err != nil {
 			return state, fmt.Errorf("inspect installed Flatpak applications: %w", err)
 		}
-
-		if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "flatpak", Args: []string{"remotes", "--user", "--columns=name"}}); err == nil {
-			for _, line := range strings.Fields(result.Stdout) {
-				state.Flathub = state.Flathub || line == "flathub"
-			}
-		} else {
+		remotes, err := manager.Remotes(ctx)
+		if err != nil {
 			return state, fmt.Errorf("inspect Flatpak remotes: %w", err)
 		}
-
+		state.Flathub = remotes["flathub"]
 	}
+
 	path := w.PacmanConf
 	if path == "" {
 		path = "/etc/pacman.conf"
@@ -81,7 +105,7 @@ func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 	} else {
 		return state, fmt.Errorf("read pacman configuration: %w", err)
 	}
-	if state.Installed["git"] {
+	if state.OfficialMatches["git"] != "" {
 		identity, err := (gitops.Manager{Runner: w.Runner}).Inspect(ctx)
 		if err != nil {
 			return state, err
@@ -94,42 +118,45 @@ func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 			state.GitEmail = ""
 		}
 	}
-	sshManager := sshops.Manager{Home: w.Home, Runner: w.Runner, HTTP: w.SSHHTTP, MetadataURL: w.SSHMetadataURL}
-	identities, err := sshManager.Discover(ctx)
-	if err != nil {
-		return state, fmt.Errorf("inspect SSH identities: %w", err)
-	}
-	managedPrivate := filepath.Join(w.Home, ".ssh", "ops")
-	managedPublic := managedPrivate + ".pub"
-	for _, identity := range identities {
-		if identity.PrivatePath == managedPrivate {
-			if identity.PublicPath == managedPublic {
-				state.ManagedSSHIdentity = true
-				state.ManagedSSHFingerprint = identity.Fingerprint
-			}
-			continue
-		}
-		state.UnrelatedSSHIdentities++
-	}
-	if state.ManagedSSHIdentity {
-		state.SSHConfigurationReady, err = sshManager.InspectLocalGitHubConfiguration(ctx)
+	if state.OfficialMatches["openssh"] != "" {
+		sshManager := sshops.Manager{Home: w.Home, Runner: w.Runner, HTTP: w.SSHHTTP, MetadataURL: w.SSHMetadataURL}
+		identities, err := sshManager.Discover(ctx)
 		if err != nil {
-			return state, err
+			return state, fmt.Errorf("inspect SSH identities: %w", err)
 		}
-	}
-	if !w.SkipAgent && state.Installed["openssh"] && (!state.ManagedSSHIdentity || !state.SSHConfigurationReady) {
-		agentIdentities, available, err := sshManager.AgentIdentities(ctx)
-		if err != nil {
-			return state, fmt.Errorf("inspect ssh-agent identities: %w", err)
-		}
-		state.SSHAgentAvailable = available
-		for _, identity := range agentIdentities {
-			if state.ManagedSSHFingerprint != "" && identity.Fingerprint == state.ManagedSSHFingerprint {
-				state.ManagedSSHAgentIdentity = true
+		managedPrivate := filepath.Join(w.Home, ".ssh", "ops")
+		managedPublic := managedPrivate + ".pub"
+		for _, identity := range identities {
+			if identity.PrivatePath == managedPrivate {
+				if identity.PublicPath == managedPublic {
+					state.ManagedSSHIdentity = true
+					state.ManagedSSHFingerprint = identity.Fingerprint
+				}
 				continue
 			}
-			state.UnrelatedSSHAgentIdentities++
+			state.UnrelatedSSHIdentities++
 		}
+		if state.ManagedSSHIdentity {
+			state.SSHConfigurationReady, err = sshManager.InspectLocalGitHubConfiguration(ctx)
+			if err != nil {
+				return state, err
+			}
+		}
+		if !w.SkipAgent && state.OfficialMatches["openssh"] != "" && (!state.ManagedSSHIdentity || !state.SSHConfigurationReady) {
+			agentIdentities, available, err := sshManager.AgentIdentities(ctx)
+			if err != nil {
+				return state, fmt.Errorf("inspect ssh-agent identities: %w", err)
+			}
+			state.SSHAgentAvailable = available
+			for _, identity := range agentIdentities {
+				if state.ManagedSSHFingerprint != "" && identity.Fingerprint == state.ManagedSSHFingerprint {
+					state.ManagedSSHAgentIdentity = true
+					continue
+				}
+				state.UnrelatedSSHAgentIdentities++
+			}
+		}
+
 	}
 
 	for _, app := range w.Applications {
@@ -168,7 +195,7 @@ func serviceState(value string, states ...string) bool {
 // It never logs in, authorizes sudo, or writes user files.
 func (w Workstation) External(ctx context.Context, state plan.State) (plan.State, error) {
 	sshManager := sshops.Manager{Home: w.Home, Runner: w.Runner, HTTP: w.SSHHTTP, MetadataURL: w.SSHMetadataURL}
-	if state.ManagedSSHIdentity {
+	if state.OfficialMatches["openssh"] != "" && state.ManagedSSHIdentity {
 		configuration, inspectErr := sshManager.InspectGitHubConfiguration(ctx)
 		state.SSHConfigurationReady = configuration.LocalReady
 		switch configuration.Freshness {
@@ -186,14 +213,14 @@ func (w Workstation) External(ctx context.Context, state plan.State) (plan.State
 		}
 	}
 	githubManager := githubops.Manager{Runner: w.Runner}
-	if state.Installed["github-cli"] {
+	if state.OfficialMatches["github-cli"] != "" {
 		var err error
 		state.GitHubAuth, err = githubManager.InspectAuthentication(ctx)
 		if err != nil {
 			return state, err
 		}
 	}
-	if state.GitHubAuth {
+	if state.OfficialMatches["github-cli"] != "" && state.GitHubAuth {
 		keys, err := githubManager.Keys(ctx)
 		if err != nil {
 			if githubops.IsSSHKeyScopeError(err) {

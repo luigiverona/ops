@@ -4,8 +4,10 @@ package plan
 import (
 	"sort"
 
+	"github.com/luigiverona/ops/internal/archrepo"
 	"github.com/luigiverona/ops/internal/aurmeta"
 	"github.com/luigiverona/ops/internal/config"
+	"github.com/luigiverona/ops/internal/flatpak"
 )
 
 var CorePackages = map[string]string{
@@ -30,9 +32,11 @@ type State struct {
 	Services                      map[string]bool // required services enabled and active
 	Installed                     map[string]bool
 	Explicit                      map[string]bool
+	OfficialStates                map[string]archrepo.InstalledState
+	OfficialMatches               map[string]string // execution gate: authenticated exact-version content; currency lives in OfficialStates
 	Foreign                       map[string]bool
-	Flatpaks                      map[string]bool
-	Flathub                       bool
+	Flatpaks                      map[string]string // application ID -> origin
+	Flathub                       flatpak.Remote
 	Multilib                      bool
 	GitName                       string
 	GitEmail                      string
@@ -69,15 +73,19 @@ type AURSource struct {
 // the exact repository package selected by pacman's native resolver.
 type OfficialDependency struct {
 	Requirement string
-	Provider    string
-	Packages    []string
+	Provider    string   // validated repo/name, including an already-satisfied provider
+	Packages    []string // concrete repo/name closure, including satisfied dependencies
+	States      map[string]archrepo.InstalledState
 	Satisfied   bool
 }
 
 // BuildPackage is one concrete official package installed before building a
 // pinned AUR source.
 type BuildPackage struct {
+	Update     bool // normal version/dependency update, never a content repair
+	Repair     bool // existing package needs authenticated repair/reverification
 	Name       string
+	Repository string
 	Purposes   []string
 	Provides   []string
 	AsExplicit bool
@@ -85,6 +93,8 @@ type BuildPackage struct {
 
 // Application records one requested application's planned outcome.
 type Application struct {
+	OfficialState      *archrepo.InstalledState
+	Package            Package
 	EnableMultilib     bool
 	Declaration        config.Application
 	State              ApplicationState
@@ -102,12 +112,15 @@ type Application struct {
 
 // Plan is a complete, immutable plan presented before authorization.
 type Plan struct {
+	CoreOfficial             map[string]archrepo.InstalledState
 	Core                     map[string]string
 	Applications             []Application
 	CorePackages             []string
 	EnableMultilib           bool
 	FullUpgrade              bool
+	UpgradeTargets           []string // installed managed official targets protected during the system upgrade
 	AddFlathub               bool
+	EnableFlathub            bool
 	GitStatus                string
 	SSHStatus                string
 	GitHubStatus             string
@@ -131,12 +144,20 @@ type Facts map[config.Application]Application
 
 // Build constructs a deterministic plan from validated intent and observed facts.
 func Build(cfg config.Config, state State, facts Facts) Plan {
-	p := Plan{Core: make(map[string]string)}
+	p := Plan{Core: make(map[string]string), CoreOfficial: make(map[string]archrepo.InstalledState)}
+	for _, name := range []string{"git", "openssh", "github-cli", "flatpak"} {
+		if evidence, ok := state.OfficialStates[name]; ok {
+			p.CoreOfficial[name] = evidence
+		}
+	}
 	for _, component := range CoreOrder {
 		p.Core[component] = coreState(component, state)
 	}
 	for component, pkg := range CorePackages {
-		if p.Core[component] != "ready" {
+		if state.Installed[pkg] && state.OfficialStates[pkg].Currency != archrepo.NewerThanCurrent {
+			p.UpgradeTargets = append(p.UpgradeTargets, archrepo.Prerequisite(pkg))
+		}
+		if p.Core[component] != "ready" && packageAction(pkg, state) == archrepo.Repair {
 			p.CorePackages = append(p.CorePackages, pkg)
 		}
 	}
@@ -146,17 +167,25 @@ func Build(cfg config.Config, state State, facts Facts) Plan {
 		wantsFlatpak = wantsFlatpak || app.Source == config.Flatpak
 	}
 	if wantsFlatpak {
-		p.Core["flatpak"] = "missing"
-		if state.Installed["flatpak"] {
-			p.Core["flatpak"] = "ready"
-		} else {
+		if state.Installed["flatpak"] && state.OfficialStates["flatpak"].Currency != archrepo.NewerThanCurrent {
+			p.UpgradeTargets = append(p.UpgradeTargets, archrepo.Prerequisite("flatpak"))
+		}
+		p.Core["flatpak"] = packageState("flatpak", state)
+		if packageAction("flatpak", state) == archrepo.Repair {
 			p.CorePackages = append(p.CorePackages, "flatpak")
 		}
 		p.Core["flathub"] = "missing"
-		if state.Flathub {
+		if state.Flathub.Ready() {
 			p.Core["flathub"] = "ready"
 		}
-		p.AddFlathub = !state.Flathub
+		p.AddFlathub = state.Flathub.Name == ""
+		p.EnableFlathub = state.Flathub.Canonical() && !state.Flathub.Enabled
+		if state.Flathub.Name != "" && !state.Flathub.Ready() {
+			p.Core["flathub"] = "incompatible Flathub remote; inspect flatpak remotes --user --show-disabled"
+			if p.EnableFlathub {
+				p.Core["flathub"] = "disabled; enable required"
+			}
+		}
 	} else {
 		p.Core["flatpak"], p.Core["flathub"] = "not required", "not required"
 	}
@@ -191,9 +220,28 @@ func Build(cfg config.Config, state State, facts Facts) Plan {
 		app := Application{Declaration: declaration}
 		if IsInstalled(declaration, state) {
 			app.State = "ready"
+			if declaration.Source == config.Pacman {
+				repo, _, _ := archrepo.Split(state.OfficialMatches[declaration.Identifier])
+				app.Package = Package{Name: declaration.Identifier, Repository: repo}
+			}
 			if declaration.Source != config.Flatpak && !state.Explicit[declaration.Identifier] {
 				app.State = "configure"
 			}
+		} else if evidence, ok := state.OfficialStates[declaration.Identifier]; declaration.Source == config.Pacman && ok {
+			repo, _, _ := archrepo.Split(evidence.Target)
+			app.Package = Package{Name: declaration.Identifier, Repository: repo}
+			app.EnableMultilib = repo == "multilib" && evidence.Action() != archrepo.Manual
+			app.OfficialState = &evidence
+			app.State, app.Cause = Install, evidence.Description()
+			if evidence.Action() == archrepo.Manual {
+				app.State = Unavailable
+			}
+		} else if declaration.Source == config.Flatpak && state.Flatpaks[declaration.Identifier] == "flathub" && state.Flathub.Canonical() {
+			app.State = Configure
+			app.Cause = "enable the canonical user Flathub remote"
+		} else if declaration.Source == config.Flatpak && (state.Flatpaks[declaration.Identifier] != "" || (state.Flathub.Name != "" && !state.Flathub.Canonical())) {
+			app.State = Failed
+			app.Cause = "incompatible Flatpak origin or flathub remote; inspect flatpak list --user --app --columns=application,origin and flatpak remotes --user --show-disabled; reconcile the source manually"
 		} else if resolved, ok := facts[declaration]; ok {
 			app = resolved
 			app.Declaration = declaration
@@ -209,26 +257,38 @@ func Build(cfg config.Config, state State, facts Facts) Plan {
 				app.State = "configure"
 			}
 		}
+		if declaration.Source == config.Pacman && state.Installed[declaration.Identifier] && state.OfficialStates[declaration.Identifier].Currency != archrepo.NewerThanCurrent && archrepo.Official(app.Package.Repository) {
+			p.UpgradeTargets = append(p.UpgradeTargets, app.Package.Repository+"/"+declaration.Identifier)
+		}
+		for _, dependency := range app.AURDependencies {
+			if dependency.Satisfied {
+				p.UpgradeTargets = append(p.UpgradeTargets, dependency.Provider)
+			}
+		}
 		p.EnableMultilib = p.EnableMultilib || app.EnableMultilib
 		p.Applications = append(p.Applications, app)
 	}
 
 	p.EnableMultilib = p.EnableMultilib && !state.Multilib
+	p.UpgradeTargets = uniqueSorted(p.UpgradeTargets)
 	p.CorePackages = uniqueSorted(p.CorePackages)
 	p.FullUpgrade = len(p.CorePackages) > 0 || hasPackageInstall(p.Applications)
+	for name, evidence := range state.OfficialStates {
+		if (name != "flatpak" || wantsFlatpak) && evidence.Action() == archrepo.Update {
+			p.FullUpgrade = true
+		}
+	}
 	return p
 }
 
 func coreState(component string, state State) string {
 	switch component {
 	case "flathub":
-		if state.Flathub {
+		if state.Flathub.Ready() {
 			return "ready"
 		}
 	default:
-		if state.Installed[CorePackages[component]] {
-			return "ready"
-		}
+		return packageState(CorePackages[component], state)
 	}
 	return "missing"
 }
@@ -237,11 +297,11 @@ func coreState(component string, state State) string {
 func IsInstalled(app config.Application, state State) bool {
 	switch app.Source {
 	case "pacman":
-		return state.Installed[app.Identifier] && !state.Foreign[app.Identifier]
+		return officialInstalled(app.Identifier, state)
 	case "aur":
 		return state.Installed[app.Identifier] && state.Foreign[app.Identifier]
 	case "flatpak":
-		return state.Flatpaks[app.Identifier]
+		return state.Flathub.Ready() && state.Flatpaks[app.Identifier] == "flathub"
 	}
 	return false
 }
@@ -286,7 +346,7 @@ func RequiredService(app config.Application) string {
 
 // HasActions is domain policy, independent of terminal rendering.
 func (p Plan) HasActions() bool {
-	if p.EnableMultilib || p.FullUpgrade || len(p.CorePackages) > 0 || p.AddFlathub ||
+	if p.EnableMultilib || p.FullUpgrade || len(p.CorePackages) > 0 || p.AddFlathub || p.EnableFlathub ||
 		p.ConfigureGit || p.CreateSSHIdentity || p.ReviewSSHIdentities || p.ReviewSSHAgent ||
 		p.LoadSSHAgent || p.ConfigureSSH || p.AuthenticateGitHub || p.RefreshGitHubSSHKeyScope ||
 		p.ReviewGitHubKeys || p.ConfigureGitHubKey {
@@ -314,3 +374,33 @@ const (
 
 func (s ApplicationState) Actionable() bool { return s == Install || s == Configure }
 func (s ApplicationState) Problem() bool    { return s != Ready && !s.Actionable() }
+
+func officialInstalled(name string, state State) bool {
+	_, matched, err := archrepo.Split(state.OfficialMatches[name])
+	if evidence, ok := state.OfficialStates[name]; ok {
+		return state.Installed[name] && evidence.Ready()
+	}
+	return state.Installed[name] && err == nil && matched == name
+}
+
+func packageState(name string, state State) string {
+	if evidence, ok := state.OfficialStates[name]; ok {
+		return evidence.Description()
+	}
+	if officialInstalled(name, state) {
+		return "ready"
+	}
+	if state.Installed[name] {
+		return "official repair/reverification required"
+	}
+	return "missing"
+}
+func packageAction(name string, state State) archrepo.Action {
+	if evidence, ok := state.OfficialStates[name]; ok {
+		return evidence.Action()
+	}
+	if officialInstalled(name, state) {
+		return archrepo.NoAction
+	}
+	return archrepo.Repair // includes missing packages in the existing install list
+}

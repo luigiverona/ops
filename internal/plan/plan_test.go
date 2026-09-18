@@ -5,10 +5,11 @@ import (
 	"testing"
 
 	"github.com/luigiverona/ops/internal/config"
+	"github.com/luigiverona/ops/internal/flatpak"
 )
 
 func convergedState() State {
-	return State{Installed: map[string]bool{"git": true, "openssh": true, "github-cli": true}, Explicit: map[string]bool{}, Foreign: map[string]bool{}, Flatpaks: map[string]bool{}, GitName: "User", GitEmail: "user@example.com", ManagedSSHIdentity: true, SSHConfigurationReady: true, SSHHostKeyFreshness: SSHHostKeyFreshnessCurrent, GitHubAuth: true, GitHubKeysKnown: true, ManagedGitHubKeyKnown: true, ManagedGitHubKey: true}
+	return State{OfficialMatches: map[string]string{"git": "extra/git", "openssh": "core/openssh", "github-cli": "extra/github-cli", "flatpak": "extra/flatpak", "base-devel": "extra/base-devel"}, Installed: map[string]bool{"git": true, "openssh": true, "github-cli": true}, Explicit: map[string]bool{}, Foreign: map[string]bool{}, Flatpaks: map[string]string{}, GitName: "User", GitEmail: "user@example.com", ManagedSSHIdentity: true, SSHConfigurationReady: true, SSHHostKeyFreshness: SSHHostKeyFreshnessCurrent, GitHubAuth: true, GitHubKeysKnown: true, ManagedGitHubKeyKnown: true, ManagedGitHubKey: true}
 }
 
 func TestBuildCapabilityDependencies(t *testing.T) {
@@ -59,9 +60,10 @@ func TestBuildConvergenceAndServiceDrift(t *testing.T) {
 		state.Installed[name] = true
 		state.Explicit[name] = true
 	}
+	state.OfficialMatches["mullvad-vpn"] = "extra/mullvad-vpn"
 	state.Foreign["example"] = true
-	state.Flatpaks["org.example.App"] = true
-	state.Flathub = true
+	state.Flatpaks["org.example.App"] = "flathub"
+	state.Flathub = flatpak.Remote{SourceTrusted: true, Name: "flathub", URL: flatpak.FlathubRepositoryURL, Enabled: true}
 	state.Services = map[string]bool{"mullvad-daemon.service": true}
 	p := Build(cfg, state, nil)
 	if p.FullUpgrade || p.AddFlathub || len(p.CorePackages) > 0 {

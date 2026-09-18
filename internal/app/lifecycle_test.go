@@ -19,6 +19,7 @@ import (
 	"github.com/luigiverona/ops/internal/resolve"
 	"github.com/luigiverona/ops/internal/run"
 	sshops "github.com/luigiverona/ops/internal/ssh"
+	"github.com/luigiverona/ops/internal/testpkg"
 	"github.com/luigiverona/ops/internal/ui"
 )
 
@@ -33,6 +34,13 @@ type lifecycleRunner struct {
 }
 
 func (r *lifecycleRunner) Run(ctx context.Context, s run.Spec) (run.Result, error) {
+	{
+		if result, ok := testpkg.OfficialStage(s); ok {
+			return result, nil
+		}
+	}
+	s = testpkg.TransactionSpec(s)
+
 	args := strings.Join(s.Args, " ")
 	r.events = append(r.events, s.Name+" "+args)
 	if s.Name == "uname" {
@@ -62,7 +70,7 @@ func (r *lifecycleRunner) Run(ctx context.Context, s run.Spec) (run.Result, erro
 		}
 	}
 	if s.Name == "sudo" {
-		if args == "-n pacman -Syu" {
+		if strings.HasPrefix(args, "-n pacman -Syu") {
 			r.upgraded = true
 		}
 		if strings.HasPrefix(args, "-n pacman -S ") {
@@ -71,6 +79,10 @@ func (r *lifecycleRunner) Run(ctx context.Context, s run.Spec) (run.Result, erro
 			}
 			_, pkgs, _ := strings.Cut(args, " -- ")
 			for _, name := range strings.Fields(pkgs) {
+				_, bare, qualified := strings.Cut(name, "/")
+				if qualified {
+					name = bare
+				}
 				r.installed[name] = true
 			}
 		}
@@ -181,8 +193,8 @@ func TestMinimalFirstRunConvergesAndSecondRunIsNoOp(t *testing.T) {
 	}
 	events := strings.Join(r.events, "\n")
 	upgrade := strings.Index(events, "sudo -n pacman -Syu")
-	install := strings.Index(events, "sudo -n pacman -S --needed --noconfirm -- git github-cli openssh")
-	verified := strings.Index(events, "pacman -Q git")
+	install := strings.Index(events, "sudo -n pacman -S --noconfirm -- extra/git extra/github-cli core/openssh")
+	verified := strings.Index(events, "pacman -Qi -- git")
 	dependent := strings.Index(events, "git config")
 	final := strings.LastIndex(events, "pacman -Qq")
 	if !(upgrade >= 0 && install > upgrade && verified > install && dependent > verified && final > dependent) {

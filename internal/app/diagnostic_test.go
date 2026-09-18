@@ -14,6 +14,7 @@ import (
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/plan"
 	"github.com/luigiverona/ops/internal/run"
+	"github.com/luigiverona/ops/internal/testpkg"
 	"github.com/luigiverona/ops/internal/ui"
 )
 
@@ -39,7 +40,7 @@ func TestDoctorSourceRecovery(t *testing.T) {
 					t.Fatal(err)
 				}
 				a.Runner = diagnosticRunner(func(ctx context.Context, s run.Spec) (run.Result, error) {
-					if s.Name == "pacman" && s.Args[0] == "-Si" {
+					if s.Name == "pacman" && s.Args[0] == "-Si" && !strings.Contains(s.Args[len(s.Args)-1], "/") {
 						return run.Result{Stderr: "database unavailable; target not found"}, errors.New("query failed")
 					}
 					return base.Run(ctx, s)
@@ -98,7 +99,7 @@ func TestDoctorInconclusiveSourceResponsesNeverBlameConfiguration(t *testing.T) 
 					t.Fatal(err)
 				}
 				a.Runner = diagnosticRunner(func(ctx context.Context, s run.Spec) (run.Result, error) {
-					if s.Name == "pacman" && s.Args[0] == "-Si" {
+					if s.Name == "pacman" && s.Args[0] == "-Si" && !strings.Contains(s.Args[len(s.Args)-1], "/") {
 						return run.Result{Stderr: "target not found"}, &run.Error{Name: "pacman", Err: diagnosticExit(1)}
 					}
 					return base.Run(ctx, s)
@@ -200,11 +201,13 @@ func TestFailureAndFinalObservationContracts(t *testing.T) {
 				cfg.Applications[0]: {State: plan.Install}, cfg.Applications[1]: {State: plan.Install},
 			})
 			later, inspected := false, false
+			attempted := map[string]bool{}
 			a.Runner = diagnosticRunner(func(ctx context.Context, s run.Spec) (run.Result, error) {
 				if s.Name == "pacman" && s.Args[0] == "-Q" {
 					return run.Result{}, nil
 				}
 				if s.Name == "flatpak" && s.Args[0] == "install" {
+					attempted[s.Args[len(s.Args)-1]] = true
 					if s.Args[len(s.Args)-1] == "org.example.Later" {
 						later = true
 						return run.Result{}, nil
@@ -224,11 +227,18 @@ func TestFailureAndFinalObservationContracts(t *testing.T) {
 					}
 				}
 				if s.Name == "flatpak" && s.Args[0] == "list" {
-					result := "org.example.Later\n"
-					if tc.present {
-						result += "org.example.App\n"
+					if !inspected {
+						var rows []string
+						for id := range attempted {
+							rows = append(rows, id)
+						}
+						return run.Result{Stdout: testpkg.FlatpakApps(rows...)}, nil
 					}
-					return run.Result{Stdout: result}, nil
+					ids := []string{"org.example.Later"}
+					if tc.present {
+						ids = append(ids, "org.example.App")
+					}
+					return run.Result{Stdout: testpkg.FlatpakApps(ids...)}, nil
 				}
 				return base.Run(ctx, s)
 			})
@@ -515,6 +525,9 @@ func TestDoctorServiceStateVersusInspectionFailure(t *testing.T) {
 					return run.Result{Stdout: output, Stderr: tc.stderr}, &run.Error{Name: "systemctl", Err: diagnosticExit(code)}
 				}
 				result, err := base.Run(ctx, s)
+				if s.Name == "pacman" && s.Args[0] == "-Sl" {
+					result.Stdout += "extra mullvad-vpn 1-1\n"
+				}
 				if s.Name == "pacman" && (s.Args[0] == "-Qq" || s.Args[0] == "-Qeq") {
 					result.Stdout += "mullvad-vpn\n"
 				}
