@@ -1,0 +1,79 @@
+run-final:
+ok  	github.com/luigiverona/ops/internal/run	35.799s
+
+run-race-final:
+ok  	github.com/luigiverona/ops/internal/run	566.216s
+
+app-final:
+ok  	github.com/luigiverona/ops/internal/app	3.201s
+
+app-race-final:
+ok  	github.com/luigiverona/ops/internal/app	6.626s
+
+affected-race-final:
+ok  	github.com/luigiverona/ops/internal/sudo	1.018s
+ok  	github.com/luigiverona/ops/internal/ssh	2.145s
+ok  	github.com/luigiverona/ops/internal/release	1.384s
+ok  	github.com/luigiverona/ops/internal/pgp	10.335s
+ok  	github.com/luigiverona/ops/internal/archrepo	2.938s
+
+full-final:
+ok  	github.com/luigiverona/ops/cmd/ops	0.108s
+ok  	github.com/luigiverona/ops/internal/app	22.829s
+ok  	github.com/luigiverona/ops/internal/arch	0.405s
+ok  	github.com/luigiverona/ops/internal/archrepo	2.077s
+ok  	github.com/luigiverona/ops/internal/archtrust	1.601s
+ok  	github.com/luigiverona/ops/internal/aur	0.017s
+ok  	github.com/luigiverona/ops/internal/aurmeta	0.006s
+ok  	github.com/luigiverona/ops/internal/config	0.007s
+ok  	github.com/luigiverona/ops/internal/flatpak	2.055s
+ok  	github.com/luigiverona/ops/internal/git	0.049s
+ok  	github.com/luigiverona/ops/internal/github	0.006s
+ok  	github.com/luigiverona/ops/internal/inspect	0.032s
+ok  	github.com/luigiverona/ops/internal/installer	5.725s
+ok  	github.com/luigiverona/ops/internal/pgp	0.429s
+ok  	github.com/luigiverona/ops/internal/plan	0.012s
+ok  	github.com/luigiverona/ops/internal/release	0.528s
+ok  	github.com/luigiverona/ops/internal/resolve	3.198s
+ok  	github.com/luigiverona/ops/internal/run	36.906s
+ok  	github.com/luigiverona/ops/internal/ssh	1.184s
+ok  	github.com/luigiverona/ops/internal/sudo	0.009s
+ok  	github.com/luigiverona/ops/internal/system	0.007s
+?   	github.com/luigiverona/ops/internal/testpkg	[no test files]
+ok  	github.com/luigiverona/ops/internal/ui	2.289s
+?   	github.com/luigiverona/ops/internal/version	[no test files]
+
+native-final:
+ok  	github.com/luigiverona/ops/internal/run	15.049s
+ok  	github.com/luigiverona/ops/internal/pgp	0.518s
+
+native-combined-final:
+ok  	github.com/luigiverona/ops/internal/run	15.064s
+ok  	github.com/luigiverona/ops/internal/pgp	0.510s
+ok  	github.com/luigiverona/ops/internal/release	2.050s
+
+native-race-final:
+ok  	github.com/luigiverona/ops/internal/run	17.020s
+ok  	github.com/luigiverona/ops/internal/pgp	1.551s
+
+service-boundary:
+ok  	github.com/luigiverona/ops/internal/run	1.060s
+
+crash-boundary:
+ok  	github.com/luigiverona/ops/internal/run	1.064s
+
+updater-native:
+ok  	github.com/luigiverona/ops/internal/release	3.071s
+
+cleanup-race:
+ok  	github.com/luigiverona/ops/internal/run	1.025s
+
+grace-race:
+ok  	github.com/luigiverona/ops/internal/run	3.064s
+
+final-race-regressions:
+ok  	github.com/luigiverona/ops/internal/run	1.012s
+
+checks-final:
+all modules verified
+vet, tagged vet, build, fish formatting, working/baseline diff and shell syntax: PASS

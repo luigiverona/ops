@@ -1,0 +1,153 @@
+{
+  "files": [
+    {
+      "path": "docs/wave-e-process-ownership-architecture.md",
+      "original_sha256": "e334f5f48d88547400cbb92b206f577c8d96b427dc449d001d3c7d78845d75df",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "7d7a38b760215860e931b5a4f8f5017b4cba13d250d6d2bca9cb6f6724e5ff5a",
+      "intentional_implementation_append": true
+    },
+    {
+      "path": "docs/wave-e-process-ownership-blocker.md",
+      "original_sha256": "bb61a4e6c4cc13e4ec2f39bb891e2cdce493a54ae4bce4b0f78c0e4b883d3efb",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "bb61a4e6c4cc13e4ec2f39bb891e2cdce493a54ae4bce4b0f78c0e4b883d3efb",
+      "intentional_implementation_append": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/cleanup.json",
+      "original_sha256": "6947d9bc514c133ce80a907dc66dbd4d76fb91d4cdbfad36bcb4f70182c647ef",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "6947d9bc514c133ce80a907dc66dbd4d76fb91d4cdbfad36bcb4f70182c647ef",
+      "intentional_implementation_append": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/delegation.py",
+      "original_sha256": "139c5611898f7e32ad81c0626975619fa76a8acbf43f6fcd2e46bf4cc29e7dc1",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "139c5611898f7e32ad81c0626975619fa76a8acbf43f6fcd2e46bf4cc29e7dc1",
+      "intentional_implementation_append": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/delegation.txt",
+      "original_sha256": "e7090ad14feea5a099afb35107c9c80480ff38ef6c425980b8a369cc4000c63c",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "e7090ad14feea5a099afb35107c9c80480ff38ef6c425980b8a369cc4000c63c",
+      "intentional_implementation_append": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/harness.py",
+      "original_sha256": "abe4d40c23201bab41a3da367c3a369e28adcf124508e5e52541c18cb11e2015",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "abe4d40c23201bab41a3da367c3a369e28adcf124508e5e52541c18cb11e2015",
+      "intentional_implementation_append": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/launch.go.txt",
+      "original_sha256": "d1c4c598a9c4ab49d8f9b4350f036ef089517e7a1e660bb773d371b01835615e",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "d1c4c598a9c4ab49d8f9b4350f036ef089517e7a1e660bb773d371b01835615e",
+      "intentional_implementation_append": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/platform.json",
+      "original_sha256": "0844cf6ea16e6f8eead86170bf54e4151f46f56c4ce776d6638a3215c1215831",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "0844cf6ea16e6f8eead86170bf54e4151f46f56c4ce776d6638a3215c1215831",
+      "intentional_implementation_append": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/privileged-ci-platform.txt",
+      "original_sha256": "d4a44cabb1dea1325df0c585ce8ceb92da284455014e03fa438c0e44b505523f",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "d4a44cabb1dea1325df0c585ce8ceb92da284455014e03fa438c0e44b505523f",
+      "intentional_implementation_append": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/privileged-ci-preservation.json",
+      "original_sha256": "d6f1df1ee2e1b14908574f8de00a5f4b4ef93c1d9a502e63b7927b2d5dc9b857",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "d6f1df1ee2e1b14908574f8de00a5f4b4ef93c1d9a502e63b7927b2d5dc9b857",
+      "intentional_implementation_append": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/privileged-ci-proof.json",
+      "original_sha256": "5bacddc4aef3b60c65b8fd206e0f2c083911826bb789f1b3862a4d4a55cfc6d2",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "5bacddc4aef3b60c65b8fd206e0f2c083911826bb789f1b3862a4d4a55cfc6d2",
+      "intentional_implementation_append": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/privileged-ci-proof.md",
+      "original_sha256": "405a60af562df1f6129fc664ec040dbcf576f67fb3a22cdfd943596f2e38b322",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "405a60af562df1f6129fc664ec040dbcf576f67fb3a22cdfd943596f2e38b322",
+      "intentional_implementation_append": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/privileged-ci-proof.patch",
+      "original_sha256": "6542f9544d681dc7319ae48deab818baa3f6918e8efcd484902fa9d38b6cb7da",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "6542f9544d681dc7319ae48deab818baa3f6918e8efcd484902fa9d38b6cb7da",
+      "intentional_implementation_append": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/proof.txt",
+      "original_sha256": "5f966af81fa90516f20ec82505c6d34a31ed8b9425712cbf265c3de70c908ece",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "5f966af81fa90516f20ec82505c6d34a31ed8b9425712cbf265c3de70c908ece",
+      "intentional_implementation_append": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/results.json",
+      "original_sha256": "78572239d430b798f5f4462765b82c622e119ee3019ebe6801b575419d6248c6",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "78572239d430b798f5f4462765b82c622e119ee3019ebe6801b575419d6248c6",
+      "intentional_implementation_append": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/supplement-results.json",
+      "original_sha256": "90fb2f71e5f7f87939d92fba1ec7c05c0f8bb9e7da61d8ceb3d94d42f3581c0d",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "90fb2f71e5f7f87939d92fba1ec7c05c0f8bb9e7da61d8ceb3d94d42f3581c0d",
+      "intentional_implementation_append": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/supplement.py",
+      "original_sha256": "c75342913b4270f4e9ee545a802999e8916cc1a8fc69764f6534cf319a8b90bd",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "c75342913b4270f4e9ee545a802999e8916cc1a8fc69764f6534cf319a8b90bd",
+      "intentional_implementation_append": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/workload.py",
+      "original_sha256": "533bfe3cd74a74d2c63c3090a61e78d2e8c453eec564261bed765eebf7949b98",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "533bfe3cd74a74d2c63c3090a61e78d2e8c453eec564261bed765eebf7949b98",
+      "intentional_implementation_append": false
+    },
+    {
+      "path": "docs/wave-e-evidence/probe.go.txt",
+      "original_sha256": "de5a7e74da9597d60d4fb4d847562b8573c2649b324131fbfa0cc2a3483f2744",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "de5a7e74da9597d60d4fb4d847562b8573c2649b324131fbfa0cc2a3483f2744",
+      "intentional_implementation_append": false
+    },
+    {
+      "path": "docs/wave-e-evidence/reproduce.py",
+      "original_sha256": "829c70e27d3f81aec9d97cd6bc83068d6b442d9a12e948dfa160b26767b977c1",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "829c70e27d3f81aec9d97cd6bc83068d6b442d9a12e948dfa160b26767b977c1",
+      "intentional_implementation_append": false
+    },
+    {
+      "path": "docs/wave-e-evidence/results.json",
+      "original_sha256": "9a1881f552b8789c1ecb484cef0ba84fcd05a66145828c9ecc70b5b1e9237269",
+      "original_preserved_in_commit": "03df753",
+      "current_sha256": "9a1881f552b8789c1ecb484cef0ba84fcd05a66145828c9ecc70b5b1e9237269",
+      "intentional_implementation_append": false
+    }
+  ],
+  "credentials_or_vm_images_committed": false,
+  "original_evidence_bytes_preserved": true
+}

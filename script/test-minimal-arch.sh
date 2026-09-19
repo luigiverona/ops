@@ -82,6 +82,19 @@ if grep -Eq 'paru|base-devel|flatpak|flathub|executable file not found' plan.cle
     echo 'unexpected hidden prerequisite in empty-app plan' >&2
     exit 1
 fi
+# Confirm the same plan in the unsupported container. A disposable sentinel
+# proves the gate precedes even sudo acquisition, not just package installation.
+mkdir ownership-bin
+printf '#!/bin/sh\ntouch /home/ops-test/sudo-called\nexit 93\n' >ownership-bin/sudo
+chmod 0700 ownership-bin/sudo
+status=0
+printf 'y\n' | PATH="$PWD/ownership-bin:$PATH" script -q -e -c /usr/local/bin/ops /dev/null >ownership.out 2>&1 || status=$?
+cat ownership.out
+test "$status" = 2
+grep -Fq 'safe subprocess ownership unavailable or compromised' ownership.out
+test ! -e sudo-called
+rm ownership-bin/sudo
+rmdir ownership-bin
 test "$(pacman -Qq)" = "$before"
 test "$(sha256sum .config/ops/apps.toml)" = "$config_before"
 test ! -e .ssh

@@ -1,0 +1,27 @@
+Sudo remains revoked: PASS
+ok  	github.com/luigiverona/ops/cmd/ops	0.038s
+ok  	github.com/luigiverona/ops/internal/app	3.623s
+ok  	github.com/luigiverona/ops/internal/arch	0.225s
+ok  	github.com/luigiverona/ops/internal/archrepo	1.897s
+ok  	github.com/luigiverona/ops/internal/archtrust	1.301s
+ok  	github.com/luigiverona/ops/internal/aur	0.010s
+ok  	github.com/luigiverona/ops/internal/aurmeta	0.002s
+ok  	github.com/luigiverona/ops/internal/config	0.004s
+ok  	github.com/luigiverona/ops/internal/flatpak	1.934s
+ok  	github.com/luigiverona/ops/internal/git	0.018s
+ok  	github.com/luigiverona/ops/internal/github	0.003s
+ok  	github.com/luigiverona/ops/internal/inspect	0.013s
+ok  	github.com/luigiverona/ops/internal/installer	5.649s
+ok  	github.com/luigiverona/ops/internal/pgp	0.318s
+ok  	github.com/luigiverona/ops/internal/plan	0.004s
+ok  	github.com/luigiverona/ops/internal/release	0.365s
+ok  	github.com/luigiverona/ops/internal/resolve	3.179s
+ok  	github.com/luigiverona/ops/internal/run	37.312s
+ok  	github.com/luigiverona/ops/internal/ssh	1.089s
+ok  	github.com/luigiverona/ops/internal/sudo	0.004s
+ok  	github.com/luigiverona/ops/internal/system	0.003s
+?   	github.com/luigiverona/ops/internal/testpkg	[no test files]
+ok  	github.com/luigiverona/ops/internal/ui	2.147s
+?   	github.com/luigiverona/ops/internal/version	[no test files]
+ok  	github.com/luigiverona/ops/internal/run	15.187s
+ok  	github.com/luigiverona/ops/internal/pgp	0.540s

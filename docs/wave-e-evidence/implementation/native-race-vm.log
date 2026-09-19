@@ -1,0 +1,65 @@
+Sudo remains revoked: PASS
+=== RUN   TestNativeOwnership
+=== RUN   TestNativeOwnership/tree
+=== RUN   TestNativeOwnership/natural
+=== RUN   TestNativeOwnership/stdout
+=== RUN   TestNativeOwnership/stderr
+=== RUN   TestNativeOwnership/fork
+=== RUN   TestNativeOwnership/nested
+=== RUN   TestNativeOwnership/tree#01
+=== RUN   TestNativeOwnership/tree#02
+=== RUN   TestNativeOwnership/concurrent
+=== RUN   TestNativeOwnership/frozen-placement
+=== RUN   TestNativeOwnership/empty-nested-removal
+=== RUN   TestNativeOwnership/manager-owned-service
+=== RUN   TestNativeOwnership/deadline
+=== RUN   TestNativeOwnership/expected-helpers
+=== RUN   TestNativeOwnership/start-failure
+=== RUN   TestNativeOwnership/bwrap
+=== RUN   TestNativeOwnership/exit-and-cleanup-errors
+--- PASS: TestNativeOwnership (13.02s)
+    --- PASS: TestNativeOwnership/tree (2.05s)
+    --- PASS: TestNativeOwnership/natural (0.10s)
+    --- PASS: TestNativeOwnership/stdout (0.11s)
+    --- PASS: TestNativeOwnership/stderr (0.11s)
+    --- PASS: TestNativeOwnership/fork (2.05s)
+    --- PASS: TestNativeOwnership/nested (2.05s)
+    --- PASS: TestNativeOwnership/tree#01 (2.05s)
+    --- PASS: TestNativeOwnership/tree#02 (2.05s)
+    --- PASS: TestNativeOwnership/concurrent (2.10s)
+    --- PASS: TestNativeOwnership/frozen-placement (0.03s)
+    --- PASS: TestNativeOwnership/empty-nested-removal (0.00s)
+    --- PASS: TestNativeOwnership/manager-owned-service (0.02s)
+    --- PASS: TestNativeOwnership/deadline (0.11s)
+    --- PASS: TestNativeOwnership/expected-helpers (0.11s)
+    --- PASS: TestNativeOwnership/start-failure (0.00s)
+    --- PASS: TestNativeOwnership/bwrap (0.03s)
+    --- PASS: TestNativeOwnership/exit-and-cleanup-errors (0.00s)
+=== RUN   TestOwnershipPTY
+    ownership_native_test.go:388: === RUN   TestOwnershipPTYHelper
+        NATIVE INPUT READY
+        native-input
+        OWNED PID 31392 python3
+        OWNED PID 31393 python3
+        OWNED PID 31394 python3
+        OWNED PID 31395 python3
+        NATIVE TREE READY
+        ^CNATIVE CLEAN PASS
+        NATIVE SECOND INPUT
+        terminal-usable
+        --- PASS: TestOwnershipPTYHelper (2.07s)
+        PASS
+
+--- PASS: TestOwnershipPTY (3.18s)
+=== RUN   TestNativeCrashScopeLifetime
+--- PASS: TestNativeCrashScopeLifetime (0.06s)
+PASS
+ok  	github.com/luigiverona/ops/internal/run	17.262s
+=== RUN   TestNativeGPGHelpers
+--- PASS: TestNativeGPGHelpers (0.53s)
+PASS
+ok  	github.com/luigiverona/ops/internal/pgp	1.540s
+=== RUN   TestNativeUpdaterOwnership
+--- PASS: TestNativeUpdaterOwnership (2.07s)
+PASS
+ok  	github.com/luigiverona/ops/internal/release	3.077s

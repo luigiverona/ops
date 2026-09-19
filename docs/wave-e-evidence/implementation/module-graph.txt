@@ -1,0 +1,7 @@
+github.com/luigiverona/ops github.com/godbus/dbus/v5@v5.2.2
+github.com/luigiverona/ops github.com/pelletier/go-toml/v2@v2.2.4
+github.com/luigiverona/ops go@1.26.0
+github.com/luigiverona/ops golang.org/x/sys@v0.27.0
+github.com/godbus/dbus/v5@v5.2.2 golang.org/x/sys@v0.27.0
+github.com/pelletier/go-toml/v2@v2.2.4 go@1.21.0
+go@1.26.0 toolchain@go1.26.0
