@@ -1,0 +1,86 @@
+[
+  {
+    "Error": "/usr/bin/python3 failed: signal: killed",
+    "Canceled": false,
+    "Structured": true,
+    "Duration": "66.592631ms",
+    "boundary": "capture",
+    "mode": "survival",
+    "descendants": 1,
+    "descendants_alive_after_cancel": true,
+    "post_cancel_mutation": true,
+    "pipe_retained_until_external_cleanup": false
+  },
+  {
+    "Error": "/usr/bin/python3 failed: signal: killed",
+    "Canceled": false,
+    "Structured": true,
+    "Duration": "376.873491ms",
+    "boundary": "capture",
+    "mode": "stdout",
+    "descendants": 1,
+    "descendants_alive_after_cancel": true,
+    "post_cancel_mutation": true,
+    "pipe_retained_until_external_cleanup": true
+  },
+  {
+    "Error": "/usr/bin/python3 failed: signal: killed",
+    "Canceled": false,
+    "Structured": true,
+    "Duration": "377.096061ms",
+    "boundary": "capture",
+    "mode": "stderr",
+    "descendants": 1,
+    "descendants_alive_after_cancel": true,
+    "post_cancel_mutation": true,
+    "pipe_retained_until_external_cleanup": true
+  },
+  {
+    "Error": "",
+    "Canceled": false,
+    "Structured": false,
+    "Duration": "387.409201ms",
+    "boundary": "capture",
+    "mode": "natural",
+    "descendants": 1,
+    "descendants_alive_after_cancel": true,
+    "post_cancel_mutation": true,
+    "pipe_retained_until_external_cleanup": true
+  },
+  {
+    "Error": "/usr/bin/python3 failed: signal: killed",
+    "Canceled": false,
+    "Structured": true,
+    "Duration": "71.683924ms",
+    "boundary": "capture",
+    "mode": "multiple",
+    "descendants": 3,
+    "descendants_alive_after_cancel": true,
+    "post_cancel_mutation": true,
+    "pipe_retained_until_external_cleanup": false
+  },
+  {
+    "Error": "/usr/bin/python3 failed: signal: killed",
+    "Canceled": false,
+    "Structured": true,
+    "Duration": "66.319018ms",
+    "boundary": "stream",
+    "mode": "survival",
+    "descendants": 1,
+    "descendants_alive_after_cancel": true,
+    "post_cancel_mutation": true,
+    "pipe_retained_until_external_cleanup": false
+  },
+  {
+    "Error": "signal: killed",
+    "Canceled": false,
+    "Structured": false,
+    "Duration": "66.406431ms",
+    "boundary": "group",
+    "mode": "escape",
+    "descendants": 1,
+    "descendants_alive_after_cancel": true,
+    "post_cancel_mutation": true,
+    "pipe_retained_until_external_cleanup": false
+  }
+]

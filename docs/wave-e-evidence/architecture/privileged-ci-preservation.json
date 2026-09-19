@@ -1,0 +1,161 @@
+{
+  "original_branch": "fix/process-tree-cancellation",
+  "original_HEAD": "50adbe8518aee4108ee7bd7b6532e6a9ad9daf7f",
+  "origin_main_and_remote_main": "50adbe8518aee4108ee7bd7b6532e6a9ad9daf7f",
+  "original_evidence": [
+    {
+      "path": "docs/wave-e-process-ownership-blocker.md",
+      "sha256_before": "bb61a4e6c4cc13e4ec2f39bb891e2cdce493a54ae4bce4b0f78c0e4b883d3efb",
+      "sha256_after": "bb61a4e6c4cc13e4ec2f39bb891e2cdce493a54ae4bce4b0f78c0e4b883d3efb",
+      "unchanged": true,
+      "intentional_update": false
+    },
+    {
+      "path": "docs/wave-e-process-ownership-architecture.md",
+      "sha256_before": "2c7fa8d3093ed4fcf001f5344bc3100e41ec82be23166c0a5e8e0bf5f80d6ce7",
+      "sha256_after": "e334f5f48d88547400cbb92b206f577c8d96b427dc449d001d3c7d78845d75df",
+      "unchanged": false,
+      "intentional_update": true
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/cleanup.json",
+      "sha256_before": "6947d9bc514c133ce80a907dc66dbd4d76fb91d4cdbfad36bcb4f70182c647ef",
+      "sha256_after": "6947d9bc514c133ce80a907dc66dbd4d76fb91d4cdbfad36bcb4f70182c647ef",
+      "unchanged": true,
+      "intentional_update": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/delegation.py",
+      "sha256_before": "139c5611898f7e32ad81c0626975619fa76a8acbf43f6fcd2e46bf4cc29e7dc1",
+      "sha256_after": "139c5611898f7e32ad81c0626975619fa76a8acbf43f6fcd2e46bf4cc29e7dc1",
+      "unchanged": true,
+      "intentional_update": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/delegation.txt",
+      "sha256_before": "e7090ad14feea5a099afb35107c9c80480ff38ef6c425980b8a369cc4000c63c",
+      "sha256_after": "e7090ad14feea5a099afb35107c9c80480ff38ef6c425980b8a369cc4000c63c",
+      "unchanged": true,
+      "intentional_update": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/harness.py",
+      "sha256_before": "abe4d40c23201bab41a3da367c3a369e28adcf124508e5e52541c18cb11e2015",
+      "sha256_after": "abe4d40c23201bab41a3da367c3a369e28adcf124508e5e52541c18cb11e2015",
+      "unchanged": true,
+      "intentional_update": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/launch.go.txt",
+      "sha256_before": "d1c4c598a9c4ab49d8f9b4350f036ef089517e7a1e660bb773d371b01835615e",
+      "sha256_after": "d1c4c598a9c4ab49d8f9b4350f036ef089517e7a1e660bb773d371b01835615e",
+      "unchanged": true,
+      "intentional_update": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/platform.json",
+      "sha256_before": "0844cf6ea16e6f8eead86170bf54e4151f46f56c4ce776d6638a3215c1215831",
+      "sha256_after": "0844cf6ea16e6f8eead86170bf54e4151f46f56c4ce776d6638a3215c1215831",
+      "unchanged": true,
+      "intentional_update": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/proof.txt",
+      "sha256_before": "5f966af81fa90516f20ec82505c6d34a31ed8b9425712cbf265c3de70c908ece",
+      "sha256_after": "5f966af81fa90516f20ec82505c6d34a31ed8b9425712cbf265c3de70c908ece",
+      "unchanged": true,
+      "intentional_update": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/results.json",
+      "sha256_before": "78572239d430b798f5f4462765b82c622e119ee3019ebe6801b575419d6248c6",
+      "sha256_after": "78572239d430b798f5f4462765b82c622e119ee3019ebe6801b575419d6248c6",
+      "unchanged": true,
+      "intentional_update": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/supplement-results.json",
+      "sha256_before": "90fb2f71e5f7f87939d92fba1ec7c05c0f8bb9e7da61d8ceb3d94d42f3581c0d",
+      "sha256_after": "90fb2f71e5f7f87939d92fba1ec7c05c0f8bb9e7da61d8ceb3d94d42f3581c0d",
+      "unchanged": true,
+      "intentional_update": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/supplement.py",
+      "sha256_before": "c75342913b4270f4e9ee545a802999e8916cc1a8fc69764f6534cf319a8b90bd",
+      "sha256_after": "c75342913b4270f4e9ee545a802999e8916cc1a8fc69764f6534cf319a8b90bd",
+      "unchanged": true,
+      "intentional_update": false
+    },
+    {
+      "path": "docs/wave-e-evidence/architecture/workload.py",
+      "sha256_before": "533bfe3cd74a74d2c63c3090a61e78d2e8c453eec564261bed765eebf7949b98",
+      "sha256_after": "533bfe3cd74a74d2c63c3090a61e78d2e8c453eec564261bed765eebf7949b98",
+      "unchanged": true,
+      "intentional_update": false
+    },
+    {
+      "path": "docs/wave-e-evidence/probe.go.txt",
+      "sha256_before": "de5a7e74da9597d60d4fb4d847562b8573c2649b324131fbfa0cc2a3483f2744",
+      "sha256_after": "de5a7e74da9597d60d4fb4d847562b8573c2649b324131fbfa0cc2a3483f2744",
+      "unchanged": true,
+      "intentional_update": false
+    },
+    {
+      "path": "docs/wave-e-evidence/reproduce.py",
+      "sha256_before": "829c70e27d3f81aec9d97cd6bc83068d6b442d9a12e948dfa160b26767b977c1",
+      "sha256_after": "829c70e27d3f81aec9d97cd6bc83068d6b442d9a12e948dfa160b26767b977c1",
+      "unchanged": true,
+      "intentional_update": false
+    },
+    {
+      "path": "docs/wave-e-evidence/results.json",
+      "sha256_before": "9a1881f552b8789c1ecb484cef0ba84fcd05a66145828c9ecc70b5b1e9237269",
+      "sha256_after": "9a1881f552b8789c1ecb484cef0ba84fcd05a66145828c9ecc70b5b1e9237269",
+      "unchanged": true,
+      "intentional_update": false
+    }
+  ],
+  "original_evidence_unchanged_count": 15,
+  "intentional_existing_file_updates": [
+    "docs/wave-e-process-ownership-architecture.md"
+  ],
+  "new_evidence_sha256": {
+    "docs/wave-e-evidence/architecture/privileged-ci-platform.txt": "d4a44cabb1dea1325df0c585ce8ceb92da284455014e03fa438c0e44b505523f",
+    "docs/wave-e-evidence/architecture/privileged-ci-proof.json": "5bacddc4aef3b60c65b8fd206e0f2c083911826bb789f1b3862a4d4a55cfc6d2",
+    "docs/wave-e-evidence/architecture/privileged-ci-proof.md": "405a60af562df1f6129fc664ec040dbcf576f67fb3a22cdfd943596f2e38b322",
+    "docs/wave-e-evidence/architecture/privileged-ci-proof.patch": "6542f9544d681dc7319ae48deab818baa3f6918e8efcd484902fa9d38b6cb7da"
+  },
+  "production_tracked_diff": "empty",
+  "staged_diff": "empty",
+  "stash_list": [],
+  "temporary_branch": "proof/wave-e-root-cgroup",
+  "verified_final_proof_commit": "9a36866ffb15ea09736a66d2760456bac9302c34",
+  "remote_branch_deleted": true,
+  "remote_absence_verified": true,
+  "temporary_worktree_removed": true,
+  "temporary_worktree_removal_forced": false,
+  "local_branch_deleted": true,
+  "local_branch_deletion_method": "git branch -D after exact SHA verification; intentionally unmerged experiment; final patch and evidence already preserved",
+  "remaining_worktrees": "/home/ah/ops 50adbe8 [fix/process-tree-cancellation]",
+  "wave_e_branch_pushed": false,
+  "force_push": false,
+  "PR_merge_tag_release_R2_signing_preserved_VM_work": false,
+  "production_implementation": false,
+  "toolchain_or_dependency_changes": false,
+  "Wave_F_or_later_work": false,
+  "normal_existing_CI_bootstrap": "Unchanged Arch dependency bootstrap and exact Go 1.26.7 transfer ran in disposable guests only",
+  "CI_VM_cleanup": "PASS on both runs; no VM preserved",
+  "final_git_status_short": "?? docs/wave-e-evidence/\n?? docs/wave-e-process-ownership-architecture.md\n?? docs/wave-e-process-ownership-blocker.md",
+  "architecture_recommendation": "APPROVE for implementation review only",
+  "unresolved_critical": [],
+  "unresolved_important": [
+    "Production bootstrap selection and D-Bus proof",
+    "Full signal/job-control and sudo-PTY tests",
+    "Unsupported environment/read-only capability contract",
+    "External service/hook/agent lifecycle contract",
+    "Context/error/race/failure handling",
+    "Supervisor crash and uninterruptible-task policy",
+    "Permanent regression coverage retaining ordinary CI no-sudo assertion"
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "frozen_atomic_nested_kill": {
+    "pid": 166048,
+    "before_user_code_cgroup": "1:net_cls:/\n0::/user.slice/user-1000.slice/user@1000.service/app.slice/ops-wave-e-architecture-supplement-1789746983-166025.scope/frozen-command/nested\n",
+    "marker_absent_while_frozen": true,
+    "marker_after_thaw": "1:net_cls:/\n0::/user.slice/user-1000.slice/user@1000.service/app.slice/ops-wave-e-architecture-supplement-1789746983-166025.scope/frozen-command/nested\n",
+    "started": {
+      "fd": 4,
+      "go": "go1.26.7",
+      "parent": 166042,
+      "parent_cgroup": "1:net_cls:/\n0::/user.slice/user-1000.slice/user@1000.service/app.slice/ops-wave-e-architecture-supplement-1789746983-166025.scope\n",
+      "parent_pgid": 166028,
+      "started": 166048
+    },
+    "wait": {
+      "elapsed_ms": 25,
+      "error": "signal: killed",
+      "stderr": "",
+      "stdout": "",
+      "waited": true
+    },
+    "initial_events": "populated 1\nfrozen 0\n",
+    "poll_events": [
+      [
+        4,
+        10
+      ]
+    ],
+    "events_after_notification": "populated 0\nfrozen 0\n",
+    "empty_events": "populated 0\nfrozen 0\n",
+    "kill_and_wait_ms": 0.81
+  },
+  "user_manager_ipc": {
+    "unit": "ops-wave-e-architecture-service-166029.service",
+    "caller_cgroup": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/ops-wave-e-architecture-supplement-1789746983-166025.scope/service-request",
+    "output": [
+      {
+        "fd": 4,
+        "go": "go1.26.7",
+        "parent": 166049,
+        "parent_cgroup": "1:net_cls:/\n0::/user.slice/user-1000.slice/user@1000.service/app.slice/ops-wave-e-architecture-supplement-1789746983-166025.scope\n",
+        "parent_pgid": 166028,
+        "started": 166055
+      },
+      {
+        "elapsed_ms": 34,
+        "error": "",
+        "stderr": "",
+        "stdout": "1:net_cls:/\n0::/user.slice/user-1000.slice/user@1000.service/app.slice/ops-wave-e-architecture-service-166029.service\n",
+        "waited": true
+      }
+    ]
+  },
+  "scope_bootstrap": {
+    "unit": "ops-wave-e-architecture-bootstrap-166029.scope",
+    "output": {
+      "ready": true,
+      "pid": 166061,
+      "sid": 166061,
+      "pgid": 166061,
+      "fg": 166061,
+      "cwd": "/tmp/ops-wave-e-architecture.UNgYxAUK",
+      "env": "literal-value",
+      "arg": "$WAVE_E_SENTINEL"
+    },
+    "exit_code": 37,
+    "input_passed": true
+  }
+}

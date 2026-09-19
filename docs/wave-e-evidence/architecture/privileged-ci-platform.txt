@@ -1,0 +1,38 @@
+Current runner version: '2.337.0'
+go version go1.26.7 linux/amd64
+uid=1000(ops-ci) gid=1000(ops-ci) groups=1000(ops-ci)
+WAVE_E_PLATFORM kernel: Linux ops-ci 7.2.6-arch2-1 #1 SMP PREEMPT_DYNAMIC Mon, 14 Sep 2026 22:41:30 +0000 x86_64 GNU/Linux
+systemd 261 (261.3-1-arch)
++PAM +AUDIT -SELINUX +APPARMOR -IMA +IPE +SMACK +SECCOMP +GCRYPT +GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUP_PLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK +BTF +XKBCOMMON +UTMP +LIBARCHIVE
+Sudo version 1.9.17p2
+Sudoers policy plugin version 1.9.17p2
+Sudoers file grammar version 50
+Sudoers I/O plugin version 1.9.17p2
+Sudoers audit plugin version 1.9.17p2
+WAVE_E_PLATFORM cgroup filesystem: cgroup2fs
+TARGET         SOURCE  FSTYPE  OPTIONS
+/sys/fs/cgroup cgroup2 cgroup2 rw,nosuid,nodev,noexec,relatime,nsdelegate,memory_recursiveprot,memory_hugetlb_accounting
+0::/user.slice/user-1000.slice/session-9.scope
+running
+● ops-ci
+    State: running
+    Units: 127 loaded (incl. loaded aliases)
+     Jobs: 0 queued
+   Failed: 0 units
+    Since: Fri 2026-09-18 20:46:50 UTC; 23s ago
+  systemd: 261.3-1-arch
+   CGroup: /user.slice/user-1000.slice/user@1000.service
+           └─init.scope
+             ├─822 /usr/lib/systemd/systemd --user --deserialize=12
+             └─824 "(sd-pam)"
+WAVE_E_PLATFORM normal SSH/PAM user manager: PASS
+WAVE_E_PLATFORM unit: ops-wave-e-root-proof-FAbEIPoO.scope
+WAVE_E_PLATFORM privileged ownership probe: PASS
+WAVE_E_PLATFORM sudo revoked before normal validation: PASS
+Unexpected-skip audit (native-arch.log): PASS
+Unexpected-skip audit (native-flatpak.log): PASS
+Formatting and vet: PASS
+Unexpected-skip audit (test.log): PASS
+Unexpected-skip audit (race.log): PASS
+Build and shell validation: PASS
+VM, overlay, base image, seed, SSH keys and temporary logs removed: PASS

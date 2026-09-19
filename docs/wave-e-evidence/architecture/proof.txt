@@ -1,0 +1,26 @@
+normal-tree PASS 5.231
+stdout-holder PASS 5.288
+stderr-holder PASS 5.183
+fork-00 PASS 5.289
+fork-01 PASS 5.25
+fork-02 PASS 5.292
+fork-03 PASS 5.26
+fork-04 PASS 5.196
+fork-05 PASS 5.197
+fork-06 PASS 5.271
+fork-07 PASS 5.215
+fork-08 PASS 5.242
+fork-09 PASS 5.306
+fork-10 PASS 5.197
+fork-11 PASS 5.241
+fork-12 PASS 5.3
+fork-13 PASS 5.226
+fork-14 PASS 5.201
+fork-15 PASS 5.293
+fork-16 PASS 5.322
+fork-17 PASS 5.211
+fork-18 PASS 5.206
+fork-19 PASS 5.308
+tty False PASS
+tty True PASS
+COMPLETE {'created_cgroups_remaining': [], 'recorded_pids_remaining': []}

@@ -1,0 +1,594 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index a33bced..6dfc305 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -4,6 +4,7 @@ on:
+   push:
+     branches:
+       - main
++      - proof/wave-e-root-cgroup
+   pull_request:
+ 
+ permissions:
+diff --git a/script/test-ci-arch.sh b/script/test-ci-arch.sh
+index f250f01..8f3930d 100644
+--- a/script/test-ci-arch.sh
++++ b/script/test-ci-arch.sh
+@@ -21,12 +21,18 @@ sudo pacman -S --needed --noconfirm \
+     archlinux-keyring pacman gnupg libarchive bubblewrap flatpak \
+     git gcc openssh python util-linux diffutils
+ sudo install -d -m 0700 -o ops-ci -g ops-ci /run/user/1000
++# Temporary Wave E architecture proof. Always revoke bootstrap sudo even when
++# a proof gate fails, then stop before normal validation on a failed gate.
++proof_status=0
++bash script/wave-e-root-cgroup-proof.sh || proof_status=$?
+ # Bootstrap is over: remove the cloud-init sudo grant before running tests.
+ sudo rm /etc/sudoers.d/90-cloud-init-users
+ if sudo -n true 2>/dev/null; then
+     echo 'Unexpected sudo access after bootstrap' >&2
+     exit 1
+ fi
++echo 'WAVE_E_PLATFORM sudo revoked before normal validation: PASS'
++test "$proof_status" = 0
+ export PATH=/opt/go1.26.7/bin:/usr/bin GOENV=off GOTOOLCHAIN=local
+ export GOROOT=/opt/go1.26.7 GOPATH=/home/ops-ci/go
+ export GOCACHE=/home/ops-ci/.cache/go-build GOMODCACHE=/home/ops-ci/go/pkg/mod
+diff --git a/script/wave-e-root-cgroup-proof.go b/script/wave-e-root-cgroup-proof.go
+new file mode 100644
+index 0000000..a212899
+--- /dev/null
++++ b/script/wave-e-root-cgroup-proof.go
+@@ -0,0 +1,510 @@
++// Experimental CI architecture evidence only. No ops package imports.
++// Root modes only report identity, fork/exec, setsid, write bounded evidence,
++// and wait. All modes expire, including when the controller fails.
++package main
++
++import (
++	"encoding/json"
++	"fmt"
++	"io"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"runtime"
++	"sort"
++	"strconv"
++	"strings"
++	"syscall"
++	"time"
++)
++
++type process struct {
++	Role   string `json:"role"`
++	PID    int    `json:"pid"`
++	PPID   int    `json:"ppid"`
++	UIDs   []int  `json:"uids"`
++	GIDs   []int  `json:"gids"`
++	SID    int    `json:"sid"`
++	PGID   int    `json:"pgid"`
++	Cgroup string `json:"cgroup"`
++	Comm   string `json:"comm"`
++	Start  string `json:"start"`
++}
++
++func check(err error) {
++	if err != nil {
++		panic(err)
++	}
++}
++func require(ok bool, msg string) {
++	if !ok {
++		panic(msg)
++	}
++}
++func read(p string) string { b, e := os.ReadFile(p); check(e); return string(b) }
++func write(p, s string)    { check(os.WriteFile(p, []byte(s), 0644)) }
++func number(s string) int  { n, e := strconv.Atoi(s); check(e); return n }
++func emit(kind string, v any) {
++	b, e := json.Marshal(map[string]any{"event": kind, "data": v})
++	check(e)
++	fmt.Println("WAVE_E_PROOF " + string(b))
++}
++func cg(pid int) string {
++	for _, line := range strings.Split(read(fmt.Sprintf("/proc/%d/cgroup", pid)), "\n") {
++		if strings.HasPrefix(line, "0::") {
++			return strings.TrimPrefix(line, "0::")
++		}
++	}
++	panic("unified hierarchy missing")
++}
++func inspect(pid int, role string) process {
++	p := process{PID: pid, Role: role, Cgroup: cg(pid)}
++	base := fmt.Sprintf("/proc/%d/", pid)
++	s := read(base + "stat")
++	end := strings.LastIndex(s, ")")
++	require(end > 0, "bad stat")
++	f := strings.Fields(s[end+2:])
++	p.PPID = number(f[1])
++	p.PGID = number(f[2])
++	p.SID = number(f[3])
++	p.Start = f[19]
++	p.Comm = strings.TrimSpace(read(base + "comm"))
++	for _, line := range strings.Split(read(base+"status"), "\n") {
++		f := strings.Fields(line)
++		if len(f) < 2 {
++			continue
++		}
++		if f[0] == "Uid:" {
++			for _, x := range f[1:] {
++				p.UIDs = append(p.UIDs, number(x))
++			}
++		}
++		if f[0] == "Gid:" {
++			for _, x := range f[1:] {
++				p.GIDs = append(p.GIDs, number(x))
++			}
++		}
++	}
++	return p
++}
++func record(dir, role string) {
++	b, e := json.Marshal(inspect(os.Getpid(), role))
++	check(e)
++	p := filepath.Join(dir, role+".json")
++	write(p+".tmp", string(b))
++	check(os.Rename(p+".tmp", p))
++}
++func exists(p string) bool { _, e := os.Stat(p); return e == nil }
++func until(label string, f func() bool) {
++	deadline := time.Now().Add(8 * time.Second)
++	for time.Now().Before(deadline) {
++		if f() {
++			return
++		}
++		time.Sleep(5 * time.Millisecond)
++	}
++	panic("timeout: " + label)
++}
++func child(dir, role, scenario string, stdout, stderr *os.File) *exec.Cmd {
++	c := exec.Command(os.Args[0], "helper", dir, role, scenario)
++	if stdout != nil {
++		c.Stdout = stdout
++	}
++	if stderr != nil {
++		c.Stderr = stderr
++	}
++	check(c.Start())
++	return c
++}
++func heartbeat(dir, role string) {
++	f, e := os.OpenFile(filepath.Join(dir, role+".heartbeat"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
++	check(e)
++	defer f.Close()
++	for i := 0; i < 1200; i++ {
++		_, e = f.WriteString(".")
++		check(e)
++		time.Sleep(20 * time.Millisecond)
++	}
++}
++func helper(dir, role, scenario string) {
++	require(os.Getuid() == 0 && os.Geteuid() == 0, "helper not root")
++	if role == "root-setsid" {
++		record(dir, "setsid-before")
++		_, e := syscall.Setsid()
++		check(e)
++	}
++	record(dir, role)
++	switch role {
++	case "root-helper":
++		if scenario == "pipes" {
++			child(dir, "stdout-holder", scenario, os.Stdout, nil)
++			child(dir, "stderr-holder", scenario, nil, os.Stderr)
++			return
++		}
++		child(dir, "root-child", scenario, os.Stdout, os.Stderr)
++		if scenario == "setsid" {
++			child(dir, "root-setsid", scenario, os.Stdout, os.Stderr)
++		}
++		if scenario == "fork" {
++			child(dir, "root-forker", scenario, os.Stdout, os.Stderr)
++		}
++	case "root-child":
++		child(dir, "root-grandchild", scenario, os.Stdout, os.Stderr)
++	case "root-forker":
++		// Eight total children, never recursive. Pause after two until controller
++		// is ready, then overlap its kill with a bounded six-fork interval.
++		for i := 0; i < 8; i++ {
++			if i == 2 {
++				until("fork gate", func() bool { return exists(filepath.Join(dir, "fork-go")) })
++				write(filepath.Join(dir, "fork-active"), "1")
++			}
++			child(dir, fmt.Sprintf("fork-%d", i), scenario, os.Stdout, os.Stderr)
++			time.Sleep(30 * time.Millisecond)
++		}
++		write(filepath.Join(dir, "fork-finished"), "1")
++	}
++	heartbeat(dir, role)
++}
++func command(dir, scenario string) {
++	require(os.Getuid() == 1000, "command not UID 1000")
++	record(dir, "command")
++	c := exec.Command("sudo", "-n", "--", os.Args[0], "helper", dir, "root-helper", scenario)
++	c.Stdout = os.Stdout
++	c.Stderr = os.Stderr
++	check(c.Start())
++	write(filepath.Join(dir, "sudo.pid"), strconv.Itoa(c.Process.Pid))
++	check(c.Wait())
++}
++func records(dir string) []process {
++	paths, e := filepath.Glob(filepath.Join(dir, "*.json"))
++	check(e)
++	var out []process
++	for _, p := range paths {
++		var r process
++		check(json.Unmarshal([]byte(read(p)), &r))
++		out = append(out, r)
++	}
++	return out
++}
++func snapshot(path string) []process {
++	var out []process
++	check(filepath.WalkDir(path, func(p string, d os.DirEntry, e error) error {
++		if e != nil {
++			return e
++		}
++		if !d.IsDir() {
++			return nil
++		}
++		for _, s := range strings.Fields(read(filepath.Join(p, "cgroup.procs"))) {
++			out = append(out, inspect(number(s), "enumerated"))
++		}
++		return nil
++	}))
++	sort.Slice(out, func(i, j int) bool { return out[i].PID < out[j].PID })
++	return out
++}
++func parentPIDs(path string) string {
++	p := strings.Fields(read(filepath.Join(path, "cgroup.procs")))
++	sort.Strings(p)
++	return strings.Join(p, ",")
++}
++func stat(path string) map[string]any {
++	s, e := os.Stat(path)
++	check(e)
++	st := s.Sys().(*syscall.Stat_t)
++	return map[string]any{"path": path, "uid": st.Uid, "gid": st.Gid, "mode": fmt.Sprintf("%04o", s.Mode().Perm())}
++}
++func sizes(dir string) map[string]int64 {
++	paths, e := filepath.Glob(filepath.Join(dir, "*.heartbeat"))
++	check(e)
++	out := map[string]int64{}
++	for _, p := range paths {
++		s, e := os.Stat(p)
++		check(e)
++		out[filepath.Base(p)] = s.Size()
++	}
++	return out
++}
++func rootContained(p process, want string) {
++	require(p.Cgroup == want, fmt.Sprintf("containment failure: %+v want %s", p, want))
++	require(len(p.UIDs) == 4, "missing /proc UID evidence")
++	for _, u := range p.UIDs {
++		require(u == 0, fmt.Sprintf("not root: %+v", p))
++	}
++}
++func runCase(base, scope, scenario string, index int) {
++	name := fmt.Sprintf("%02d-%s", index, scenario)
++	dir := filepath.Join(base, name)
++	check(os.Mkdir(dir, 0700))
++	path := filepath.Join(scope, name)
++	expected := strings.TrimPrefix(path, "/sys/fs/cgroup")
++	parentBefore := parentPIDs(scope)
++	check(os.Mkdir(path, 0755))
++	removed := false
++	defer func() {
++		if !removed {
++			_ = os.WriteFile(filepath.Join(path, "cgroup.kill"), []byte("1"), 0200)
++		}
++	}()
++	emit("case_start", map[string]any{"case": name, "command_cgroup": expected, "directory": stat(path), "kill": stat(filepath.Join(path, "cgroup.kill")), "events": stat(filepath.Join(path, "cgroup.events"))})
++	killFD, e := os.OpenFile(filepath.Join(path, "cgroup.kill"), os.O_WRONLY, 0)
++	check(e)
++	check(killFD.Close())
++	emit("interfaces", map[string]any{"case": name, "kill_open_writable_uid": os.Geteuid(), "events": read(filepath.Join(path, "cgroup.events"))})
++	fd, e := syscall.Open(path, 0x200000|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
++	check(e)
++	defer syscall.Close(fd)
++	// Freeze the EMPTY cgroup before clone3: no userspace instruction can run
++	// before membership, unlike post-fork migration.
++	write(filepath.Join(path, "cgroup.freeze"), "1")
++	until("frozen", func() bool { return strings.Contains(read(filepath.Join(path, "cgroup.events")), "frozen 1") })
++	outR, outW, e := os.Pipe()
++	check(e)
++	defer outR.Close()
++	errR, errW, e := os.Pipe()
++	check(e)
++	defer errR.Close()
++	c := exec.Command(os.Args[0], "command", dir, scenario)
++	c.Stdout = outW
++	c.Stderr = errW
++	c.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: fd}
++	// Start's exec handshake also waits for thaw, so run it concurrently.
++	started := make(chan error, 1)
++	go func() { started <- c.Start() }()
++	until("frozen PID placed", func() bool { return len(strings.Fields(read(filepath.Join(path, "cgroup.procs")))) == 1 })
++	frozenPID := number(strings.TrimSpace(read(filepath.Join(path, "cgroup.procs"))))
++	require(cg(frozenPID) == expected, "frozen child escaped")
++	time.Sleep(30 * time.Millisecond)
++	require(!exists(filepath.Join(dir, "command.json")), "helper ran while frozen")
++	emit("atomic_placement", map[string]any{"case": name, "frozen_pid": frozenPID, "cgroup": cg(frozenPID), "marker_absent": true, "go": runtime.Version()})
++	write(filepath.Join(path, "cgroup.freeze"), "0")
++	select {
++	case e := <-started:
++		check(e)
++	case <-time.After(8 * time.Second):
++		panic("Start timeout")
++	}
++	check(outW.Close())
++	check(errW.Close())
++	outDone := make(chan error, 1)
++	errDone := make(chan error, 1)
++	go func() { _, e := io.Copy(io.Discard, outR); outDone <- e }()
++	go func() { _, e := io.Copy(io.Discard, errR); errDone <- e }()
++	waitDone := make(chan error, 1)
++	go func() { waitDone <- c.Wait() }()
++	roles := []string{"command", "root-helper"}
++	if scenario == "pipes" {
++		roles = append(roles, "stdout-holder", "stderr-holder")
++	} else {
++		roles = append(roles, "root-child", "root-grandchild")
++	}
++	if scenario == "setsid" {
++		roles = append(roles, "setsid-before", "root-setsid")
++	}
++	if scenario == "fork" {
++		roles = append(roles, "root-forker", "fork-0", "fork-1")
++	}
++	until("all ready", func() bool {
++		for _, r := range roles {
++			if !exists(filepath.Join(dir, r+".json")) {
++				return false
++			}
++		}
++		return true
++	})
++	waited := false
++	if scenario == "pipes" {
++		select {
++		case e := <-waitDone:
++			check(e)
++			waited = true
++		case <-time.After(8 * time.Second):
++			panic("pipe direct child did not exit")
++		}
++		// Both holders independently retain their selected stream after the
++		// original UID-1000 child, sudo, and root helper have exited.
++		select {
++		case <-outDone:
++			panic("stdout EOF before kill")
++		case <-time.After(80 * time.Millisecond):
++		}
++		select {
++		case <-errDone:
++			panic("stderr EOF before kill")
++		case <-time.After(80 * time.Millisecond):
++		}
++		emit("retained_pipes", map[string]any{"case": name, "direct_child_exited": true, "stdout_open": true, "stderr_open": true})
++	}
++	beforeRecords := records(dir)
++	for _, p := range beforeRecords {
++		if p.Role == "command" {
++			require(p.UIDs[0] == 1000 && p.Cgroup == expected, "command placement")
++		} else {
++			rootContained(p, expected)
++		}
++	}
++	if scenario == "setsid" {
++		var before, after process
++		for _, p := range beforeRecords {
++			if p.Role == "setsid-before" {
++				before = p
++			}
++			if p.Role == "root-setsid" {
++				after = p
++			}
++		}
++		require(after.PID == before.PID && after.SID == after.PID && after.PGID == after.PID && before.SID != after.SID && before.PGID != after.PGID, "setsid identity did not change")
++		emit("setsid", map[string]any{"before": before, "after": after})
++	}
++	before := snapshot(path)
++	for _, p := range before {
++		require(p.Cgroup == expected, "enumerated process escaped")
++	}
++	require(parentPIDs(scope) == parentBefore, "descendant appeared in scope parent")
++	emit("ready_records", map[string]any{"case": name, "processes": beforeRecords})
++	emit("recursive_population", map[string]any{"case": name, "processes": before})
++	if scenario != "pipes" {
++		sudoPID := number(read(filepath.Join(dir, "sudo.pid")))
++		sudo := inspect(sudoPID, "sudo")
++		require(sudo.Cgroup == expected, "sudo migrated")
++		emit("sudo", sudo)
++	}
++	until("heartbeats started", func() bool {
++		s := sizes(dir)
++		if len(s) == 0 {
++			return false
++		}
++		for _, n := range s {
++			if n == 0 {
++				return false
++			}
++		}
++		return true
++	})
++	if scenario == "fork" {
++		write(filepath.Join(dir, "fork-go"), "1")
++		until("active fork interval", func() bool {
++			return exists(filepath.Join(dir, "fork-active")) && exists(filepath.Join(dir, "fork-2.json"))
++		})
++		require(!exists(filepath.Join(dir, "fork-finished")), "forking finished before kill")
++		emit("fork_active", map[string]any{"case": name, "max_fork_children": 8, "fork_2_ready": true, "fork_finished": false})
++	}
++	identity, e := exec.Command("id", "-u").Output()
++	check(e)
++	require(strings.TrimSpace(string(identity)) == "1000" && os.Getuid() == 1000 && os.Geteuid() == 1000, "kill writer not UID 1000")
++	emit("kill_writer", map[string]any{"case": name, "identity": inspect(os.Getpid(), "controller"), "id_u": strings.TrimSpace(string(identity))})
++	start := time.Now()
++	// THE DECISIVE OPERATION: ordinary filesystem I/O by the UID-1000 controller.
++	check(os.WriteFile(filepath.Join(path, "cgroup.kill"), []byte("1"), 0200))
++	emit("kill_write", map[string]any{"case": name, "result": "PASS", "uid": os.Geteuid()})
++	until("populated zero", func() bool { return strings.Contains(read(filepath.Join(path, "cgroup.events")), "populated 0") })
++	if !waited {
++		select {
++		case e := <-waitDone:
++			emit("command_wait", fmt.Sprint(e))
++		case <-time.After(8 * time.Second):
++			panic("Wait timeout")
++		}
++	}
++	select {
++	case e := <-outDone:
++		check(e)
++	case <-time.After(8 * time.Second):
++		panic("stdout EOF timeout")
++	}
++	select {
++	case e := <-errDone:
++		check(e)
++	case <-time.After(8 * time.Second):
++		panic("stderr EOF timeout")
++	}
++	// Subreaper reclaims orphan root descendants without signaling them.
++	until("all children reaped", func() bool {
++		for {
++			var status syscall.WaitStatus
++			pid, e := syscall.Wait4(-1, &status, syscall.WNOHANG, nil)
++			if e == syscall.ECHILD {
++				return true
++			}
++			check(e)
++			if pid == 0 {
++				return false
++			}
++		}
++	})
++	afterRecords := records(dir)
++	for _, p := range afterRecords {
++		require(p.Cgroup == expected, "late fork escaped")
++		require(!exists(fmt.Sprintf("/proc/%d", p.PID)), fmt.Sprintf("recorded PID survives: %d", p.PID))
++	}
++	for _, p := range before {
++		require(!exists(fmt.Sprintf("/proc/%d", p.PID)), fmt.Sprintf("enumerated PID survives: %d", p.PID))
++	}
++	require(parentPIDs(scope) == parentBefore, "scope parent changed after kill")
++	s1 := sizes(dir)
++	time.Sleep(100 * time.Millisecond)
++	s2 := sizes(dir)
++	b1, _ := json.Marshal(s1)
++	b2, _ := json.Marshal(s2)
++	require(string(b1) == string(b2), "heartbeat continued")
++	require(len(snapshot(path)) == 0, "recursive population survives")
++	emit("termination", map[string]any{"case": name, "result": "PASS", "populated": 0, "all_recorded_and_enumerated_pids_absent": true, "late_records": afterRecords, "heartbeat_sizes": s2, "heartbeat_stopped": true, "stdout_eof": true, "stderr_eof": true, "wait_complete": true, "scope_parent_unchanged": true, "elapsed_ms": time.Since(start).Milliseconds()})
++	check(os.Remove(path))
++	removed = true
++	emit("cgroup_removed", map[string]any{"case": name, "uid": os.Geteuid(), "result": "PASS"})
++}
++func controller(base, unit string) {
++	require(runtime.Version() == "go1.26.7", "wrong Go")
++	require(os.Getuid() == 1000 && os.Geteuid() == 1000, "controller not UID 1000")
++	_, _, errno := syscall.Syscall6(syscall.SYS_PRCTL, 36, 1, 0, 0, 0, 0)
++	checkErrno(errno)
++	scope := filepath.Join("/sys/fs/cgroup", cg(os.Getpid()))
++	emit("controller", inspect(os.Getpid(), "controller"))
++	emit("scope", stat(scope))
++	// Verify delegation with the user manager itself, cross-checking its path.
++	// v261.3 cgroup_xattr_apply returns before delegate xattrs for user managers.
++	properties, e := exec.Command("systemctl", "--user", "show", unit, "--property=Delegate", "--property=ControlGroup", "--property=Transient").Output()
++	check(e)
++	props := map[string]string{}
++	for _, line := range strings.Split(strings.TrimSpace(string(properties)), "\n") {
++		k, v, ok := strings.Cut(line, "=")
++		require(ok, "invalid systemctl property")
++		props[k] = v
++	}
++	require(props["Delegate"] == "yes" && props["Transient"] == "yes", "scope not transient/delegated")
++	require(props["ControlGroup"] == cg(os.Getpid()), "manager/controller cgroup mismatch")
++	emit("delegation_properties", props)
++	// Record the optional marker accurately; never create it or repair permissions.
++	buf := make([]byte, 128)
++	n, e := syscall.Getxattr(scope, "user.delegate", buf)
++	if e == syscall.ENODATA {
++		emit("delegate_marker", "absent (expected for systemd 261.3 user manager)")
++	} else {
++		check(e)
++		require(string(buf[:n]) == "1", "unexpected delegation marker value")
++		emit("delegate_marker", string(buf[:n]))
++	}
++	for i, scenario := range []string{"normal", "setsid", "pipes", "fork", "fork", "fork", "fork", "fork", "fork", "fork", "fork", "fork", "fork"} {
++		runCase(base, scope, scenario, i)
++	}
++	emit("final", map[string]any{"result": "PASS", "cases": 13, "fork_trials": 10, "uid": os.Getuid(), "go": runtime.Version()})
++}
++func checkErrno(e syscall.Errno) {
++	if e != 0 {
++		panic(e)
++	}
++}
++func main() {
++	// Independent expiry for every harmless helper; VM itself is disposable.
++	time.AfterFunc(45*time.Second, func() { os.Exit(124) })
++	switch os.Args[1] {
++	case "controller":
++		controller(os.Args[2], os.Args[3])
++	case "command":
++		command(os.Args[2], os.Args[3])
++	case "helper":
++		helper(os.Args[2], os.Args[3], os.Args[4])
++	default:
++		panic("unknown mode")
++	}
++}
+diff --git a/script/wave-e-root-cgroup-proof.sh b/script/wave-e-root-cgroup-proof.sh
+new file mode 100644
+index 0000000..52d479c
+--- /dev/null
++++ b/script/wave-e-root-cgroup-proof.sh
+@@ -0,0 +1,37 @@
++#!/bin/bash
++# EXPERIMENTAL. Only called in the disposable protected CI Arch VM.
++set -euo pipefail
++id
++test "$(id -un)" = ops-ci
++test "$(id -u)" = 1000
++test "$(systemd-detect-virt --vm)" = kvm
++test "$(cat /proc/sys/kernel/hostname)" = ops-ci
++export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/1000}
++test -n "$XDG_RUNTIME_DIR"
++printf 'WAVE_E_PLATFORM kernel: '; uname -a
++systemctl --version
++sudo --version
++stat -fc 'WAVE_E_PLATFORM cgroup filesystem: %T' /sys/fs/cgroup
++findmnt -t cgroup2
++cat /proc/self/cgroup
++test -S "$XDG_RUNTIME_DIR/bus"
++# Inspect the existing normal SSH/PAM manager. Never enable lingering, start a
++# missing manager, or create persistent user configuration to repair this gate.
++systemctl --user is-system-running
++systemctl --user status --no-pager
++echo 'WAVE_E_PLATFORM normal SSH/PAM user manager: PASS'
++sudo -n true
++export GOENV=off GOTOOLCHAIN=local
++test "$(/opt/go1.26.7/bin/go version)" = 'go version go1.26.7 linux/amd64'
++test -z "$(/opt/go1.26.7/bin/go env GOENV)"
++test "$(/opt/go1.26.7/bin/go env GOTOOLCHAIN)" = local
++proof_dir=$(mktemp -d /tmp/ops-wave-e-root-proof.XXXXXXXX)
++trap 'rm -rf -- "$proof_dir"' EXIT
++export GOCACHE="$proof_dir/go-cache"
++/opt/go1.26.7/bin/go build -o "$proof_dir/probe" script/wave-e-root-cgroup-proof.go
++unit="ops-wave-e-root-proof-${proof_dir##*.}"
++echo "WAVE_E_PLATFORM unit: $unit.scope"
++systemd-run --user --scope --quiet --collect --unit="$unit" \
++    --property=Delegate=yes --expand-environment=no -- \
++    "$proof_dir/probe" controller "$proof_dir" "$unit.scope"
++echo 'WAVE_E_PLATFORM privileged ownership probe: PASS'
