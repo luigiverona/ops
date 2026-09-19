@@ -13,7 +13,7 @@ import (
 )
 
 // Replace atomically installs a pre-verified binary and restores the prior target on postcondition failure.
-func Replace(ctx context.Context, runner run.Runner, verified, target, version string) error {
+func Replace(ctx context.Context, runner run.Runner, verified, target, version string) (returnErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -25,9 +25,16 @@ func Replace(ctx context.Context, runner run.Runner, verified, target, version s
 	staged, backup := target+".ops-new-"+suffix, target+".ops-backup-"+suffix
 	keepBackup := false
 	defer func() {
-		_, _ = runner.Run(context.Background(), run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "rm", "-f", "--", staged}})
+		_, cleanupErr := runner.Run(context.Background(), run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "rm", "-f", "--", staged}})
+		if run.OwnershipFailed(cleanupErr) {
+			returnErr = errors.Join(returnErr, cleanupErr)
+			return
+		}
 		if !keepBackup {
-			_, _ = runner.Run(context.Background(), run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "rm", "-f", "--", backup}})
+			_, cleanupErr := runner.Run(context.Background(), run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "rm", "-f", "--", backup}})
+			if run.OwnershipFailed(cleanupErr) {
+				returnErr = errors.Join(returnErr, cleanupErr)
+			}
 		}
 	}()
 	if _, err := runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "install", "-m", "0755", "-o", "root", "-g", "root", "--", verified, staged}}); err != nil {
@@ -35,7 +42,7 @@ func Replace(ctx context.Context, runner run.Runner, verified, target, version s
 	}
 	result, err := runner.Run(ctx, run.Spec{Name: staged, Args: []string{"--version"}})
 	if err != nil || strings.TrimSpace(result.Stdout) != "ops "+version {
-		return errors.New("staged update version verification failed")
+		return errors.Join(errors.New("staged update version verification failed"), err)
 	}
 	hadTarget := false
 	if _, err := os.Lstat(target); err == nil {
@@ -64,13 +71,13 @@ func Replace(ctx context.Context, runner run.Runner, verified, target, version s
 	if hadTarget {
 		if _, restoreErr := runner.Run(context.WithoutCancel(ctx), run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "mv", "--", backup, target}}); restoreErr != nil {
 			keepBackup = true
-			return fmt.Errorf("update verification failed and prior binary restoration failed; backup retained at %s: %w", backup, restoreErr)
+			return fmt.Errorf("update verification failed and prior binary restoration failed; backup retained at %s: %w", backup, errors.Join(err, restoreErr))
 		}
 	} else {
 		if _, removeErr := runner.Run(context.WithoutCancel(ctx), run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "rm", "-f", "--", target}}); removeErr != nil {
-			return fmt.Errorf("update verification failed and removal of the new binary failed: %w", removeErr)
+			return fmt.Errorf("update verification failed and removal of the new binary failed: %w", errors.Join(err, removeErr))
 		}
-		return errors.New("installed update verification failed; new binary was removed")
+		return errors.Join(errors.New("installed update verification failed; new binary was removed"), err)
 	}
-	return errors.New("installed update verification failed; prior binary was restored")
+	return errors.Join(errors.New("installed update verification failed; prior binary was restored"), err)
 }

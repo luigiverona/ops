@@ -19,6 +19,10 @@ type Keeper struct {
 }
 
 func Acquire(ctx context.Context, runner run.Runner) (*Keeper, error) {
+	return acquire(ctx, runner, 50*time.Second)
+}
+
+func acquire(ctx context.Context, runner run.Runner, interval time.Duration) (*Keeper, error) {
 	if _, err := runner.Run(ctx, run.Spec{Name: "sudo", Args: []string{"-v"}, Interactive: true, Interaction: "sudo password prompt"}); err != nil {
 		return nil, err
 	}
@@ -26,14 +30,14 @@ func Acquire(ctx context.Context, runner run.Runner) (*Keeper, error) {
 	k := &Keeper{cancel: cancel, done: make(chan struct{})}
 	go func() {
 		defer close(k.done)
-		ticker := time.NewTicker(50 * time.Second)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-keepCtx.Done():
 				return
 			case <-ticker.C:
-				if _, err := runner.Run(keepCtx, run.Spec{Name: "sudo", Args: []string{"-n", "-v"}}); err != nil && !errors.Is(err, context.Canceled) {
+				if _, err := runner.Run(keepCtx, run.Spec{Name: "sudo", Args: []string{"-n", "-v"}}); err != nil && (!errors.Is(err, context.Canceled) || run.OwnershipFailed(err)) {
 					k.mu.Lock()
 					if k.err == nil {
 						k.err = err

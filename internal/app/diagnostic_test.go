@@ -319,7 +319,7 @@ func TestWrappedEvidenceRenderingAndEmptyOutput(t *testing.T) {
 		var out bytes.Buffer
 		underlying := &run.Error{Name: "makepkg", Err: errors.New("exit status 4"), Evidence: evidence}
 		wrapped := fmt.Errorf("build browser: %w", fmt.Errorf("reviewed source: %w", underlying))
-		Runtime{Out: &out}.report("ready", "ready", "ready", []issue{*setupIssue("browser", wrapped)})
+		Runtime{Ownership: testOwnership{}, Out: &out}.report("ready", "ready", "ready", []issue{*setupIssue("browser", wrapped)})
 		if strings.Contains(out.String(), "Recent output:") != (evidence != "") {
 			t.Fatal(out.String())
 		}
@@ -337,7 +337,7 @@ func TestDoctorReportsServiceAndIdentityConfiguration(t *testing.T) {
 	p := plan.Plan{Core: readyCore(), GitStatus: "configuration required", SSHStatus: "configuration required", GitHubStatus: "configuration required", Applications: []plan.Application{
 		{Declaration: config.Application{Source: config.Pacman, Identifier: "mullvad-vpn"}, State: plan.Configure, Services: []string{"mullvad-daemon.service"}},
 	}}
-	if code := (Runtime{Out: &out}).reportDoctor(p, nil, false); code != Issues {
+	if code := (Runtime{Ownership: testOwnership{}, Out: &out}).reportDoctor(p, nil, false); code != Issues {
 		t.Fatalf("code=%d", code)
 	}
 	for _, want := range []string{"Git: configuration required", "SSH: configuration required", "GitHub: configuration required", "Required service is not enabled and active: mullvad-daemon.service", "Run ops to prepare"} {
@@ -383,7 +383,7 @@ func TestFinalUnavailableFreshnessDoesNotInventUnmetConfiguration(t *testing.T) 
 	result := execution{applied: true}
 	result.observe(p)
 	var out bytes.Buffer
-	if code := (Runtime{Out: &out, Err: &out}).reportExecution(result); code != Issues {
+	if code := (Runtime{Ownership: testOwnership{}, Out: &out, Err: &out}).reportExecution(result); code != Issues {
 		t.Fatalf("code=%d", code)
 	}
 	text := out.String()

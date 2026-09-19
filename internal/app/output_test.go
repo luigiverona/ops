@@ -31,7 +31,7 @@ func TestShowPlanConciseIntent(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var out bytes.Buffer
-			Runtime{Out: &out}.showPlan(test.plan)
+			Runtime{Ownership: testOwnership{}, Out: &out}.showPlan(test.plan)
 			if out.String() != test.want {
 				t.Fatalf("got %q, want %q", out.String(), test.want)
 			}
@@ -44,7 +44,7 @@ func TestShowPlanHidesImplementationButKeepsExactIdentifiers(t *testing.T) {
 	p.Applications = append(p.Applications, plan.Application{Declaration: config.Application{Source: "flatpak", Identifier: "org.example.AVeryLongIdentifier"}, State: "install"})
 	p.Applications[0].AURSigningKeys = []string{"0123456789ABCDEF0123456789ABCDEF01234567"}
 	var out bytes.Buffer
-	Runtime{Out: &out}.showPlan(p)
+	Runtime{Ownership: testOwnership{}, Out: &out}.showPlan(p)
 	for _, want := range []string{"  paru (AUR)\n", "  org.example.AVeryLongIdentifier (Flatpak)\n", "Required dependencies"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %q: %s", want, &out)
@@ -63,7 +63,7 @@ func TestShowPlanPreservesDiagnostics(t *testing.T) {
 		Declaration: config.Application{Source: "aur", Identifier: "broken"}, State: "unresolved", Cause: "exact identifier not found",
 	}}}
 	var out bytes.Buffer
-	Runtime{Out: &out}.showPlan(p)
+	Runtime{Ownership: testOwnership{}, Out: &out}.showPlan(p)
 	if !strings.Contains(out.String(), "Cannot install broken: exact identifier not found") || strings.Contains(out.String(), "\nInstall\n  broken") {
 		t.Fatalf("misleading intent: %s", &out)
 	}
@@ -71,8 +71,8 @@ func TestShowPlanPreservesDiagnostics(t *testing.T) {
 
 func TestShowPlanIsDeterministic(t *testing.T) {
 	var first, second bytes.Buffer
-	Runtime{Out: &first}.showPlan(plan.Plan{CorePackages: []string{"git", "openssh"}, FullUpgrade: true})
-	Runtime{Out: &second}.showPlan(plan.Plan{CorePackages: []string{"openssh", "git"}, FullUpgrade: true})
+	Runtime{Ownership: testOwnership{}, Out: &first}.showPlan(plan.Plan{CorePackages: []string{"git", "openssh"}, FullUpgrade: true})
+	Runtime{Ownership: testOwnership{}, Out: &second}.showPlan(plan.Plan{CorePackages: []string{"openssh", "git"}, FullUpgrade: true})
 	if first.String() != second.String() {
 		t.Fatal("dependency ordering leaked into summary")
 	}
@@ -87,7 +87,7 @@ func TestFreshPlanAndKnownAccountConsequences(t *testing.T) {
 		}
 		p := plan.Build(config.Config{Version: 2}, state, nil)
 		var out bytes.Buffer
-		Runtime{Out: &out}.showPlan(p)
+		Runtime{Ownership: testOwnership{}, Out: &out}.showPlan(p)
 		registration := "Register this workstation's SSH key with GitHub"
 		if !known {
 			registration += " if needed"
@@ -111,7 +111,7 @@ func TestMixedSourcesAndServicesUsePlanIdentity(t *testing.T) {
 		{Declaration: config.Application{Source: config.Flatpak, Identifier: "org.gimp.GIMP"}, State: plan.Install},
 	}}
 	var out bytes.Buffer
-	Runtime{Out: &out}.showPlan(p)
+	Runtime{Ownership: testOwnership{}, Out: &out}.showPlan(p)
 	want := "Workstation setup\n\nInstall\n  firefox (pacman)\n  downgrade (AUR)\n  org.gimp.GIMP (Flatpak)\n\nEnable and start\n  a.service\n  z.service\n\nEnable multilib.\n\n"
 	if out.String() != want {
 		t.Fatalf("got %q, want %q", out.String(), want)
@@ -127,7 +127,7 @@ func TestAURApprovalDisclosesOnlyPlannedKeysAndAdditionalOutputs(t *testing.T) {
 			application.AUROutputs = append(application.AUROutputs, "example-libs")
 		}
 		var out bytes.Buffer
-		err := (Runtime{Out: &out}).reviewAUR(context.Background(), ui.UI{In: strings.NewReader("\n\n"), Out: &out}, application, map[string]string{"PKGBUILD": "source"})
+		err := (Runtime{Ownership: testOwnership{}, Out: &out}).reviewAUR(context.Background(), ui.UI{In: strings.NewReader("\n\n"), Out: &out}, application, map[string]string{"PKGBUILD": "source"})
 		if !errors.Is(err, errReviewDeclined) {
 			t.Fatalf("default-no err=%v", err)
 		}
@@ -152,7 +152,7 @@ func TestAURApprovalDisclosesOnlyPlannedKeysAndAdditionalOutputs(t *testing.T) {
 
 func TestReportKeepsActionableErrorsAndEscapesTerminalControls(t *testing.T) {
 	var out bytes.Buffer
-	Runtime{Out: &out}.report("ready", "ready", "failed", []issue{
+	Runtime{Ownership: testOwnership{}, Out: &out}.report("ready", "ready", "failed", []issue{
 		{State: "Failed", Name: "example", Cause: "missing\nnext\x1b[31m", Impact: "not installed", Action: "fix declaration"},
 	})
 	for _, want := range []string{"missing\n", "next\\x1b[31m", "not installed", "fix declaration", "Workstation setup incomplete."} {
@@ -164,7 +164,7 @@ func TestReportKeepsActionableErrorsAndEscapesTerminalControls(t *testing.T) {
 		t.Fatalf("unsafe/noisy error: %s", &out)
 	}
 	var fatal bytes.Buffer
-	if code := (Runtime{Err: &fatal}).fatal(errors.New("useful stderr")); code != Fatal || !strings.Contains(fatal.String(), "useful stderr") || !strings.Contains(fatal.String(), "run ops again") {
+	if code := (Runtime{Ownership: testOwnership{}, Err: &fatal}).fatal(errors.New("useful stderr")); code != Fatal || !strings.Contains(fatal.String(), "useful stderr") || !strings.Contains(fatal.String(), "run ops again") {
 		t.Fatalf("fatal error lost detail: %s", &fatal)
 	}
 }
@@ -188,7 +188,7 @@ func TestAURReviewShowsBuildInstructionsAndRequiresOneApproval(t *testing.T) {
 	for _, answer := range []string{"y\n", "\n", "n\n", ""} {
 		t.Run(fmt.Sprintf("%q", answer), func(t *testing.T) {
 			var out, review bytes.Buffer
-			err := (Runtime{Out: &out}).reviewAUR(context.Background(), ui.UI{In: strings.NewReader("\n\n\n\n" + answer), Out: &review}, plan.Application{Declaration: config.Application{Identifier: "example-bin"}, AURSource: plan.AURSource{Commit: bootstrapCommit, Metadata: aurmeta.Metadata{PackageBase: "example"}}}, files)
+			err := (Runtime{Ownership: testOwnership{}, Out: &out}).reviewAUR(context.Background(), ui.UI{In: strings.NewReader("\n\n\n\n" + answer), Out: &review}, plan.Application{Declaration: config.Application{Identifier: "example-bin"}, AURSource: plan.AURSource{Commit: bootstrapCommit, Metadata: aurmeta.Metadata{PackageBase: "example"}}}, files)
 			if (err == nil) != (answer == "y\n") {
 				t.Fatalf("answer=%q err=%v", answer, err)
 			}
@@ -216,7 +216,7 @@ func TestAURReviewShowsBuildInstructionsAndRequiresOneApproval(t *testing.T) {
 		})
 	}
 	var out bytes.Buffer
-	if err := (Runtime{Out: &out}).reviewAUR(context.Background(), ui.UI{}, plan.Application{Declaration: config.Application{Identifier: "example"}}, map[string]string{".SRCINFO": "metadata"}); err == nil {
+	if err := (Runtime{Ownership: testOwnership{}, Out: &out}).reviewAUR(context.Background(), ui.UI{}, plan.Application{Declaration: config.Application{Identifier: "example"}}, map[string]string{".SRCINFO": "metadata"}); err == nil {
 		t.Fatal("missing PKGBUILD accepted")
 	}
 }
@@ -229,13 +229,13 @@ func TestFlatpakOnlyPlanDoesNotPromiseSystemWork(t *testing.T) {
 		t.Fatalf("not a Flatpak-only fixture: %#v", p)
 	}
 	var out bytes.Buffer
-	Runtime{Out: &out}.showPlan(p)
+	Runtime{Ownership: testOwnership{}, Out: &out}.showPlan(p)
 	if out.String() != "Workstation setup\n\nInstall\n  org.example.App (Flatpak)\n\n" {
 		t.Fatalf("misleading summary: %s", &out)
 	}
 	runner := &prepareRunner{}
 	out.Reset()
-	code := (Runtime{Out: &out, Err: &out, Runner: runner}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &out})
+	code := (Runtime{Ownership: testOwnership{}, Out: &out, Err: &out, Runner: runner}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &out})
 	if code != Success || strings.Contains(out.String(), "Updating system") {
 		t.Fatalf("code=%d output=%s", code, &out)
 	}
@@ -259,7 +259,7 @@ func TestPlanSummaryOnlyAnnouncesPlannedSystemWork(t *testing.T) {
 		{p: plan.Plan{Applications: []plan.Application{{Declaration: config.Application{Source: config.AUR, Identifier: "example"}, State: plan.Unavailable, AURPackages: []plan.BuildPackage{{Name: "unused"}}}}}},
 	} {
 		var out bytes.Buffer
-		Runtime{Out: &out}.showPlan(test.p)
+		Runtime{Ownership: testOwnership{}, Out: &out}.showPlan(test.p)
 		if strings.Contains(out.String(), "system will be updated") != test.update ||
 			strings.Contains(out.String(), "Required dependencies") != test.dependencies ||
 			strings.Contains(out.String(), "Enable multilib.") != test.repositories {
@@ -270,7 +270,7 @@ func TestPlanSummaryOnlyAnnouncesPlannedSystemWork(t *testing.T) {
 
 func TestIncompleteStatusNeverPrintsReady(t *testing.T) {
 	var out bytes.Buffer
-	Runtime{Out: &out}.report("failed", "ready", "ready", nil)
+	Runtime{Ownership: testOwnership{}, Out: &out}.report("failed", "ready", "ready", nil)
 	if strings.Contains(out.String(), "Workstation ready.") || !strings.Contains(out.String(), "Run ops doctor") {
 		t.Fatalf("output=%s", &out)
 	}
@@ -280,7 +280,7 @@ func TestServiceProgressIsOnePhaseAndVerifiesEveryService(t *testing.T) {
 	var output bytes.Buffer
 	runner := &prepareRunner{}
 	application := plan.Application{Declaration: config.Application{Source: "pacman", Identifier: "example"}, Services: []string{"first.service", "second.service"}}
-	err := (Runtime{Runner: runner, Out: &output}).configureServices(context.Background(), application)
+	err := (Runtime{Ownership: testOwnership{}, Runner: runner, Out: &output}).configureServices(context.Background(), application)
 	if err != nil || output.String() != "Configuring services for example...\n" {
 		t.Fatalf("err=%v output=%s", err, &output)
 	}

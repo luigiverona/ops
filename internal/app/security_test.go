@@ -40,7 +40,7 @@ func TestSetupPreservesUnrelatedSSHIdentitiesWithoutPrompts(t *testing.T) {
 	}
 	var output bytes.Buffer
 	input := strings.NewReader("n\ny\n")
-	runtime := Runtime{Home: home, Runner: run.Exec{Out: io.Discard, Err: io.Discard}, Out: &output, Err: &output}
+	runtime := Runtime{Ownership: testOwnership{}, Home: home, Runner: run.Exec{Out: io.Discard, Err: io.Discard}, Out: &output, Err: &output}
 	status, _, issues, fatal := runtime.configureSSH(context.Background(), ui.UI{In: input, Out: &output}, plan.Plan{ReviewSSHIdentities: true})
 	if fatal != nil || len(issues) != 0 || status != "ready" || input.Len() != len("n\ny\n") || output.Len() != 0 {
 		t.Fatalf("status=%s issues=%v fatal=%v output=%s", status, issues, fatal, &output)
@@ -86,7 +86,7 @@ func TestSetupPreservesGitHubKeysWithoutPrompts(t *testing.T) {
 	var output bytes.Buffer
 	input := strings.NewReader("n\ny\n")
 	fingerprint, _ := sshops.PublicFingerprint(wirePublic(1))
-	status, issues := (Runtime{Runner: fake, Out: &output, Err: &output}).configureGitHub(context.Background(), ui.UI{In: input, Out: &output}, &sshops.Identity{Fingerprint: fingerprint}, plan.Plan{ReviewGitHubKeys: true})
+	status, issues := (Runtime{Ownership: testOwnership{}, Runner: fake, Out: &output, Err: &output}).configureGitHub(context.Background(), ui.UI{In: input, Out: &output}, &sshops.Identity{Fingerprint: fingerprint}, plan.Plan{ReviewGitHubKeys: true})
 	if status != "ready" || len(issues) != 0 || len(fake.deleted) != 0 || input.Len() != len("n\ny\n") {
 		t.Fatalf("status=%s issues=%v deleted=%v", status, issues, fake.deleted)
 	}
@@ -112,7 +112,7 @@ func TestSetupPreservesUnrelatedAgentKeysWithoutPrompts(t *testing.T) {
 	runner := &agentPreservationRunner{prepareRunner{sshFingerprint: fingerprint}}
 	var output bytes.Buffer
 	input := strings.NewReader("n\n")
-	status, _, issues, fatal := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).configureSSH(context.Background(), ui.UI{In: input, Out: &output}, plan.Plan{ReviewSSHAgent: true, LoadSSHAgent: true})
+	status, _, issues, fatal := (Runtime{Ownership: testOwnership{}, Home: home, Runner: runner, Out: &output, Err: &output}).configureSSH(context.Background(), ui.UI{In: input, Out: &output}, plan.Plan{ReviewSSHAgent: true, LoadSSHAgent: true})
 	if status != "ready" || len(issues) != 0 || fatal != nil || input.Len() != len("n\n") {
 		t.Fatalf("status=%s issues=%v fatal=%v", status, issues, fatal)
 	}
@@ -151,7 +151,7 @@ func TestGitHubSummaryDoesNotClaimAnExistingKeyWasAdded(t *testing.T) {
 	home, fingerprint, _ := unauthenticatedGitHubFixture(t)
 	runner := &githubRegistrationRaceRunner{prepareRunner{sshFingerprint: fingerprint}}
 	var output bytes.Buffer
-	status, issues := (Runtime{Home: home, Runner: runner, Out: &output, Err: &output}).configureGitHub(
+	status, issues := (Runtime{Ownership: testOwnership{}, Home: home, Runner: runner, Out: &output, Err: &output}).configureGitHub(
 		context.Background(), ui.UI{}, &sshops.Identity{Fingerprint: fingerprint, PublicPath: filepath.Join(home, ".ssh", "ops.pub")}, plan.Plan{ConfigureGitHubKey: true},
 	)
 	if status != "ready" || len(issues) != 0 || output.Len() != 0 {
@@ -227,7 +227,7 @@ func TestConfigureSSHAgentAvailabilityControlsManagedLoad(t *testing.T) {
 				loads++
 				return run.Result{}, nil
 			})
-			status, identity, issues, fatal := (Runtime{Home: home, Runner: runner, Out: io.Discard, Err: io.Discard}).configureSSH(context.Background(), ui.UI{}, plan.Plan{ReviewSSHAgent: true, LoadSSHAgent: true})
+			status, identity, issues, fatal := (Runtime{Ownership: testOwnership{}, Home: home, Runner: runner, Out: io.Discard, Err: io.Discard}).configureSSH(context.Background(), ui.UI{}, plan.Plan{ReviewSSHAgent: true, LoadSSHAgent: true})
 			if fatal != nil || identity == nil || len(issues) != test.issues || loads != test.loads || (status == "ready") != (test.issues == 0) {
 				t.Fatalf("status=%s identity=%v issues=%v fatal=%v loads=%d", status, identity, issues, fatal, loads)
 			}

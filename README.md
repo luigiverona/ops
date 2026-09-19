@@ -14,7 +14,11 @@ The installer verifies the signed release and installs the `ops` binary at
 `/usr/local/bin/ops`.
 It creates `~/.config/ops/apps.toml` only if absent; it does not install
 workstation packages. Internet access, sudo, and the official Arch base system
-are required. Git, an AUR helper, and Flatpak need not already exist.
+are required. Approved changes also require a reachable systemd user manager and
+delegated cgroup v2 subprocess ownership. ops verifies that capability after
+approval and refuses changes before sudo if it is unavailable. Doctor, no-op
+inspection, and declining a plan still work without it. Git, an AUR helper, and
+Flatpak need not already exist.
 
 Existing configuration files are preserved. If configuration setup fails after
 the binary is installed, the installer reports that the binary remains installed

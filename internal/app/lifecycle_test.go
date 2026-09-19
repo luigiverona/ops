@@ -132,7 +132,7 @@ func minimalRuntime(t *testing.T) (Runtime, *lifecycleRunner, *bytes.Buffer) {
 	}))
 	t.Cleanup(server.Close)
 	out := &bytes.Buffer{}
-	return Runtime{Home: home, Runner: runner, Out: out, Err: out, EUID: func() int { return 1000 }, OSRelease: archOSRelease(t), PacmanConf: testPacmanConf(t), SSHHTTP: server.Client(), SSHMetadataURL: server.URL}, runner, out
+	return Runtime{Ownership: testOwnership{}, Home: home, Runner: runner, Out: out, Err: out, EUID: func() int { return 1000 }, OSRelease: archOSRelease(t), PacmanConf: testPacmanConf(t), SSHHTTP: server.Client(), SSHMetadataURL: server.URL}, runner, out
 }
 
 func TestMinimalArchDoctorWithoutConfigurationOrTools(t *testing.T) {

@@ -44,7 +44,7 @@ func TestRuntimeUpdateAlreadyCurrentReturnsSuccessWithoutSudoOrReplacement(t *te
 
 	var output bytes.Buffer
 	runner := &updateRunner{}
-	code := Runtime{
+	code := Runtime{Ownership: testOwnership{},
 		Runner:    runner,
 		Out:       &output,
 		Err:       &output,
@@ -71,7 +71,7 @@ func TestRuntimeUpdateLatestDownloadFailureIsFatalBeforeSudoOrReplacement(t *tes
 
 	var output bytes.Buffer
 	runner := &updateRunner{}
-	code := Runtime{
+	code := Runtime{Ownership: testOwnership{},
 		Runner:    runner,
 		Out:       &output,
 		Err:       &output,
@@ -105,7 +105,11 @@ func TestUpdateDeclineOrEOFDoesNotDownloadOrMutate(t *testing.T) {
 		requests := 0
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests++; http.Error(w, "unexpected", 500) }))
 		client := release.Client{HTTP: server.Client(), BaseURL: server.URL, Runner: runner}
-		code := (Runtime{Runner: runner, Out: &output, Err: &output}).installUpdate(context.Background(), client, "9.0.0", ui.UI{In: strings.NewReader(answer), Out: &output})
+		owner := &gateOwner{activationErr: errors.New("ownership must not be requested")}
+		code := (Runtime{Ownership: owner, Runner: runner, Out: &output, Err: &output}).installUpdate(context.Background(), client, "9.0.0", ui.UI{In: strings.NewReader(answer), Out: &output})
+		if owner.activations != 0 {
+			t.Fatal("declined update activated ownership")
+		}
 		server.Close()
 		if requests != 0 || len(runner.calls) != 0 {
 			t.Fatal("unapproved update performed work")
@@ -129,7 +133,7 @@ func TestUpdateVerificationFailureKeepsActionableDetailAndNeverUsesSudo(t *testi
 	var output bytes.Buffer
 	runner := &updateRunner{}
 	client := release.Client{HTTP: server.Client(), BaseURL: server.URL, Runner: runner, Trust: release.DefaultTrust()}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).installUpdate(context.Background(), client, "9.0.0", ui.UI{In: strings.NewReader("y\n"), Out: &output})
+	code := (Runtime{Ownership: testOwnership{}, Runner: runner, Out: &output, Err: &output}).installUpdate(context.Background(), client, "9.0.0", ui.UI{In: strings.NewReader("y\n"), Out: &output})
 	if code != Fatal || len(runner.calls) != 0 || strings.Contains(output.String(), "ops 9.0.0 verified.") || strings.Count(output.String(), "?") != 1 {
 		t.Fatalf("code=%d calls=%v output=%s", code, runner.calls, &output)
 	}
@@ -148,7 +152,7 @@ func TestUpdateDownloadCancellationHasOnlyUpdateConclusion(t *testing.T) {
 	var output bytes.Buffer
 	runner := &updateRunner{}
 	client := release.Client{HTTP: server.Client(), BaseURL: server.URL, Runner: runner, Trust: release.DefaultTrust()}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).installUpdate(ctx, client, "9.0.0", ui.UI{In: strings.NewReader("y\n"), Out: &output})
+	code := (Runtime{Ownership: testOwnership{}, Runner: runner, Out: &output, Err: &output}).installUpdate(ctx, client, "9.0.0", ui.UI{In: strings.NewReader("y\n"), Out: &output})
 	if code != Fatal || len(runner.calls) != 0 || !strings.HasSuffix(output.String(), "Update interrupted.\n") {
 		t.Fatalf("code=%d calls=%v output=%s", code, runner.calls, &output)
 	}

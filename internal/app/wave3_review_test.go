@@ -128,7 +128,7 @@ func TestFinalObservationUpdatesEveryDistinctFailure(t *testing.T) {
 			}
 		}
 		var out strings.Builder
-		code := (Runtime{Out: &out, Err: &out}).reportExecution(result)
+		code := (Runtime{Ownership: testOwnership{}, Out: &out, Err: &out}).reportExecution(result)
 		if code != Issues || strings.Count(out.String(), "installation failed") != 1 || strings.Count(out.String(), "cleanup failed") != 1 {
 			t.Fatalf("code=%d %s", code, &out)
 		}

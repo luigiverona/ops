@@ -171,7 +171,7 @@ func TestFinalRetainedAURBindingReportsVersionDrift(t *testing.T) {
 	cfg := config.Config{Applications: []config.Application{declaration}}
 	approved := plan.Plan{Applications: []plan.Application{{Declaration: declaration, AURDependencies: []plan.OfficialDependency{{Requirement: "compiler>=1", Provider: "extra/builder", Packages: []string{"extra/builder", "extra/library"}, Satisfied: true}}}}}
 	observed := plan.State{Installed: map[string]bool{"example": true}, Foreign: map[string]bool{"example": true}}
-	err := (Runtime{Runner: f}).verifyFinalAURBindings(context.Background(), cfg, observed, approved)
+	err := (Runtime{Ownership: testOwnership{}, Runner: f}).verifyFinalAURBindings(context.Background(), cfg, observed, approved)
 	if err == nil || !strings.Contains(err.Error(), "update available") || strings.Contains(err.Error(), "repair") {
 		t.Fatalf("retained version drift: %v", err)
 	}

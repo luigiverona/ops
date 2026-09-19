@@ -118,7 +118,10 @@ func (m Manager) Import(ctx context.Context, fingerprint string) (returnErr erro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := ensureGnuPGHome(home); err != nil {
+	if err := run.CheckMutation(m.Runner); err != nil {
+		return err
+	}
+	if err := run.Mutate(m.Runner, func() error { return ensureGnuPGHome(home) }); err != nil {
 		return fmt.Errorf("prepare GnuPG home for signing key import: %w", err)
 	}
 	if _, err := m.Runner.Run(ctx, gpgSpec(home, []string{"--import"}, strings.NewReader(key.Stdout))); err != nil {
@@ -171,7 +174,7 @@ func gpgSpec(home string, args []string, stdin ...io.Reader) run.Spec {
 	if len(stdin) == 1 {
 		input = stdin[0]
 	}
-	return run.Spec{Name: "gpg", Args: base, Env: []string{"LC_ALL=C"}, Stdin: input}
+	return run.Spec{EphemeralHelpers: true, Name: "gpg", Args: base, Env: []string{"LC_ALL=C"}, Stdin: input}
 }
 
 func gpgConfigSpec(home string) run.Spec {

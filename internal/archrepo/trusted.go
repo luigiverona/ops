@@ -114,3 +114,6 @@ func InstalledVersionContent(ctx context.Context, runner run.Runner, target, ver
 	}
 	return InstalledContent(ctx, runner, target)
 }
+
+func (r *TrustedRunner) CheckMutation() error        { return run.CheckMutation(r.Runner) }
+func (r *TrustedRunner) Mutate(f func() error) error { return run.Mutate(r.Runner, f) }

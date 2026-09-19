@@ -128,7 +128,12 @@ func (m Manager) Delete(ctx context.Context, identity Identity) error {
 	}
 	for _, path := range []string{identity.PrivatePath, identity.PublicPath} {
 		if path != "" {
-			if err := os.Remove(path); err != nil {
+			if err := run.Mutate(m.Runner, func() error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				return os.Remove(path)
+			}); err != nil {
 				return err
 			}
 		}
@@ -201,10 +206,10 @@ func (m Manager) privateFingerprint(ctx context.Context, path string) (string, e
 
 // EnsureIdentity creates the managed Ed25519 identity through ssh-keygen's normal passphrase interaction.
 func (m Manager) EnsureIdentity(ctx context.Context) (Identity, error) {
-	if err := ctx.Err(); err != nil {
+	if err := mutationReady(ctx, m.Runner); err != nil {
 		return Identity{}, err
 	}
-	if err := secureDir(m.dir()); err != nil {
+	if err := run.Mutate(m.Runner, func() error { return secureDir(m.dir()) }); err != nil {
 		return Identity{}, err
 	}
 	path := filepath.Join(m.dir(), "ops")
@@ -219,11 +224,17 @@ func (m Manager) EnsureIdentity(ctx context.Context) (Identity, error) {
 	}
 	for _, identity := range identities {
 		if identity.PrivatePath == path && identity.PublicPath == path+".pub" {
-			if err := ctx.Err(); err != nil {
+			if err := mutationReady(ctx, m.Runner); err != nil {
 				return Identity{}, err
 			}
-			_ = os.Chmod(path, 0o600)
-			_ = os.Chmod(path+".pub", 0o644)
+			if err := run.Mutate(m.Runner, func() error {
+				if err := os.Chmod(path, 0600); err != nil {
+					return err
+				}
+				return os.Chmod(path+".pub", 0644)
+			}); err != nil {
+				return Identity{}, err
+			}
 			return identity, nil
 		}
 	}
@@ -279,10 +290,10 @@ func (m Manager) Load(ctx context.Context, path string) error {
 // ConfigureGitHub isolates GitHub from additive user IdentityFile directives while
 // preserving the user's configuration for every other host.
 func (m Manager) ConfigureGitHub(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
+	if err := mutationReady(ctx, m.Runner); err != nil {
 		return err
 	}
-	if err := secureDir(m.dir()); err != nil {
+	if err := run.Mutate(m.Runner, func() error { return secureDir(m.dir()) }); err != nil {
 		return err
 	}
 	configPath := filepath.Join(m.dir(), "config")
@@ -336,31 +347,31 @@ func (m Manager) ConfigureGitHub(ctx context.Context) error {
 	if err := checkManagedTarget(knownHostsPath); err != nil {
 		return err
 	}
-	if err := ctx.Err(); err != nil {
+	if err := mutationReady(ctx, m.Runner); err != nil {
 		return err
 	}
-	if err := atomicManagedWrite(knownHostsPath, knownHosts, 0o600); err != nil {
+	if err := run.Mutate(m.Runner, func() error { return atomicManagedWrite(knownHostsPath, knownHosts, 0o600) }); err != nil {
 		return err
 	}
-	if err := ctx.Err(); err != nil {
+	if err := mutationReady(ctx, m.Runner); err != nil {
 		return err
 	}
-	if err := atomicManagedWrite(includePath, managed, 0o600, legacy); err != nil {
+	if err := run.Mutate(m.Runner, func() error { return atomicManagedWrite(includePath, managed, 0o600, legacy) }); err != nil {
 		return err
 	}
 	if !preservedExists {
-		if err := ctx.Err(); err != nil {
+		if err := mutationReady(ctx, m.Runner); err != nil {
 			return err
 		}
-		if err := atomicRegularWrite(userConfigPath, preserved, 0o600); err != nil {
+		if err := run.Mutate(m.Runner, func() error { return atomicRegularWrite(userConfigPath, preserved, 0o600) }); err != nil {
 			return err
 		}
 	}
 	if !dispatcherCurrent {
-		if err := ctx.Err(); err != nil {
+		if err := mutationReady(ctx, m.Runner); err != nil {
 			return err
 		}
-		if err := atomicRegularWrite(configPath, dispatcher, 0o600); err != nil {
+		if err := run.Mutate(m.Runner, func() error { return atomicRegularWrite(configPath, dispatcher, 0o600) }); err != nil {
 			return err
 		}
 	}
@@ -761,4 +772,11 @@ func withoutManagedDispatcher(data []byte) ([]byte, error) {
 		return nil, errors.New("malformed ops managed SSH configuration markers")
 	}
 	return []byte(output.String()), nil
+}
+
+func mutationReady(ctx context.Context, runner run.Runner) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return run.CheckMutation(runner)
 }

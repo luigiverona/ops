@@ -38,7 +38,7 @@ func TestConfigureGitInspectionFailureDoesNotPromptOrMutate(t *testing.T) {
 					}
 					return run.Result{}, diagnosticExit(1)
 				})
-				a := Runtime{Runner: runner, Out: &output, Err: &output, interruption: &interruption{}}
+				a := Runtime{Ownership: testOwnership{}, Runner: runner, Out: &output, Err: &output, interruption: &interruption{}}
 				status, err := a.configureGit(context.Background(), ui.UI{In: strings.NewReader("Test User\nuser@example.invalid\n"), Out: &output})
 				if status != "failed" || err == nil || cause != nil && !errors.Is(err, cause) || output.Len() != 0 || a.interruption.mutation {
 					t.Fatalf("status=%s err=%v mutation=%v output=%s", status, err, a.interruption.mutation, &output)
@@ -62,7 +62,7 @@ func TestGitInspectionFailureFlowsThroughSetupIssue(t *testing.T) {
 		return base.Run(ctx, spec)
 	})
 	p := plan.Plan{Core: readyCore(), ConfigureGit: true, SSHStatus: "ready", GitHubStatus: "ready"}
-	r := (Runtime{Runner: runner, Out: &output, Err: &output}).executePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+	r := (Runtime{Ownership: testOwnership{}, Runner: runner, Out: &output, Err: &output}).executePlan(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 	if r.git != "failed" || len(r.problems) != 1 || !errors.Is(r.problems[0].Err, cause) || strings.Contains(output.String(), "Git name:") {
 		t.Fatalf("result=%#v output=%s", r, &output)
 	}

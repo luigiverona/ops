@@ -22,7 +22,13 @@ const (
 )
 
 // Runtime holds process-scoped dependencies.
+type mutationOwnership interface {
+	Activate(context.Context) error
+	Check() error
+}
+
 type Runtime struct {
+	Ownership      mutationOwnership
 	interruption   *interruption
 	Runner         run.Runner
 	Out            io.Writer
@@ -56,5 +62,6 @@ func (a Runtime) inspectState(ctx context.Context, cfg config.Config) (plan.Stat
 
 func DefaultRuntime() Runtime {
 	home, _ := os.UserHomeDir()
-	return Runtime{Runner: archrepo.NewTrustedRunner(run.Exec{In: os.Stdin, Out: os.Stdout, Err: os.Stderr}), Out: os.Stdout, Err: os.Stderr, Home: home, EUID: os.Geteuid}
+	owner := run.NewOwner()
+	return Runtime{Ownership: owner, Runner: archrepo.NewTrustedRunner(run.Exec{Owner: owner, In: os.Stdin, Out: os.Stdout, Err: os.Stderr}), Out: os.Stdout, Err: os.Stderr, Home: home, EUID: os.Geteuid}
 }

@@ -547,3 +547,171 @@ See [the privileged CI report](wave-e-evidence/architecture/privileged-ci-proof.
 for the process table, precise test limits, source correction, complete run links,
 normal CI result, and reproduction patch. The original blocker document remains
 unchanged evidence of the still-unmodified production implementation's failures.
+
+## Production implementation — 2026-09-19
+
+The sections above are the preserved pre-implementation architecture evidence.
+The user subsequently authorized production implementation on the same branch.
+The original bytes are retained in commit `03df753`; the pre-implementation
+SHA-256 manifest is `wave-e-evidence/implementation-baseline.sha256`.
+
+### Responsibility and bootstrap
+
+`internal/run.Owner` is the single process-lifetime controller. `DefaultRuntime`
+creates it once; Exec copies, `WithIO`, trusted repository wrappers and the
+cancellation wrapper retain the same pointer. No package initializer activates
+ownership. Fake-runner application tests explicitly supply a fake capability.
+Standalone Exec values without a controller retain the read-only/direct-child
+contract; production mutation always uses DefaultRuntime's controller and gate.
+
+Reconcile activates immediately after affirmative top-level confirmation, before
+sudo acquisition. Update activates after its single confirmation, before even
+download/verification, and uses the terminal-rebound runner for verification and
+replacement. Both preserve the approved in-memory plan. Doctor, no-op setup,
+decline and update checks never activate. Unsupported confirmed mutation returns
+a fatal safe-subprocess-ownership diagnostic before sudo or managed-state writes.
+
+Bootstrap uses the systemd **user** manager's `StartTransientUnit` D-Bus API,
+registering the current PID in a random-128-bit-named `ops-*.scope`. Properties
+are `Delegate=yes` and `CollectMode=inactive-or-failed`. It subscribes to job
+completion before requesting activation, then verifies the matching job, unit
+properties, current `0::` membership, and the actual cgroup2 filesystem. It
+connects directly to `/run/user/<effective-uid>/bus`; no shell parsing, re-exec,
+root helper, system-manager fallback, persistent units, or lingering changes.
+
+The focused dependency is `github.com/godbus/dbus/v5 v5.2.2`, with its sole
+transitive module `golang.org/x/sys v0.27.0`. Existing TOML v2.2.4 is unchanged.
+The library supplies established authentication, framing, types, signals, and
+context cancellation. systemd-run cannot move this existing process into its
+own new scope without changing launch semantics; busctl would add an external
+bootstrap command and CLI argument/result encoding. Neither is preferable to
+the typed current-PID API. The build works with CGO disabled. Go remains 1.26.7.
+
+Activation proves real mkdir/open/read/write/remove capability on an empty child,
+including opening cgroup.kill as the ordinary user and writing it. A second
+inert `/usr/bin/true` probe proves CLONE_INTO_CGROUP and pidfd availability before
+sudo. Population accounting can briefly outlive reaping, so the probe uses a
+bounded population observation rather than a single immediate snapshot. No
+version string or `user.delegate` xattr substitutes for these checks.
+
+### Commands, cleanup, errors, and terminal behavior
+
+Every post-activation command gets a monotonically numbered child cgroup under
+the retained scope directory. Names have no user-controlled component. Directory
+and cgroup interface descriptors stay open through Start and cleanup. Linux
+SysProcAttr sets only `UseCgroupFD`, `CgroupFD`, and `PidFD`; no process-group or
+session attributes are introduced. Failure to start never retries unowned.
+The frozen-cgroup integration proves the child is contained before userspace
+executes, then checks its first recorded membership after thawing.
+
+The executor owns cancellation while os/exec owns reaping and stream copying.
+A pidfd separately observes direct-child exit when Wait is still blocked by
+inherited pipes. Already-published Wait completion wins a simultaneous context
+cancellation; otherwise the latched cancellation cause is joined with the exit
+and cleanup errors. `run.Error` and errors.Is for cancellation/deadlines survive.
+Deterministic channel tests cover both arbitration orders and observer failures.
+
+Cancellation requests SIGTERM of the direct child where permitted, allows two
+seconds for population to disappear, then writes the command's cgroup.kill as
+UID 1000. It observes cgroup.events populated=0 for up to two more seconds before
+reaping/draining, with a further five-second bound. Cmd.WaitDelay is five seconds
+and is a secondary pipe/direct-child safeguard; it starts on context cancellation
+or direct-child exit with unfinished I/O. It does not establish ownership.
+Natural exit allows a 50ms accounting-settle interval, then kills remaining
+background descendants and reports a lifecycle failure. Successful ordinary
+output is drained without truncation beyond the existing capture policy.
+
+A cgroup is removed only after authoritative populated=0 and successful reap/
+drain. Empty nested cgroups are removed using a bounded walk of that command's
+subtree only; ordinary commands take one rmdir. There is no production /proc
+scan or descendant-PID enumeration. Nested live population, setsid, forks and
+sudo credential transitions remain covered by the kernel boundary.
+
+The real sudo PTY regression found that authoritative killing also kills sudo's
+monitor before it can restore its caller's terminal modes. Interactive execution
+therefore snapshots the supplied TTY and restores its modes on command failure;
+successful commands retain their usual terminal semantics. There is no tcsetpgrp
+choreography or output redesign. The test inventories both sudo processes and
+root helpers, checks input, sends keyboard Ctrl-C and an explicit SIGTERM to ops
+(sudo may route keyboard interrupts into its own PTY), checks complete cleanup,
+then reads another line and verifies original termios. This does not claim that
+a keyboard interrupt ignored by an interactive program always cancels ops.
+
+### Mutation admission and lifecycle boundaries
+
+Uncertain cleanup, changed scope membership, lost capability, removal failure or
+reap/drain timeout permanently poisons the controller. No later command starts.
+`beginMutation` requires active healthy ownership; short persistent SSH/GnuPG
+file changes also share the controller's admission mutex with poisoning. Core,
+AUR, Flatpak, Git, SSH, GitHub and update paths classify ownership errors as fatal,
+including cleanup errors joined to cancellation. Application failure loops and
+final reinspection stop. Sudo acquisition/refresh commands use separate command
+cgroups; Keeper.Close waits for refresh cleanup and retains ownership errors.
+Updater recovery commands keep their independent contexts but the same owner.
+
+The command inventory found the following intentional lifetime boundaries:
+
+- Direct daemonization, setsid, build/helper background processes and newly
+  inherited sudo/root processes remain owned and cannot survive Run.
+- Public GnuPG import/fetch/export can auto-start dirmngr, keyboxd or gpg-agent.
+  These synchronous public-key calls explicitly declare ephemeral helpers. They
+  are still killed and verified empty before return; only the unexpected-leak
+  diagnostic is suppressed for that declaration. Repeated classic/keyboxd
+  import/export regression checks committed public data survives cleanup.
+  Release verification uses isolated GnuPG with `--no-autostart`.
+- Existing SSH/GPG agents reached through sockets were not forked by the command
+  and are not killed. ops does not start a persistent ssh-agent.
+- systemctl can request a service from PID 1 or the user manager. That service
+  is manager-created state outside the initiating command's cgroup. A native
+  regression confirms it survives the initiating Run and is stopped explicitly
+  for fixture cleanup. Operation/recovery policy remains responsible for such
+  services. No manager-owned service is killed as a descendant.
+
+This is lifecycle ownership, **not hostile-root sandboxing**. Deliberately
+malicious root or same-UID code manipulating cgroupfs is outside the model.
+Existing Bubblewrap read-only isolation, --die-with-parent and no-fallback
+behavior remain independent and intact; bwrap itself is atomically owned.
+
+### Crash and uninterruptible-task limitations
+
+SIGINT/SIGTERM delivered to ops cause the bounded Go cleanup above. SIGKILL or a
+hard crash prevents Go cleanup and TTY restoration. A scope is not a supervisor
+bound to its registering PID: it remains populated while inherited descendants
+live. The native crash regression kills its fixture owner, observes surviving
+population, then uses the surviving test parent to clear only that fixture.
+Systemd collects the transient scope after all population disappears. Production
+does not add a permanent crash supervisor or promise crash rollback.
+
+A kernel task in uninterruptible sleep can remain after cgroup.kill. The bounded
+cleanup then reports incomplete ownership, poisons admission and preserves the
+command cgroup. os/exec cannot forcibly finish reaping such a task, or unblock
+an arbitrary caller-supplied reader/writer. The exceptional reap/drain bound
+returns without reading buffers still used by Wait; any pending goroutine ends
+only when the kernel/IO permits. Normal inherited-pipe holders are killed and
+reach EOF, as verified by both root and ordinary-user tests. Neither this nor
+crash behavior is represented as successful cleanup.
+
+### Permanent validation
+
+Dedicated `ownership_integration` tests exercise production code; ordinary
+`go test ./...` gains no environmental skips. CI runs real sudo/root/fork/PTY
+and sudo-keeper tests, then their targeted race versions, before removing the
+existing cloud-init sudo grant. It verifies sudo -n true fails, then continues
+the existing ordinary and complete race suites and skip audit. Unprivileged
+native ownership/GPG/crash/updater tests run separately after revocation.
+
+The minimal Arch container retains Doctor and decline checks and now confirms a
+plan with a disposable sudo sentinel. It verifies fatal ownership refusal,
+no sudo invocation, unchanged package/config state, and no managed SSH files.
+No privileged-container workaround or host cgroup mount is introduced.
+
+Local invocation (normal user, no sudo):
+
+```sh
+PATH="$HOME/.local/opt/go1.26.7/bin:$PATH" GOENV=off GOTOOLCHAIN=local \
+  go test -count=1 -tags ownership_integration ./internal/run ./internal/pgp ./internal/release \
+  -run '^(TestNativeOwnership|TestNativeCrashScopeLifetime|TestNativeGPGHelpers|TestNativeUpdaterOwnership|TestOwnershipPTY)$'
+```
+
+Detailed implementation validation and review results are retained separately in
+`wave-e-evidence/implementation/validation.md`.
