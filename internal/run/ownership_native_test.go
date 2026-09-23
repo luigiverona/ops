@@ -42,6 +42,16 @@ func nativeOwner(t *testing.T) *Owner {
 	if err := o.Activate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+
+	if record := os.Getenv("OPS_OWNERSHIP_SCOPE_RECORD"); record != "" {
+		if err := os.WriteFile(record, []byte("/sys/fs/cgroup"+o.scope.(*cgroupScope).path), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Even t.Fatal must clean this test's own delegated subtree. Children also
+	// have independent deadlines if the entire test process is killed.
+	scope := o.scope.(*cgroupScope)
+	t.Cleanup(func() { cleanupNativeScope(t, scope) })
 	return o
 }
 func awaitNative(t *testing.T, fn func() bool) {
@@ -298,7 +308,7 @@ func TestNativeOwnership(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		done := make(chan error, 1)
-		spec := Spec{Name: "/usr/bin/python3", Args: []string{"-c", "import os,signal,time; signal.alarm(15); p=os.fork(); print('ready',flush=True); time.sleep(12)"}, ReadOnlyFilesystem: true}
+		spec := Spec{Name: "/usr/bin/python3", Args: []string{"-c", "import os,signal,time; signal.alarm(15); os.register_at_fork(after_in_child=lambda: signal.alarm(15)); p=os.fork(); print('ready',flush=True); time.sleep(12)"}, ReadOnlyFilesystem: true}
 		go func() { _, err := (Exec{Owner: o}).Run(ctx, spec); done <- err }()
 		path := "/sys/fs/cgroup" + o.scope.(*cgroupScope).path
 		// Inspect only our own command cgroup in this test. Two python PIDs prove
@@ -497,11 +507,11 @@ func TestNativeCrashScopeLifetime(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(binary, "-test.run=^TestOwnershipCrashHelper$")
-	cmd.Env = append(os.Environ(), "OPS_OWNERSHIP_CRASH_HELPER="+dir)
+	cmd.Env = append(os.Environ(), "OPS_OWNERSHIP_CRASH_HELPER="+dir, "OPS_OWNERSHIP_SCOPE_RECORD="+filepath.Join(dir, "scope"))
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer cmd.Process.Kill()
+	t.Cleanup(func() { cleanupCrashedOwner(t, cmd, dir) })
 	awaitNative(t, func() bool { _, err := os.Stat(filepath.Join(dir, "ready")); return err == nil })
 	records := fixtureRecords(t, dir)
 	var path string

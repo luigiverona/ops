@@ -19,7 +19,7 @@ printf '::group::Bootstrap disposable Arch VM\n'
 sudo pacman -Syu --noconfirm
 sudo pacman -S --needed --noconfirm \
     archlinux-keyring pacman gnupg libarchive bubblewrap flatpak \
-    git gcc openssh python util-linux diffutils
+    git gcc fakeroot openssh python util-linux diffutils
 sudo install -d -m 0700 -o ops-ci -g ops-ci /run/user/1000
 # Exercise production ownership with real sudo/PTYs in this disposable guest.
 # Preserve failure status but ALWAYS revoke the existing bootstrap grant below.
@@ -29,10 +29,10 @@ export GOCACHE=/home/ops-ci/.cache/go-build GOMODCACHE=/home/ops-ci/go/pkg/mod
 export XDG_RUNTIME_DIR=/run/user/1000
 ownership_status=0
 OPS_OWNERSHIP_PRIVILEGED=1 go test -v -count=1 -timeout=3m -tags ownership_integration ./internal/run ./internal/sudo \
-    -run '^(TestPrivilegedOwnership|TestPrivilegedOwnershipKeeper|TestOwnershipPTY)$' >"$HOME/ci-logs/ownership.log" 2>&1 || ownership_status=$?
+    -run '^(TestPrivilegedOwnership|TestPrivilegedOwnershipKeeper|TestOwnershipPTY|TestOwnershipPTYFailureCleanup)$' >"$HOME/ci-logs/ownership.log" 2>&1 || ownership_status=$?
 cat "$HOME/ci-logs/ownership.log"
 OPS_OWNERSHIP_PRIVILEGED=1 go test -race -v -count=1 -timeout=3m -tags ownership_integration ./internal/run ./internal/sudo \
-    -run '^(TestPrivilegedOwnership|TestPrivilegedOwnershipKeeper|TestOwnershipPTY)$' >"$HOME/ci-logs/ownership-race.log" 2>&1 || ownership_status=$?
+    -run '^(TestPrivilegedOwnership|TestPrivilegedOwnershipKeeper|TestOwnershipPTY|TestOwnershipPTYFailureCleanup)$' >"$HOME/ci-logs/ownership-race.log" 2>&1 || ownership_status=$?
 cat "$HOME/ci-logs/ownership-race.log"
 # Bootstrap is over: remove the cloud-init sudo grant before running tests.
 sudo rm /etc/sudoers.d/90-cloud-init-users
@@ -158,7 +158,7 @@ grep -E '^--- PASS: TestRealVerCmpArchVersionSemantics ' "$HOME/ci-logs/native-a
 printf '::endgroup::\n'
 
 printf '::group::Unprivileged process ownership\n'
-audit_test ownership-native.log go test -v -count=1 -timeout=3m -tags ownership_integration ./internal/run ./internal/pgp ./internal/release -run '^(TestNativeOwnership|TestNativeCrashScopeLifetime|TestNativeGPGHelpers|TestNativeUpdaterOwnership|TestOwnershipPTY)$'
+audit_test ownership-native.log go test -v -count=1 -timeout=3m -tags ownership_integration ./internal/run ./internal/pgp ./internal/release -run '^(TestNativeOwnership|TestNativeCrashScopeLifetime|TestNativeGPGHelpers|TestNativeUpdaterOwnership|TestOwnershipPTY|TestOwnershipPTYFailureCleanup|TestNativeMakepkgHelpers|TestNativeCleanupCancellation)$'
 printf '::endgroup::\n'
 
 printf '::group::Native Flatpak tests\n'

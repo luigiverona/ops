@@ -2,13 +2,22 @@
 import json, os, pathlib, signal, sys, time
 mode, directory = sys.argv[1:3]
 root = pathlib.Path(directory)
-signal.alarm(20)
+# Fork does not inherit active timers. The at-fork hook bounds every child,
+# including the serial forker's grandchildren, independently of its parent.
+bound = float(os.environ.get('OPS_FIXTURE_SECONDS', '20'))
+assert 0 < bound <= 20
+def arm_deadline():
+    signal.signal(signal.SIGALRM, signal.SIG_DFL)
+    signal.setitimer(signal.ITIMER_REAL, bound)
+arm_deadline()
+os.register_at_fork(after_in_child=arm_deadline)
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 signal.signal(signal.SIGINT, signal.SIG_IGN)
 def record(role):
     value = dict(pid=os.getpid(), ppid=os.getppid(), uid=os.getuid(), role=role,
                  sid=os.getsid(0), pgid=os.getpgrp(),
-                 cgroup=pathlib.Path('/proc/self/cgroup').read_text())
+                 cgroup=pathlib.Path('/proc/self/cgroup').read_text(),
+                 deadline_remaining=signal.getitimer(signal.ITIMER_REAL)[0])
     if os.isatty(0):
         try: value['foreground'] = os.tcgetpgrp(0)
         except OSError: pass

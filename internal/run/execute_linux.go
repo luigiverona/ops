@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -51,7 +52,16 @@ func (e Exec) execute(ctx context.Context, cmd *exec.Cmd, ephemeralHelpers bool)
 		defer syscall.Close(pidfd)
 	}
 	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	var failureBeforeCancel atomic.Bool
+	go func() {
+		waitErr := cmd.Wait()
+		// Publish independent completion even if cleanup is currently observing
+		// population. Cancellation after this point must not replace the failure.
+		if waitErr != nil && ctx.Err() == nil {
+			failureBeforeCancel.Store(true)
+		}
+		done <- waitErr
+	}()
 	epfd, epErr := syscall.EpollCreate1(syscall.EPOLL_CLOEXEC)
 	if epErr == nil {
 		defer syscall.Close(epfd)
@@ -74,6 +84,25 @@ func (e Exec) execute(ctx context.Context, cmd *exec.Cmd, ephemeralHelpers bool)
 	if epErr != nil {
 		cause = e.Owner.fail(fmt.Errorf("observe command exit: %w", epErr))
 	}
+	return e.finishOwnedCommand(ctx, cmd, group, done, waitErr, cause, natural, waitReceived, epErr, ephemeralHelpers, &failureBeforeCancel)
+}
+
+// Direct completion is only one phase of the owned lifetime. This boundary also
+// allows deterministic tests to publish Wait before any population observation.
+func (e Exec) finishOwnedCommand(ctx context.Context, cmd *exec.Cmd, group commandGroup, done <-chan error, waitErr, cause error, natural, waitReceived bool, epErr error, ephemeralHelpers bool, failureBeforeCancel *atomic.Bool) (result error, waited bool) {
+	// An independent failure published before cancellation wins, even if Wait
+	// publishes while cleanup is already in progress. Lifecycle failures remain
+	// joined with cancellation: they do not complete the unresolved lifetime.
+	// Sample after final
+	// removal/close, including exceptional reap/drain returns.
+	priorFailure := waitReceived && waitErr != nil
+	defer func() {
+		if !priorFailure && (failureBeforeCancel == nil || !failureBeforeCancel.Load()) {
+			if err := ctx.Err(); err != nil && !errors.Is(result, err) {
+				result = compose(result, err)
+			}
+		}
+	}()
 	// cgroup population accounting may briefly outlive a reaped direct task.
 	// Give that transition a small bound before classifying live descendants.
 	settle := time.Duration(0)
@@ -92,7 +121,6 @@ func (e Exec) execute(ctx context.Context, cmd *exec.Cmd, ephemeralHelpers bool)
 		// authoritative force-cleanup mechanism after the grace phase.
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 	}
-	pending := !waitReceived
 	cleanupErr := e.Owner.emptyGroup(group, !natural && epErr == nil && populationErr == nil)
 	if !waitReceived {
 		timer := time.NewTimer(ownershipWaitDelay)
@@ -108,11 +136,6 @@ func (e Exec) execute(ctx context.Context, cmd *exec.Cmd, ephemeralHelpers bool)
 			closeErr := group.Close()
 			return compose(cause, cleanupErr, e.Owner.fail(compose(errors.New("command reap/pipe cleanup did not complete"), closeErr))), false
 		}
-	}
-	// Cancellation during natural descendant cleanup/drain still belongs to the
-	// unfinished lifetime. An already completed independent failure stays intact.
-	if pending && ctx.Err() != nil {
-		cause = compose(cause, ctx.Err())
 	}
 	return compose(waitErr, cause, cleanupErr, e.Owner.finishGroup(group)), true
 }

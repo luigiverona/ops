@@ -169,6 +169,9 @@ func TestBuildUsesFixedCheckoutBelowTemporaryRoot(t *testing.T) {
 						t.Fatalf("package base was not preserved in source URL: %+v", call)
 					}
 				case "makepkg":
+					if !call.EphemeralHelpers {
+						t.Fatal("makepkg lost temporary-helper lifetime policy")
+					}
 					path, operation = call.Dir, "makepkg"
 				default:
 					t.Fatalf("unexpected build command: %+v", call)

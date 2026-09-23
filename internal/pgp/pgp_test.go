@@ -126,6 +126,18 @@ func testGPG(t *testing.T, home string, args ...string) string {
 	if _, err := exec.LookPath("gpg"); err != nil {
 		t.Skip("gpg is not available")
 	}
+	// This helper only receives disposable homes from these tests. Stop their
+	// auto-started agents/keyboxd before TempDir removes the sockets needed to
+	// address them; cleanup remains bounded even after a failed assertion.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "gpgconf", "--homedir", home, "--kill", "all")
+		cmd.WaitDelay = time.Second
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("stop disposable GPG helpers: %v: %s", err, out)
+		}
+	})
 	base := []string{"--batch", "--no-tty", "--pinentry-mode", "loopback", "--passphrase", "", "--homedir", home}
 	command := exec.Command("gpg", append(base, args...)...)
 	output, err := command.CombinedOutput()

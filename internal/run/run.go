@@ -35,7 +35,7 @@ type Spec struct {
 	// FailureOutput opts in only at command boundaries whose output is safe to report.
 	FailureOutput FailureOutput
 	// EphemeralHelpers declares known auto-started helpers of a synchronous tool
-	// (public-key GnuPG operations). They are terminated after its committed result,
+	// (public-key GnuPG operations and reviewed makepkg invocations). They are terminated after its committed result,
 	// never allowed to outlive Run. Undeclared background descendants are an error.
 	EphemeralHelpers bool
 }

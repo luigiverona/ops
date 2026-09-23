@@ -218,9 +218,17 @@ func (g *cgroupCommand) Empty() (bool, error) {
 	if err != nil && err != io.EOF {
 		return false, err
 	}
+	// A full buffer does not prove EOF; reject rather than parse a prefix.
+	// The fixed bound avoids an unbounded read from a compromised interface.
+	if n == len(b) {
+		return false, errors.New("cgroup.events snapshot exceeds read bound")
+	}
 	return parsePopulation(string(b[:n]))
 }
 func parsePopulation(value string) (bool, error) {
+	if !strings.HasSuffix(value, "\n") {
+		return false, errors.New("incomplete cgroup.events record")
+	}
 	found, empty := false, false
 	for _, line := range strings.Split(value, "\n") {
 		f := strings.Fields(line)

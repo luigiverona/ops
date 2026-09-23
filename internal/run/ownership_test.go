@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -347,5 +348,25 @@ func TestTerminalRecoveryFailureClosesMutationGate(t *testing.T) {
 	err := (Exec{Owner: o}).recoverTerminal(func() error { return errors.New("terminal disappeared") }, original)
 	if !errors.Is(err, original) || !OwnershipFailed(err) || !OwnershipFailed(o.Check()) {
 		t.Fatal(err)
+	}
+}
+
+func TestPopulationSnapshotReadBound(t *testing.T) {
+	for _, value := range []string{"populated 0", "populated 0\nfrozen", "populated 0\n" + strings.Repeat("x", 4096), "populated 0\n" + strings.Repeat("x", 4083) + "\n", "populated 0\nfrozen 0\n"} {
+		t.Run(fmt.Sprint(len(value)), func(t *testing.T) {
+			f, err := os.CreateTemp(t.TempDir(), "events")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+			if _, err := f.WriteString(value); err != nil {
+				t.Fatal(err)
+			}
+			empty, err := (&cgroupCommand{events: f}).Empty()
+			good := value == "populated 0\nfrozen 0\n"
+			if good != (err == nil) || empty != good {
+				t.Fatalf("snapshot len=%d empty=%v err=%v", len(value), empty, err)
+			}
+		})
 	}
 }

@@ -142,10 +142,13 @@ func (m Manager) Build(ctx context.Context, source plan.AURSource, target string
 	}
 	// Both invocations source reviewed shell code, which can print arbitrary
 	// private data. Build approval does not authorize diagnostic disclosure.
-	if _, err := m.Runner.Run(ctx, run.Spec{Name: "makepkg", Dir: repo, AllowTruncatedOutput: true, Stdin: strings.NewReader("")}); err != nil {
+	// Both can start GnuPG helpers, including while sourcing PKGBUILD. The
+	// reviewed ephemeral policy kills all remaining command-owned helpers and
+	// proves population zero, drains/reaps and removes the group before success.
+	if _, err := m.Runner.Run(ctx, run.Spec{EphemeralHelpers: true, Name: "makepkg", Dir: repo, AllowTruncatedOutput: true, Stdin: strings.NewReader("")}); err != nil {
 		return err
 	}
-	result, err = m.Runner.Run(ctx, run.Spec{Name: "makepkg", Args: []string{"--packagelist"}, Dir: repo, Stdin: strings.NewReader("")})
+	result, err = m.Runner.Run(ctx, run.Spec{EphemeralHelpers: true, Name: "makepkg", Args: []string{"--packagelist"}, Dir: repo, Stdin: strings.NewReader("")})
 	if err != nil {
 		return err
 	}

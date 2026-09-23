@@ -93,6 +93,9 @@ func (m Manager) Discover(ctx context.Context) ([]Identity, error) {
 		}
 		fingerprint, err := m.privateFingerprint(ctx, path)
 		if err != nil {
+			if inspectionInterrupted(err) {
+				return nil, fmt.Errorf("inspect private SSH identity: %w", err)
+			}
 			continue
 		}
 		if fingerprint != "" {
@@ -154,6 +157,9 @@ func (m Manager) verifyFingerprint(ctx context.Context, path, want string) error
 		return nil
 	}
 	got, err := m.privateFingerprint(ctx, path)
+	if inspectionInterrupted(err) {
+		return fmt.Errorf("revalidate private SSH identity: %w", err)
+	}
 	if err != nil || got != want {
 		return errors.New("identity changed since review")
 	}
@@ -779,4 +785,9 @@ func mutationReady(ctx context.Context, runner run.Runner) error {
 		return err
 	}
 	return run.CheckMutation(runner)
+}
+
+// Ordinary malformed keys remain discovery candidates, not lifecycle failures.
+func inspectionInterrupted(err error) bool {
+	return run.OwnershipFailed(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
