@@ -4,11 +4,12 @@ package release
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -21,6 +22,33 @@ import (
 // contexts entirely in temporary files. The fixture substitutes ordinary-user
 // install/mv/rm for sudo; the production Owner/Exec still runs every command.
 func TestNativeUpdaterOwnership(t *testing.T) {
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"normal", "parent-death"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "python3", "testdata/ownership_supervisor.py", mode, binary)
+			cmd.WaitDelay = 2 * time.Second
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("release supervisor: %v\n%s", err, out)
+			}
+			if !strings.Contains(string(out), "RELEASE CLEANUP PASS") {
+				t.Fatalf("missing cleanup: %s", out)
+			}
+			t.Log(string(out))
+		})
+	}
+}
+
+func TestNativeUpdaterOwnershipHelper(t *testing.T) {
+	dir := os.Getenv("OPS_RELEASE_FIXTURE_DIR")
+	if dir == "" {
+		return
+	}
 	if _, _, err := syscall.Syscall6(syscall.SYS_PRCTL, 36, 1, 0, 0, 0, 0); err != 0 {
 		t.Fatal(err)
 	}
@@ -28,10 +56,23 @@ func TestNativeUpdaterOwnership(t *testing.T) {
 	if err := owner.Activate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	dir := t.TempDir()
+	membership, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(membership), "\n") {
+		if strings.HasPrefix(line, "0::") {
+			if err := os.WriteFile(filepath.Join(dir, "scope"), []byte("/sys/fs/cgroup"+strings.TrimPrefix(line, "0::")), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	binary := filepath.Join(dir, "verified")
-	program := fmt.Sprintf("#!/usr/bin/python3\nimport os,pathlib,signal,time\nsignal.alarm(20)\np=os.fork()\nif p==0: os.setsid()\npathlib.Path(%q+str(os.getpid())+'.pid').write_text(pathlib.Path('/proc/self/cgroup').read_text())\nwhile True: time.sleep(.01)\n", dir+"/")
-	if err := os.WriteFile(binary, []byte(program), 0700); err != nil {
+	fixture, err := os.ReadFile("testdata/ownership.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binary, fixture, 0700); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -42,8 +83,8 @@ func TestNativeUpdaterOwnership(t *testing.T) {
 	}()
 	deadline := time.Now().Add(8 * time.Second)
 	var records []string
-	for len(records) < 2 {
-		records, _ = filepath.Glob(filepath.Join(dir, "*.pid"))
+	for len(records) < 3 {
+		records, _ = filepath.Glob(filepath.Join(dir, "*.json"))
 		if time.Now().After(deadline) {
 			t.Fatal("updater descendants did not start")
 		}
@@ -55,14 +96,30 @@ func TestNativeUpdaterOwnership(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, line := range strings.Split(string(b), "\n") {
+		var value struct{ Cgroup string }
+		var current string
+		if err := json.Unmarshal(b, &value); err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(value.Cgroup, "\n") {
 			if strings.HasPrefix(line, "0::") {
-				cgroup = strings.TrimPrefix(line, "0::")
+				current = strings.TrimPrefix(line, "0::")
 			}
 		}
-		if !strings.HasPrefix(filepath.Base(cgroup), "command-") {
-			t.Fatal("updater ran outside ownership", cgroup)
+		scope, err := os.ReadFile(filepath.Join(dir, "scope"))
+		if err != nil {
+			t.Fatal(err)
 		}
+		if !strings.HasPrefix(filepath.Base(current), "command-") || "/sys/fs/cgroup"+filepath.Dir(current) != string(scope) || cgroup != "" && current != cgroup {
+			t.Fatal("updater ran outside its command group", current)
+		}
+		cgroup = current
+	}
+	fmt.Println("RELEASE TREE READY")
+	if os.Getenv("OPS_RELEASE_PARENT_DEATH") == "1" {
+		// Supervisor kills us here while the command population is still alive.
+		time.Sleep(25 * time.Second)
+		t.Fatal("supervisor failed to kill fixture owner")
 	}
 	cancel()
 	select {
@@ -74,11 +131,25 @@ func TestNativeUpdaterOwnership(t *testing.T) {
 		t.Fatal("updater cleanup blocked")
 	}
 	for _, record := range records {
-		pid, _ := strconv.Atoi(strings.TrimSuffix(filepath.Base(record), ".pid"))
-		var status syscall.WaitStatus
-		_, _ = syscall.Wait4(pid, &status, 0, nil)
-		if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); !errors.Is(err, os.ErrNotExist) {
-			t.Fatal("updater helper survived", pid, err)
+		b, err := os.ReadFile(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var value struct{ PID int }
+		if err := json.Unmarshal(b, &value); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			var status syscall.WaitStatus
+			_, _ = syscall.Wait4(value.PID, &status, syscall.WNOHANG, nil)
+			if _, err := os.Stat(fmt.Sprintf("/proc/%d", value.PID)); errors.Is(err, os.ErrNotExist) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("updater helper survived", value.PID)
+			}
+			time.Sleep(5 * time.Millisecond)
 		}
 	}
 	if _, err := os.Stat("/sys/fs/cgroup" + cgroup); !errors.Is(err, os.ErrNotExist) {

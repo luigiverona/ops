@@ -86,10 +86,17 @@ func TestOwnershipPTYFailureCleanup(t *testing.T) {
 	cmd := exec.Command("python3", "testdata/ownership_pty.py", binary)
 	cmd.Env = append(os.Environ(), "OPS_OWNERSHIP_PTY_HELPER=1", "OPS_OWNERSHIP_PTY_FAIL=1")
 	out, err := cmd.CombinedOutput()
-	if err == nil || !strings.Contains(string(out), "OWNER-ONLY CLEANUP LEFT LIVE DESCENDANTS") || !strings.Contains(string(out), "injected PTY failure") || !strings.Contains(string(out), "PTY FIXTURE CLEANUP PASS") {
+	if err == nil || !strings.Contains(string(out), "OWNER-ONLY CLEANUP LEFT LIVE DESCENDANTS") || !strings.Contains(string(out), "injected PTY failure") || !strings.Contains(string(out), "PTY FIXTURE CLEANUP PASS") || !strings.Contains(string(out), "PTY WORKSPACE CLEANUP PASS") {
 		t.Fatalf("failure cleanup did not complete: %v\n%s", err, out)
 	}
-	t.Log("injected owner failure: descendants reaped and exact scope removed")
+	for _, line := range strings.Split(string(out), "\n") {
+		if path, ok := strings.CutPrefix(line, "PTY WORKSPACE CLEANUP PASS "); ok {
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("PTY workspace remains", path, err)
+			}
+		}
+	}
+	t.Log(string(out))
 }
 
 // Exercise the same post-Wait boundary against real cgroup.events. The direct

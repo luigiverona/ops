@@ -406,7 +406,10 @@ func TestOwnershipPTYHelper(t *testing.T) {
 	privileged := os.Getenv("OPS_OWNERSHIP_PRIVILEGED") == "1"
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	dir := t.TempDir()
+	dir := os.Getenv("OPS_OWNERSHIP_PTY_WORKSPACE")
+	if dir == "" {
+		t.Fatal("PTY supervisor workspace missing")
+	}
 	spec := nativeSpec(t, dir, "tty", privileged)
 	spec.Interactive = true
 	spec.Interaction = "ownership PTY fixture"

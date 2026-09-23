@@ -4,7 +4,10 @@ from ownership_cleanup import subreaper, cleanup_scope
 subreaper()
 workspace = tempfile.TemporaryDirectory(prefix="ops-pty-cleanup-")
 record = pathlib.Path(workspace.name) / "scope"
-env = dict(os.environ, OPS_OWNERSHIP_SCOPE_RECORD=str(record))
+workload = pathlib.Path(workspace.name) / "workload"
+workload.mkdir()
+env = dict(os.environ, OPS_OWNERSHIP_SCOPE_RECORD=str(record),
+           OPS_OWNERSHIP_PTY_WORKSPACE=str(workload))
 master, slave = pty.openpty()
 before = termios.tcgetattr(slave)
 def session():
@@ -51,3 +54,5 @@ finally:
         finally:
             os.close(master);os.close(slave)
             workspace.cleanup()
+            assert not pathlib.Path(workspace.name).exists()
+            print("PTY WORKSPACE CLEANUP PASS", workspace.name, flush=True)
