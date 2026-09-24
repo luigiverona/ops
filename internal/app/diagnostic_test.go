@@ -41,6 +41,9 @@ func TestDoctorSourceRecovery(t *testing.T) {
 				}
 				a.Runner = diagnosticRunner(func(ctx context.Context, s run.Spec) (run.Result, error) {
 					if s.Name == "pacman" && s.Args[0] == "-Si" && !strings.Contains(s.Args[len(s.Args)-1], "/") {
+						if absent {
+							return run.Result{Stderr: "target not found"}, fixtureExit(1)
+						}
 						return run.Result{Stderr: "database unavailable; target not found"}, errors.New("query failed")
 					}
 					return base.Run(ctx, s)

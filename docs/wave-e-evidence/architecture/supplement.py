@@ -1,3 +1,8 @@
+# ARCHIVAL SOURCE ONLY. Historical result data is preserved alongside this file.
+# This harness predates independent supervisor cleanup; use the maintained
+# ownership_integration suite. The guard also prevents execution after copying.
+raise SystemExit("Archived architecture harness: use ownership_integration tests")
+
 import os,sys,pathlib,json,subprocess,time,pty,select
 base=pathlib.Path(__file__).parent
 cgpath=next(x[3:] for x in pathlib.Path('/proc/self/cgroup').read_text().splitlines() if x.startswith('0::'))

@@ -4,6 +4,7 @@ package sudo
 
 import (
 	"context"
+	"github.com/luigiverona/ops/internal/testproc"
 	"io"
 	"os"
 	"testing"
@@ -13,6 +14,9 @@ import (
 )
 
 func TestPrivilegedOwnershipKeeper(t *testing.T) {
+	if testproc.Supervise(t) {
+		return
+	}
 	if os.Getenv("OPS_OWNERSHIP_PRIVILEGED") != "1" || os.Getuid() != 1000 {
 		t.Fatal("explicit privileged CI fixture authorization required")
 	}
@@ -20,6 +24,7 @@ func TestPrivilegedOwnershipKeeper(t *testing.T) {
 	if err := owner.Activate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	testproc.RecordScope(t)
 	e := run.Exec{Owner: owner, Out: io.Discard, Err: io.Discard}
 	observed := make(chan struct{}, 1)
 	keeper, err := acquire(context.Background(), observeKeeper{e, observed}, 10*time.Millisecond)

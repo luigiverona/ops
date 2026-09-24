@@ -50,10 +50,10 @@ func TestAuthenticationStatesAndLoginFlags(t *testing.T) {
 		if len(spec.Args) > 1 && spec.Args[0] == "auth" && spec.Args[1] == "status" && auth {
 			return run.Result{}, nil
 		}
-		return run.Result{}, errors.New("unauthenticated")
+		return run.Result{}, configExit(1)
 	}}
 	m := Manager{Runner: f}
-	if m.Authenticated(context.Background()) {
+	if authenticated, err := m.Authenticated(context.Background()); err != nil || authenticated {
 		t.Fatal("unexpected auth")
 	}
 	if err := m.Login(context.Background()); err != nil {
@@ -101,7 +101,7 @@ func TestIsSSHKeyScopeError(t *testing.T) {
 		{name: "network", err: ghKeyAPIError("dial tcp: network unavailable"), want: false},
 		{name: "malformed JSON", err: errors.New("parse GitHub SSH keys: invalid character '<' looking for beginning of value"), want: false},
 		{name: "unrelated scope text", err: ghKeyAPIError(`admin:public_key is mentioned by an unrelated scope error`), want: false},
-		{name: "wrong gh operation", err: &run.Error{Name: "gh", Args: []string{"api", "user/repos"}, Stderr: `This API operation needs the "admin:public_key" scope`, Err: errors.New("exit status 1")}, want: false},
+		{name: "wrong gh operation", err: &run.Error{Name: "gh", Args: []string{"api", "user/repos"}, Stderr: `This API operation needs the "admin:public_key" scope`, Err: configExit(1)}, want: false},
 		{name: "unstructured wrapped text", err: errors.New(`gh: This API operation needs the "admin:public_key" scope`), want: false},
 	}
 	for _, test := range tests {
@@ -114,7 +114,7 @@ func TestIsSSHKeyScopeError(t *testing.T) {
 }
 
 func ghKeyAPIError(stderr string) error {
-	return &run.Error{Name: "gh", Args: []string{"api", "--paginate", "user/keys"}, Stderr: stderr, Err: errors.New("exit status 1")}
+	return &run.Error{Name: "gh", Args: []string{"api", "--paginate", "user/keys"}, Stderr: stderr, Err: configExit(1)}
 }
 
 func TestKeysAndDeleteFailure(t *testing.T) {
@@ -160,7 +160,7 @@ func TestAddManagedAndDuplicate(t *testing.T) {
 func TestAuthFailureAndSSHVerification(t *testing.T) {
 	f := &fakeRunner{fn: func(spec run.Spec) (run.Result, error) {
 		if spec.Name == "ssh" {
-			return run.Result{Stderr: "Hi! You've successfully authenticated, but GitHub does not provide shell access."}, errors.New("exit status 1")
+			return run.Result{Stderr: "Hi! You've successfully authenticated, but GitHub does not provide shell access."}, configExit(1)
 		}
 		return run.Result{}, errors.New("auth failed")
 	}}
@@ -194,7 +194,7 @@ func TestVerifySSHIsStrictlyNoninteractive(t *testing.T) {
 		if len(data) != 0 {
 			t.Fatalf("verification stdin = %q, want EOF", data)
 		}
-		return run.Result{Stderr: "Hi! You've successfully authenticated, but GitHub does not provide shell access."}, errors.New("exit status 1")
+		return run.Result{Stderr: "Hi! You've successfully authenticated, but GitHub does not provide shell access."}, configExit(1)
 	}}
 	if err := (Manager{Runner: f}).VerifySSH(context.Background()); err != nil {
 		t.Fatalf("VerifySSH() error = %v, want successful authentication", err)

@@ -5,6 +5,7 @@ package run
 import (
 	"context"
 	"errors"
+	"github.com/luigiverona/ops/internal/testproc"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,9 @@ import (
 )
 
 func TestNativeMakepkgHelpers(t *testing.T) {
+	if testproc.Supervise(t) {
+		return
+	}
 	o := nativeOwner(t)
 	for _, mode := range []string{"before-build", "build", "packagelist", "unexpected-helper"} {
 		t.Run(mode, func(t *testing.T) {

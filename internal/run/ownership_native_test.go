@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/luigiverona/ops/internal/testproc"
 	"io"
 	"os"
 	"os/exec"
@@ -188,6 +189,9 @@ func nativeCase(t *testing.T, o *Owner, mode string, privileged bool) {
 }
 
 func TestNativeOwnership(t *testing.T) {
+	if testproc.Supervise(t) {
+		return
+	}
 	if os.Getenv("OPS_OWNERSHIP_PTY_HELPER") != "" {
 		return
 	}
@@ -256,7 +260,7 @@ func TestNativeOwnership(t *testing.T) {
 		unit := fmt.Sprintf("ops-service-fixture-%d-%d.service", os.Getpid(), time.Now().UnixNano())
 		e := Exec{Owner: o}
 		defer e.Run(context.Background(), Spec{Name: "systemctl", Args: []string{"--user", "stop", unit}})
-		if _, err := e.Run(context.Background(), Spec{Name: "systemd-run", Args: []string{"--user", "--quiet", "--collect", "--unit=" + unit, "--", "/usr/bin/sleep", "20"}}); err != nil {
+		if _, err := e.Run(context.Background(), Spec{Name: "systemd-run", Args: []string{"--user", "--quiet", "--collect", "--unit=" + unit, "--property=RuntimeMaxSec=20", "--", "/usr/bin/sleep", "20"}}); err != nil {
 			t.Fatal(err)
 		}
 		result, err := e.Run(context.Background(), Spec{Name: "systemctl", Args: []string{"--user", "show", "--property=MainPID", "--value", unit}})
@@ -373,6 +377,9 @@ func TestNativeOwnership(t *testing.T) {
 // Dedicated invocation only; never skipped by ordinary go test ./.... CI runs
 // this before revoking its existing cloud-init grant, not on developer machines.
 func TestPrivilegedOwnership(t *testing.T) {
+	if testproc.Supervise(t) {
+		return
+	}
 	if os.Getenv("OPS_OWNERSHIP_PRIVILEGED") != "1" {
 		t.Fatal("explicit privileged CI fixture authorization required")
 	}
@@ -503,6 +510,9 @@ func (s *freezingScope) New(name string) (commandGroup, error) {
 // This demonstrates the explicit crash limitation without introducing a
 // production supervisor. The surviving test parent cleans only its fixture.
 func TestNativeCrashScopeLifetime(t *testing.T) {
+	if testproc.Supervise(t) {
+		return
+	}
 	_ = nativeOwner(t)
 	dir := t.TempDir()
 	binary, err := os.Executable()

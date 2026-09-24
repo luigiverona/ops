@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/luigiverona/ops/internal/testproc"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -102,6 +103,9 @@ func TestOwnershipPTYFailureCleanup(t *testing.T) {
 // Exercise the same post-Wait boundary against real cgroup.events. The direct
 // command is synchronously reaped before the first observation triggers cancel.
 func TestNativeCleanupCancellation(t *testing.T) {
+	if testproc.Supervise(t) {
+		return
+	}
 	o := nativeOwner(t)
 	for _, mode := range []string{"cancel", "deadline", "prior-failure", "prior-lifecycle-failure"} {
 		t.Run(mode, func(t *testing.T) {

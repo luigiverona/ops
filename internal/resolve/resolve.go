@@ -46,7 +46,7 @@ func (r Resolver) Pacman(ctx context.Context, name string) (plan.Package, bool, 
 	result, err := archrepo.Query(ctx, r.Runner, []string{"-Si", "--", name})
 	if err != nil {
 		var sourceErr *archtrust.SourceError
-		if errors.As(err, &sourceErr) {
+		if errors.As(err, &sourceErr) || !run.OnlyExit(err, 1) {
 			return plan.Package{}, false, &QueryError{Err: err}
 		}
 		// A native query of the acquired snapshot may miss an exact package.
@@ -259,7 +259,7 @@ func (r Resolver) officialDependency(ctx context.Context, requirement string) (p
 		}
 		binding.Satisfied = true
 	}
-	if err != nil && (!run.Exited(err, 127) || strings.TrimSpace(result.Stdout) != requirement || strings.TrimSpace(result.Stderr) != "") {
+	if err != nil && (!run.OnlyExit(err, 127) || strings.TrimSpace(result.Stdout) != requirement || strings.TrimSpace(result.Stderr) != "") {
 		return binding, fmt.Errorf("inspect installed dependency: %w", err)
 	}
 	format := "%r/%n\t%P"
@@ -314,7 +314,7 @@ func (r Resolver) officialDependency(ctx context.Context, requirement string) (p
 	installed := map[string]bool{}
 	if !binding.Satisfied {
 		inventory, err := r.Runner.Run(ctx, run.Spec{Name: "pacman", Args: []string{"-Qq"}, FailureOutput: run.FailureStderr})
-		if err != nil && !(run.Exited(err, 1) && inventory.Stdout == "" && inventory.Stderr == "") {
+		if err != nil && !(run.OnlyExit(err, 1) && inventory.Stdout == "" && inventory.Stderr == "") {
 			return binding, &QueryError{Err: err}
 		}
 		for _, name := range strings.Fields(inventory.Stdout) {

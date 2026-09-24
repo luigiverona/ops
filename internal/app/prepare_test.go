@@ -145,7 +145,7 @@ func (f *prepareRunner) Run(_ context.Context, spec run.Spec) (run.Result, error
 		if strings.Contains(joined, "--json hosts") {
 			return run.Result{Stdout: `{"hosts":{}}`}, nil
 		}
-		return run.Result{}, errors.New("not authenticated")
+		return run.Result{}, fixtureExit(1)
 	}
 	if spec.Name == "gh" && len(spec.Args) > 1 && spec.Args[0] == "auth" && spec.Args[1] == "login" {
 		f.authenticated = true
@@ -160,7 +160,7 @@ func (f *prepareRunner) Run(_ context.Context, spec run.Spec) (run.Result, error
 		f.githubAPICalls++
 		if f.scopeErrorsLeft > 0 {
 			f.scopeErrorsLeft--
-			return run.Result{}, &run.Error{Name: "gh", Args: spec.Args, Stderr: `gh: This API operation needs the "admin:public_key" scope`, Err: errors.New("exit status 1")}
+			return run.Result{}, &run.Error{Name: "gh", Args: spec.Args, Stderr: `gh: This API operation needs the "admin:public_key" scope`, Err: fixtureExit(1)}
 		}
 		if f.failKeyAPI {
 			return run.Result{}, errors.New("GitHub key API unavailable")
@@ -171,7 +171,7 @@ func (f *prepareRunner) Run(_ context.Context, spec run.Spec) (run.Result, error
 		return run.Result{Stdout: "[]"}, nil
 	}
 	if spec.Name == "ssh" && len(spec.Args) == 4 && spec.Args[0] == "-o" && spec.Args[1] == "BatchMode=yes" && spec.Args[2] == "-T" && spec.Args[3] == "git@github.com" {
-		return run.Result{Stderr: "successfully authenticated"}, errors.New("exit status 1")
+		return run.Result{Stderr: "successfully authenticated"}, fixtureExit(1)
 	}
 	return run.Result{}, nil
 }
@@ -891,3 +891,8 @@ func mutationOrder(calls []run.Spec) []string {
 func (a Runtime) executeForTest(ctx context.Context, p plan.Plan, terminal ui.UI) int {
 	return a.reportExecution(a.executePlan(ctx, p, terminal))
 }
+
+type fixtureExit int
+
+func (e fixtureExit) Error() string { return "fixture exit" }
+func (e fixtureExit) ExitCode() int { return int(e) }

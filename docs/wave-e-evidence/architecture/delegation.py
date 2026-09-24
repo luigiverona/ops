@@ -1,3 +1,7 @@
+# ARCHIVAL SOURCE ONLY. This original permission probe used a fixed cgroup name.
+# Use the maintained ownership_integration suite with exact resource ownership.
+raise SystemExit("Archived architecture probe: use ownership_integration tests")
+
 import os,pathlib,subprocess,json
 p=pathlib.Path('/sys/fs/cgroup') / next(x[3:] for x in pathlib.Path('/proc/self/cgroup').read_text().splitlines() if x.startswith('0::')).lstrip('/')
 print('self_cgroup',pathlib.Path('/proc/self/cgroup').read_text(),flush=True)

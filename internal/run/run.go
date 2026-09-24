@@ -218,8 +218,31 @@ func (e *Error) Error() string {
 
 func (e *Error) Unwrap() error { return e.Err }
 
-// Exited reports a structured child exit code through wrapped command errors.
+// Exited finds a child exit code, even within a compound failure.
+// Use OnlyExit when accepting an expected command state and discarding the error.
 func Exited(err error, code int) bool {
 	var exit interface{ ExitCode() int }
 	return errors.As(err, &exit) && exit.ExitCode() == code
+}
+
+// OnlyExit reports whether err contains only one expected exit cause through
+// ordinary wrappers. Compound errors are inconclusive, even when every leaf
+// has the same exit code. Ownership and context failures must never be accepted
+// as product state, including when they wrap an otherwise expected exit.
+func OnlyExit(err error, code int) bool {
+	if OwnershipFailed(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	for err != nil {
+		switch cause := err.(type) {
+		case interface{ Unwrap() []error }:
+			return false
+		case interface{ Unwrap() error }:
+			err = cause.Unwrap()
+		default:
+			exit, ok := err.(interface{ ExitCode() int })
+			return ok && exit.ExitCode() == code
+		}
+	}
+	return false
 }

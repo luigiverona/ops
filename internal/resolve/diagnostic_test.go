@@ -112,7 +112,7 @@ func TestDependencyInspectionErrorCannotMasqueradeAsMissingDependency(t *testing
 }
 
 func TestPacmanQueryPreservesUnderlyingFailureWhenAPIIsUnavailable(t *testing.T) {
-	underlying := &run.Error{Name: "pacman", Err: errors.New("exit status 1"), Evidence: "error: could not open database"}
+	underlying := &run.Error{Name: "pacman", Err: dependencyExit(1), Evidence: "error: could not open database"}
 	client := &http.Client{Transport: roundTrip(func(*http.Request) (*http.Response, error) { return nil, errors.New("offline") })}
 	_, found, err := (Resolver{Runner: diagnosticPacmanRunner{underlying}, Client: client}).Pacman(context.Background(), "example")
 	if found || !errors.Is(err, underlying) || !strings.Contains(err.Error(), "offline") {

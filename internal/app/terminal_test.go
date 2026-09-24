@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -97,9 +98,33 @@ func TestPromptTerminalCancellationAndEOF(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, python, "-c", promptPTY, binary)
-			cmd.Env = append(os.Environ(), "OPS_PROMPT_TEST="+mode, "TERM=xterm")
+			workspace, err := os.MkdirTemp(t.TempDir(), "prompt-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd.Env = append(os.Environ(), "OPS_PROMPT_TEST="+mode, "TERM=xterm", "TMPDIR="+workspace)
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("PTY: %v\n%s", err, output)
+			}
+			// os.Exit bypasses both t.TempDir and TestMain's Flatpak cleanup.
+			// The surviving parent owns the exact workspace, including failures.
+			entries, err := os.ReadDir(workspace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var prompt, flatpak bool
+			for _, entry := range entries {
+				prompt = prompt || strings.HasPrefix(entry.Name(), "TestPromptTerminalHelper")
+				flatpak = flatpak || strings.HasPrefix(entry.Name(), "ops-flatpak-tests-")
+			}
+			if !prompt || !flatpak {
+				t.Fatalf("os.Exit cleanup regression did not exercise both allocations: %v", entries)
+			}
+			if err := os.RemoveAll(workspace); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Clean(workspace)); !os.IsNotExist(err) {
+				t.Fatalf("prompt workspace remains: %v", err)
 			}
 		})
 	}

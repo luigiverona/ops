@@ -66,7 +66,7 @@ type githubFake struct {
 
 func (f *githubFake) Run(_ context.Context, spec run.Spec) (run.Result, error) {
 	if spec.Name == "ssh" {
-		return run.Result{Stderr: "successfully authenticated"}, errors.New("exit 1")
+		return run.Result{Stderr: "successfully authenticated"}, fixtureExit(1)
 	}
 	if len(spec.Args) >= 2 && spec.Args[0] == "auth" && spec.Args[1] == "status" {
 		return run.Result{}, nil

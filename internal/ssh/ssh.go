@@ -252,18 +252,12 @@ func (m Manager) EnsureIdentity(ctx context.Context) (Identity, error) {
 func (m Manager) AgentIdentities(ctx context.Context) ([]AgentIdentity, bool, error) {
 	result, err := m.Runner.Run(ctx, run.Spec{Name: "ssh-add", Args: []string{"-L"}})
 	if err != nil {
-		// The runner can join an exit error with an output-capture failure.
-		// Such a failure must not be reduced to an ordinary agent state.
-		var compound interface{ Unwrap() []error }
-		if errors.As(err, &compound) {
-			return nil, false, err
-		}
 		// OpenSSH reserves exit 2 for failure to contact the agent. Exit 1
 		// also covers other failures, so require its exact empty-state output.
-		if run.Exited(err, 2) {
+		if run.OnlyExit(err, 2) {
 			return nil, false, nil
 		}
-		if run.Exited(err, 1) && strings.TrimSpace(result.Stdout+result.Stderr) == "The agent has no identities." {
+		if run.OnlyExit(err, 1) && strings.TrimSpace(result.Stdout+result.Stderr) == "The agent has no identities." {
 			return nil, true, nil
 		}
 		return nil, false, err

@@ -474,7 +474,13 @@ the separate privileged CI patch and structured evidence now cover them. An earl
 20-trial exploratory run was strengthened to exercise multiple serial forks before
 kill; results.json preserves the final stronger run, not just the first attempt.
 
-To reproduce in a fresh temporary directory (never execute from the evidence
+**Correction notice (2026-09-24):** `delegation.py`, `harness.py`, and `supplement.py` are now
+execution-guarded archival source. Their historical reproduction instructions
+below are superseded by the maintained native ownership suite and the
+[fixture audit](wave-e-evidence/implementation/propagation-and-fixture-corrections.md).
+`workload.py` remains runnable with independent deadlines after every fork.
+
+Historical instructions: To reproduce in a fresh temporary directory (never execute from the evidence
 directory itself): copy the four .py files, copy launch.go.txt as launch.go, build
 with the exact Go 1.26.7 binary and GOENV=off/GOTOOLCHAIN=local with GOCACHE inside
 the temporary directory. Run delegation.py, harness.py, and supplement.py each

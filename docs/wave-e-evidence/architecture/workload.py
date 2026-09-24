@@ -1,10 +1,17 @@
 import os,sys,time,json,signal,pathlib
 mode,root=sys.argv[1:3];root=pathlib.Path(root)
-signal.alarm(12)
+# Timers are not inherited across fork. Bound every generation independently.
+bound=float(os.environ.get('OPS_ARCH_FIXTURE_SECONDS','12'))
+assert 0 < bound <= 12
+def arm_deadline():
+ signal.signal(signal.SIGALRM,signal.SIG_DFL)
+ signal.setitimer(signal.ITIMER_REAL,bound)
+arm_deadline()
+os.register_at_fork(after_in_child=arm_deadline)
 signal.signal(signal.SIGTERM,signal.SIG_IGN)
 def record(role):
- d={'role':role,'pid':os.getpid(),'ppid':os.getppid(),'uid':os.getuid(),'gid':os.getgid(),'sid':os.getsid(0),'pgid':os.getpgrp(),'cgroup':pathlib.Path('/proc/self/cgroup').read_text()}
- (root/f'{os.getpid()}.json').write_text(json.dumps(d));return d
+ d={'deadline_remaining':signal.getitimer(signal.ITIMER_REAL)[0],'role':role,'pid':os.getpid(),'ppid':os.getppid(),'uid':os.getuid(),'gid':os.getgid(),'sid':os.getsid(0),'pgid':os.getpgrp(),'cgroup':pathlib.Path('/proc/self/cgroup').read_text()}
+ tmp=root/f'{os.getpid()}.tmp';tmp.write_text(json.dumps(d));tmp.rename(root/f'{os.getpid()}.json');return d
 def leaf(role,newsession=False):
  if newsession:os.setsid()
  record(role)

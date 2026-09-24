@@ -232,8 +232,8 @@ func TestHasRecognizesOnlyKnownMissingKeyError(t *testing.T) {
 		err  error
 		want bool
 	}{
-		{name: "known missing", err: &run.Error{Stderr: "gpg: error reading key: No public key", Err: errors.New("exit status 2")}, want: false},
-		{name: "network", err: &run.Error{Stderr: "gpg: keybox unavailable", Err: errors.New("exit status 2")}, want: true},
+		{name: "known missing", err: &run.Error{Stderr: "gpg: error reading key: No public key", Err: pgpExit(2)}, want: false},
+		{name: "network", err: &run.Error{Stderr: "gpg: keybox unavailable", Err: pgpExit(2)}, want: true},
 		{name: "plain wrapped", err: errors.New("gpg: error reading key: No public key"), want: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -327,7 +327,7 @@ func TestImportRetrievesOnlyExactFingerprintAndRevalidates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner := &keyRunner{listErr: &run.Error{Stderr: "gpg: error reading key: No public key", Err: errors.New("exit status 2")}}
+	runner := &keyRunner{listErr: &run.Error{Stderr: "gpg: error reading key: No public key", Err: pgpExit(2)}}
 	runner.onRecv = func() {
 		runner.listErr = nil
 		runner.listOutput = primaryFingerprint(testFingerprint)
@@ -353,7 +353,7 @@ func TestImportRetrievesOnlyExactFingerprintAndRevalidates(t *testing.T) {
 
 func TestImportRejectsWrongReturnedKeyAndInvalidFingerprint(t *testing.T) {
 	home := initializedHome(t)
-	runner := &keyRunner{listErr: &run.Error{Stderr: "gpg: error reading key: No public key", Err: errors.New("exit status 2")}}
+	runner := &keyRunner{listErr: &run.Error{Stderr: "gpg: error reading key: No public key", Err: pgpExit(2)}}
 	runner.onRecv = func() {
 		runner.listErr = nil
 		runner.listOutput = primaryFingerprint("FEDCBA9876543210FEDCBA9876543210FEDCBA98")
@@ -376,7 +376,7 @@ func TestImportRejectsWrongReturnedKeyAndInvalidFingerprint(t *testing.T) {
 
 func TestImportDoesNotCreateMissingGnuPGHomeForAnUnverifiedKey(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "gnupg")
-	runner := &keyRunner{listErr: &run.Error{Stderr: "gpg: error reading key: No public key", Err: errors.New("exit status 2")}}
+	runner := &keyRunner{listErr: &run.Error{Stderr: "gpg: error reading key: No public key", Err: pgpExit(2)}}
 	runner.onRecv = func() {
 		runner.listErr = nil
 		runner.listOutput = primaryFingerprint("FEDCBA9876543210FEDCBA9876543210FEDCBA98")
@@ -621,7 +621,7 @@ func TestHasFailsClosedForUnsupportedOrUnsafeGnuPGHomes(t *testing.T) {
 func TestImportCreatesMissingGnuPGHomeOnlyAfterApprovedKeyWasVerified(t *testing.T) {
 	parent := t.TempDir()
 	home := filepath.Join(parent, "gnupg")
-	runner := &keyRunner{listErr: &run.Error{Stderr: "gpg: error reading key: No public key", Err: errors.New("exit status 2")}}
+	runner := &keyRunner{listErr: &run.Error{Stderr: "gpg: error reading key: No public key", Err: pgpExit(2)}}
 	runner.onRecv = func() {
 		runner.listErr = nil
 		runner.listOutput = primaryFingerprint(testFingerprint)
@@ -669,7 +669,7 @@ func TestImportRejectsUnsafeDestinationAndMismatchedPostcondition(t *testing.T) 
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			home := test.home(t)
-			runner := &keyRunner{listErr: &run.Error{Stderr: "gpg: error reading key: No public key", Err: errors.New("exit status 2")}}
+			runner := &keyRunner{listErr: &run.Error{Stderr: "gpg: error reading key: No public key", Err: pgpExit(2)}}
 			runner.onRecv = func() {
 				runner.listErr = nil
 				runner.listOutput = primaryFingerprint(testFingerprint)

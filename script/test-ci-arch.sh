@@ -158,7 +158,7 @@ grep -E '^--- PASS: TestRealVerCmpArchVersionSemantics ' "$HOME/ci-logs/native-a
 printf '::endgroup::\n'
 
 printf '::group::Unprivileged process ownership\n'
-audit_test ownership-native.log go test -v -count=1 -timeout=3m -tags ownership_integration ./internal/run ./internal/pgp ./internal/release -run '^(TestNativeOwnership|TestNativeCrashScopeLifetime|TestNativeGPGHelpers|TestNativeUpdaterOwnership|TestOwnershipPTY|TestOwnershipPTYFailureCleanup|TestNativeMakepkgHelpers|TestNativeCleanupCancellation)$'
+audit_test ownership-native.log go test -v -count=1 -timeout=3m -tags ownership_integration ./internal/run ./internal/pgp ./internal/release -run '^(TestNativeOwnership|TestNativeCrashScopeLifetime|TestNativeGPGHelpers|TestNativeGPGOwnerDeath|TestNativeUpdaterOwnership|TestOwnershipPTY|TestOwnershipPTYFailureCleanup|TestNativeMakepkgHelpers|TestNativeCleanupCancellation)$'
 printf '::endgroup::\n'
 
 printf '::group::Native Flatpak tests\n'

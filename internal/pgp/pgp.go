@@ -490,5 +490,5 @@ func primaryFingerprintPresent(output, want string) (bool, error) {
 
 func missingKey(err error) bool {
 	var commandErr *run.Error
-	return errors.As(err, &commandErr) && strings.Contains(commandErr.Stderr, "error reading key: No public key")
+	return run.OnlyExit(err, 2) && errors.As(err, &commandErr) && strings.Contains(commandErr.Stderr, "error reading key: No public key")
 }

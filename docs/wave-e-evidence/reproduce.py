@@ -27,6 +27,10 @@ def live(pid):
 
 def helper(role, directory, mode, index='0'):
     directory = pathlib.Path(directory)
+    # Each helper is exec'd separately; install its own hard deadline as well
+    # as the cooperative loop bound, independently of the launching parent.
+    signal.signal(signal.SIGALRM, signal.SIG_DFL)
+    signal.alarm(15)
     lifetime_end = time.monotonic() + 15
     if role == 'leaf':
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
