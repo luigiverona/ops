@@ -53,7 +53,10 @@ func TestOfficialDependencyRejectsCustomOrAmbiguousTransaction(t *testing.T) {
 func TestNativeCustomDeclarationIsNotReady(t *testing.T) {
 	declaration := config.Application{Source: config.Pacman, Identifier: "firefox"}
 	state := plan.State{Installed: map[string]bool{"firefox": true}, Foreign: map[string]bool{}}
-	facts := Applications(context.Background(), config.Config{Applications: []config.Application{declaration}}, state, fakeResolver{pacman: map[string]plan.Package{"firefox": {Name: "firefox", Repository: "extra"}}})
+	facts, err := Applications(context.Background(), config.Config{Applications: []config.Application{declaration}}, state, fakeResolver{pacman: map[string]plan.Package{"firefox": {Name: "firefox", Repository: "extra"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	app := plan.Build(config.Config{Applications: []config.Application{declaration}}, state, facts).Applications[0]
 	if app.State != plan.Install || app.Package.Repository != "extra" || !strings.Contains(app.Cause, "requires authenticated official content repair/reverification") {
 		t.Fatalf("%+v", app)

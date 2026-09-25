@@ -118,7 +118,11 @@ func TestAURDotPackageBasesFailPlanningBeforeCommands(t *testing.T) {
 				runner := &countingRunner{}
 				declaration := config.Application{Source: config.AUR, Identifier: "example"}
 				cfg := config.Config{Version: 2, Applications: []config.Application{declaration}}
-				fact := Applications(context.Background(), cfg, plan.State{}, Resolver{Runner: runner, Client: client})[declaration]
+				facts, err := Applications(context.Background(), cfg, plan.State{}, Resolver{Runner: runner, Client: client})
+				if err != nil {
+					t.Fatal(err)
+				}
+				fact := facts[declaration]
 				wantRequests := 1
 				wantCause := "invalid AUR package base"
 				if boundary == "SRCINFO" {

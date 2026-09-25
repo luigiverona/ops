@@ -40,7 +40,10 @@ func (a Runtime) Prepare(ctx context.Context) (code int) {
 	if err != nil {
 		return a.fatal(fmt.Errorf("inspect workstation: %w", err))
 	}
-	facts := resolve.Applications(ctx, cfg, state, resolve.Resolver{Runner: a.Runner, Client: a.SourceHTTP})
+	facts, err := resolve.Applications(ctx, cfg, state, resolve.Resolver{Runner: a.Runner, Client: a.SourceHTTP})
+	if err != nil {
+		return a.fatal(fmt.Errorf("resolve applications: %w", err))
+	}
 	if ctx.Err() != nil {
 		return Fatal
 	}
@@ -118,7 +121,7 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 	}
 	problems := plannedProblems
 	stop := func(name, stage string, err error, impact string) execution {
-		return execution{status: Fatal, stopInspection: errors.Is(err, io.EOF) || run.OwnershipFailed(err), problems: append(problems, issue{State: "Failed", Name: name, Stage: stage, Cause: err.Error(), Err: err, Impact: impact, Action: "Run ops doctor before retrying."})}
+		return execution{status: Fatal, stopInspection: errors.Is(err, io.EOF) || resolve.StopsPlanning(err), problems: append(problems, issue{State: "Failed", Name: name, Stage: stage, Cause: err.Error(), Err: err, Impact: impact, Action: "Run ops doctor before retrying."})}
 	}
 	defer func() {
 		if a.interruption.mutation && !a.interruption.concluded {
@@ -201,8 +204,8 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		if application.State == "configure" {
 			a.progress("Configuring " + application.Declaration.Identifier + "...")
 			if err := a.configureApplication(ctx, archManager, application); err != nil {
-				if run.OwnershipFailed(err) {
-					return stop("process ownership", "setup", err, "no further mutation is safe")
+				if resolve.StopsPlanning(err) {
+					return stop("application inspection", "setup", err, "no further mutation is safe")
 				}
 				problems = append(problems, issue{State: "Failed", Name: application.Declaration.Identifier, Source: string(application.Declaration.Source), Cause: err.Error(), Err: err, Impact: "application configuration did not complete normally", Action: "Run ops doctor before retrying."})
 				continue
@@ -211,8 +214,8 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		}
 		aurManager.Review = func(_ string, files map[string]string) error { return a.reviewAUR(ctx, terminal, application, files) }
 		if err := a.installApplication(ctx, archManager, aurManager, flatpakManager, application); err != nil {
-			if ctx.Err() != nil || run.OwnershipFailed(err) {
-				return execution{stopInspection: true, status: a.fatal(fmt.Errorf("application setup interrupted: %w", err))}
+			if ctx.Err() != nil || resolve.StopsPlanning(err) {
+				return stop("application setup", "setup", err, "application setup could not safely continue")
 			}
 			if errors.Is(err, io.EOF) {
 				return stop("application input", "setup", err, "no further work was approved")

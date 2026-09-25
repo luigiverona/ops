@@ -183,7 +183,10 @@ func TestMinimalFirstRunConvergesAndSecondRunIsNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	facts := resolve.Applications(ctx, cfg, state, resolve.Resolver{Runner: r})
+	facts, err := resolve.Applications(ctx, cfg, state, resolve.Resolver{Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := plan.Build(cfg, state, facts)
 	if strings.Join(p.CorePackages, ",") != "git,github-cli,openssh" {
 		t.Fatalf("prerequisites=%v", p.CorePackages)

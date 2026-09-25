@@ -398,5 +398,9 @@ func readyApplications() []plan.Application {
 }
 
 func resolveAndPlan(ctx context.Context, cfg config.Config, state plan.State, resolver resolve.MetadataResolver) plan.Plan {
-	return plan.Build(cfg, state, resolve.Applications(ctx, cfg, state, resolver))
+	facts, err := resolve.Applications(ctx, cfg, state, resolver)
+	if err != nil {
+		panic(err)
+	}
+	return plan.Build(cfg, state, facts)
 }

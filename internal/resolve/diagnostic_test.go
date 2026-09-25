@@ -61,7 +61,10 @@ func TestSourceAbsenceRequiresConclusiveResponse(t *testing.T) {
 				}
 				return &http.Response{StatusCode: tc.status, Body: io.NopCloser(strings.NewReader(tc.body))}, nil
 			})}
-			facts := Applications(context.Background(), config.Config{Applications: []config.Application{declaration}}, plan.State{}, Resolver{Runner: missingRunner{}, Client: client})
+			facts, err := Applications(context.Background(), config.Config{Applications: []config.Application{declaration}}, plan.State{}, Resolver{Runner: missingRunner{}, Client: client})
+			if err != nil {
+				t.Fatal(err)
+			}
 			fact := facts[declaration]
 			if fact.ConfirmedAbsent != tc.absent {
 				t.Fatalf("absence=%+v", fact)
@@ -129,7 +132,11 @@ func (r dependencyOutageResolver) OfficialDependency(context.Context, string) (p
 func TestAURDependencyQueryFailureIsUnavailable(t *testing.T) {
 	declaration := config.Application{Source: config.AUR, Identifier: "paru"}
 	resolver := dependencyOutageResolver{fakeResolver{aur: map[string]plan.Package{"paru": {Name: "paru", PackageBase: "paru"}}}}
-	fact := Applications(context.Background(), config.Config{Applications: []config.Application{declaration}}, plan.State{}, resolver)[declaration]
+	facts, err := Applications(context.Background(), config.Config{Applications: []config.Application{declaration}}, plan.State{}, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fact := facts[declaration]
 	var queryErr *QueryError
 	if fact.State != plan.Unavailable || fact.ConfirmedAbsent || !errors.As(fact.Err, &queryErr) {
 		t.Fatalf("repository outage became a declaration/build failure: %+v", fact)

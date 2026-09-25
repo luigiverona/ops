@@ -42,7 +42,7 @@ func Replace(ctx context.Context, runner run.Runner, verified, target, version s
 	}
 	result, err := runner.Run(ctx, run.Spec{Name: staged, Args: []string{"--version"}})
 	if err != nil || strings.TrimSpace(result.Stdout) != "ops "+version {
-		return errors.Join(errors.New("staged update version verification failed"), err)
+		return &verificationError{message: "staged update version verification failed", cause: err}
 	}
 	hadTarget := false
 	if _, err := os.Lstat(target); err == nil {
@@ -77,7 +77,7 @@ func Replace(ctx context.Context, runner run.Runner, verified, target, version s
 		if _, removeErr := runner.Run(context.WithoutCancel(ctx), run.Spec{FailureOutput: run.FailureStderr, Name: "sudo", Args: []string{"-n", "rm", "-f", "--", target}}); removeErr != nil {
 			return fmt.Errorf("update verification failed and removal of the new binary failed: %w", errors.Join(err, removeErr))
 		}
-		return errors.Join(errors.New("installed update verification failed; new binary was removed"), err)
+		return &verificationError{message: "installed update verification failed; new binary was removed", cause: err}
 	}
-	return errors.Join(errors.New("installed update verification failed; prior binary was restored"), err)
+	return &verificationError{message: "installed update verification failed; prior binary was restored", cause: err}
 }

@@ -150,7 +150,7 @@ func (c Client) DownloadVerified(ctx context.Context, version string) (*Verified
 	}
 	result, err := c.Runner.Run(ctx, run.Spec{Name: binary, Args: []string{"--version"}})
 	if err != nil || strings.TrimSpace(result.Stdout) != "ops "+version {
-		return nil, errors.Join(errors.New("verified release binary reports an unexpected version"), err)
+		return nil, &verificationError{message: "verified release binary reports an unexpected version", cause: err}
 	}
 	ok = true
 	return &Verified{Version: version, Binary: binary, Dir: dir}, nil
@@ -315,7 +315,7 @@ func validateSignatureStatus(output, want string, processErr error) error {
 		}
 	}
 	if invalidState != "" {
-		return errors.New(invalidState)
+		return &verificationError{message: invalidState, cause: processErr}
 	}
 	if processErr != nil {
 		return processErr
@@ -325,3 +325,13 @@ func validateSignatureStatus(output, want string, processErr error) error {
 	}
 	return nil
 }
+
+// verificationError keeps the release diagnosis bounded while retaining the
+// execution cause for ownership, interruption, and structured diagnostics.
+type verificationError struct {
+	message string
+	cause   error
+}
+
+func (e *verificationError) Error() string { return e.message }
+func (e *verificationError) Unwrap() error { return e.cause }

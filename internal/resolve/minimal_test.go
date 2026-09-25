@@ -52,7 +52,10 @@ func TestMinimalAURAndFlatpakResolutionHasNoBootstrapCommandCycle(t *testing.T) 
 		}
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
-	facts := Applications(context.Background(), cfg, plan.State{}, Resolver{Runner: runner, Client: client})
+	facts, err := Applications(context.Background(), cfg, plan.State{}, Resolver{Runner: runner, Client: client})
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := plan.Build(cfg, plan.State{}, facts)
 	for _, app := range p.Applications {
 		if app.State != plan.Install {
@@ -72,7 +75,10 @@ func TestMinimalAURAndFlatpakResolutionHasNoBootstrapCommandCycle(t *testing.T) 
 func TestRemoteOutageIsNotAnUnresolvedDeclaration(t *testing.T) {
 	cfg, _ := config.Parse([]byte("version=2\nflatpak=[\"org.example.App\"]"))
 	client := &http.Client{Transport: roundTrip(func(*http.Request) (*http.Response, error) { return nil, errors.New("offline") })}
-	facts := Applications(context.Background(), cfg, plan.State{}, Resolver{Client: client})
+	facts, err := Applications(context.Background(), cfg, plan.State{}, Resolver{Client: client})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if facts[cfg.Applications[0]].State != plan.Unavailable {
 		t.Fatalf("outage misclassified: %+v", facts)
 	}
