@@ -386,9 +386,8 @@ func (m Manager) ConfigureGitHub(ctx context.Context) error {
 }
 
 // GitHubConfigured verifies effective configuration without changing files.
-func (m Manager) GitHubConfigured(ctx context.Context) bool {
-	ready, _ := m.InspectLocalGitHubConfiguration(ctx)
-	return ready
+func (m Manager) GitHubConfigured(ctx context.Context) (bool, error) {
+	return m.InspectLocalGitHubConfiguration(ctx)
 }
 
 // InspectLocalGitHubConfiguration distinguishes incomplete managed files from
@@ -463,6 +462,9 @@ func (m Manager) InspectGitHubConfiguration(ctx context.Context) (GitHubConfigur
 	}
 	hostKeys, err := m.fetchGitHubHostKeys(ctx)
 	if err != nil {
+		if inspectionInterrupted(err) {
+			return GitHubConfigurationStatus{}, err
+		}
 		if metadataUnavailable(err) {
 			return GitHubConfigurationStatus{LocalReady: true, Freshness: HostKeyFreshnessUnavailable}, nil
 		}
