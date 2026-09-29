@@ -247,7 +247,7 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		var gitErr error
 		gitStatus, gitErr = a.configureGit(ctx, terminal)
 		if gitErr != nil {
-			if errors.Is(gitErr, io.EOF) || run.OwnershipFailed(gitErr) {
+			if errors.Is(gitErr, io.EOF) || resolve.StopsPlanning(gitErr) {
 				return stop("Git input", "setup", gitErr, "no further work was approved")
 			}
 			problems = append(problems, *setupIssue("Git", gitErr))
@@ -266,9 +266,11 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		var fatalErr error
 		sshStatus, managed, sshIssues, fatalErr = a.configureSSH(ctx, terminal, p)
 		problems = append(problems, sshIssues...)
+		// Identity issues retain execution causes. Classify the returned cause,
+		// since an inner operation can be interrupted while ctx is still live.
 		for _, problem := range sshIssues {
-			if run.OwnershipFailed(problem.Err) {
-				return stop("process ownership", "setup", problem.Err, "no further mutation is safe")
+			if resolve.StopsPlanning(problem.Err) {
+				return stop("SSH inspection", "setup", problem.Err, "SSH setup could not safely continue")
 			}
 		}
 		if fatalErr != nil {
@@ -291,14 +293,17 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		githubStatus, githubIssues = a.configureGitHub(ctx, terminal, managed, p)
 		problems = append(problems, githubIssues...)
 		for _, problem := range githubIssues {
-			if run.OwnershipFailed(problem.Err) {
-				return stop("process ownership", "setup", problem.Err, "no further mutation is safe")
+			if resolve.StopsPlanning(problem.Err) {
+				return stop("GitHub inspection", "setup", problem.Err, "GitHub setup could not safely continue")
 			}
 		}
 	} else if githubWork {
 		githubStatus = "skipped"
 	} else if sshWork && sshStatus == "ready" && managed != nil {
 		if err := (githubops.Manager{Runner: a.Runner}).VerifySSH(ctx); err != nil {
+			if resolve.StopsPlanning(err) {
+				return stop("GitHub SSH verification", "setup", err, "GitHub setup could not safely continue")
+			}
 			githubStatus = "failed"
 			problems = append(problems, *setupIssue("GitHub SSH verification", err))
 		}

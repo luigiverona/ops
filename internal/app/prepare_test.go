@@ -584,7 +584,7 @@ func TestPreparePlanSSHAddOutcomesAreAccurate(t *testing.T) {
 	}{
 		{name: "success", wantCode: Success, wantSSH: "ready"},
 		{name: "failure", sshAddErr: errors.New("passphrase rejected"), wantCode: Issues, wantSSH: "failed", githubWork: true},
-		{name: "cancelled", sshAddErr: context.Canceled, wantCode: Issues, wantSSH: "failed", githubWork: true},
+		{name: "cancelled", sshAddErr: context.Canceled, wantCode: Fatal, wantSSH: "failed", githubWork: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
