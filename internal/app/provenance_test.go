@@ -54,7 +54,7 @@ func TestAURRepositoryDriftIsRejectedBeforeDependencyMutation(t *testing.T) {
 				}
 				return result, err
 			})
-			code := (Runtime{Runner: runner, Out: &out, Err: &out}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n\ny\n"), Out: &out})
+			code := (Runtime{Ownership: testOwnership{}, Runner: runner, Out: &out, Err: &out}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n\ny\n"), Out: &out})
 			if code != Issues {
 				t.Fatalf("code=%d %s", code, &out)
 			}
@@ -103,7 +103,7 @@ func TestFlathubEnablementRequiresVisibleApprovalAndVerifies(t *testing.T) {
 			if approve {
 				answer = "y\n"
 			}
-			code := (Runtime{Runner: runner, Out: &out, Err: &out}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader(answer), Out: &out})
+			code := (Runtime{Ownership: testOwnership{}, Runner: runner, Out: &out, Err: &out}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader(answer), Out: &out})
 			disclosure := strings.Index(out.String(), "Enable existing user flathub remote at "+flatpak.FlathubRepositoryURL)
 			if disclosure < 0 || disclosure > strings.Index(out.String(), "Continue?") {
 				t.Fatalf("undisclosed correction: %s", &out)
@@ -179,7 +179,7 @@ func TestCoreCustomShadowCannotPassVerification(t *testing.T) {
 		return result, err
 	})
 	p := plan.Plan{Core: readyCore(), ConfigureGit: true}
-	code := (Runtime{Runner: runner, Out: &out, Err: &out}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &out})
+	code := (Runtime{Ownership: testOwnership{}, Runner: runner, Out: &out, Err: &out}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &out})
 	if code != Fatal || !strings.Contains(out.String(), "does not match authenticated official package contents") {
 		t.Fatalf("%d %s", code, &out)
 	}
@@ -206,7 +206,7 @@ func TestShrinkingAURTransactionReverifiesOmittedRepositoryIdentity(t *testing.T
 			}
 			return result, nil
 		})
-		err := (Runtime{Runner: runner}).revalidateOfficialBinding(context.Background(), current, planned)
+		err := (Runtime{Ownership: testOwnership{}, Runner: runner}).revalidateOfficialBinding(context.Background(), current, planned)
 		if (err != nil) != drift || reads != 2 {
 			t.Fatalf("drift=%v reads=%d err=%v", drift, reads, err)
 		}
@@ -293,7 +293,7 @@ func TestOfficialRepairsAreDisclosedBeforeApproval(t *testing.T) {
 		t.Fatal("declined repair issued a command")
 		return run.Result{}, nil
 	})
-	code := (Runtime{Runner: runner, Out: &out, Err: &out}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("n\n"), Out: &out})
+	code := (Runtime{Ownership: testOwnership{}, Runner: runner, Out: &out, Err: &out}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("n\n"), Out: &out})
 	approval := strings.Index(out.String(), "Continue?")
 	for _, text := range []string{"Repair/reverify existing official prerequisite: git", "Repair/reverify existing official build dependency: extra/compiler", "installed package requires authenticated official content repair/reverification"} {
 		if index := strings.Index(out.String(), text); index < 0 || index > approval {

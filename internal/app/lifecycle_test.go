@@ -132,7 +132,7 @@ func minimalRuntime(t *testing.T) (Runtime, *lifecycleRunner, *bytes.Buffer) {
 	}))
 	t.Cleanup(server.Close)
 	out := &bytes.Buffer{}
-	return Runtime{Home: home, Runner: runner, Out: out, Err: out, EUID: func() int { return 1000 }, OSRelease: archOSRelease(t), PacmanConf: testPacmanConf(t), SSHHTTP: server.Client(), SSHMetadataURL: server.URL}, runner, out
+	return Runtime{Ownership: testOwnership{}, Home: home, Runner: runner, Out: out, Err: out, EUID: func() int { return 1000 }, OSRelease: archOSRelease(t), PacmanConf: testPacmanConf(t), SSHHTTP: server.Client(), SSHMetadataURL: server.URL}, runner, out
 }
 
 func TestMinimalArchDoctorWithoutConfigurationOrTools(t *testing.T) {
@@ -183,7 +183,10 @@ func TestMinimalFirstRunConvergesAndSecondRunIsNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	facts := resolve.Applications(ctx, cfg, state, resolve.Resolver{Runner: r})
+	facts, err := resolve.Applications(ctx, cfg, state, resolve.Resolver{Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := plan.Build(cfg, state, facts)
 	if strings.Join(p.CorePackages, ",") != "git,github-cli,openssh" {
 		t.Fatalf("prerequisites=%v", p.CorePackages)

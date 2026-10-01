@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -97,9 +98,33 @@ func TestPromptTerminalCancellationAndEOF(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, python, "-c", promptPTY, binary)
-			cmd.Env = append(os.Environ(), "OPS_PROMPT_TEST="+mode, "TERM=xterm")
+			workspace, err := os.MkdirTemp(t.TempDir(), "prompt-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd.Env = append(os.Environ(), "OPS_PROMPT_TEST="+mode, "TERM=xterm", "TMPDIR="+workspace)
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("PTY: %v\n%s", err, output)
+			}
+			// os.Exit bypasses both t.TempDir and TestMain's Flatpak cleanup.
+			// The surviving parent owns the exact workspace, including failures.
+			entries, err := os.ReadDir(workspace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var prompt, flatpak bool
+			for _, entry := range entries {
+				prompt = prompt || strings.HasPrefix(entry.Name(), "TestPromptTerminalHelper")
+				flatpak = flatpak || strings.HasPrefix(entry.Name(), "ops-flatpak-tests-")
+			}
+			if !prompt || !flatpak {
+				t.Fatalf("os.Exit cleanup regression did not exercise both allocations: %v", entries)
+			}
+			if err := os.RemoveAll(workspace); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Clean(workspace)); !os.IsNotExist(err) {
+				t.Fatalf("prompt workspace remains: %v", err)
 			}
 		})
 	}
@@ -127,7 +152,7 @@ func TestPromptTerminalHelper(t *testing.T) {
 	}
 	before := flags()
 	runner := &prepareRunner{}
-	a := Runtime{Runner: runner, Out: os.Stdout, Err: os.Stderr, Home: t.TempDir()}
+	a := Runtime{Ownership: testOwnership{}, Runner: runner, Out: os.Stdout, Err: os.Stderr, Home: t.TempDir()}
 	var code int
 	if strings.HasPrefix(mode, "update") {
 		code = a.installUpdate(ctx, release.Client{}, "9.0.0", terminal)
@@ -192,7 +217,7 @@ func TestCancellationAfterMutationStopsEntireLifecycle(t *testing.T) {
 	defer cancel()
 	runner := &cancelAfterMutation{prepareRunner: &prepareRunner{}, cancel: cancel}
 	var out strings.Builder
-	a := Runtime{Runner: runner, Out: &out, Err: &out}
+	a := Runtime{Ownership: testOwnership{}, Runner: runner, Out: &out, Err: &out}
 	p := plan.Plan{FullUpgrade: true, CorePackages: []string{"git"}, ConfigureGit: true, CreateSSHIdentity: true}
 	code := a.preparePlan(ctx, config.Config{}, p, ui.UI{In: strings.NewReader("y\n"), Out: &out})
 	if code != Fatal || runner.mutations != 1 || len(runner.calls) != 3 || strings.Contains(out.String(), "Git name:") || strings.Count(out.String(), "Interrupted.") != 1 || strings.Contains(out.String(), "Issues") {
@@ -207,7 +232,7 @@ func TestCancellationWithPendingApprovalDoesNotStartWork(t *testing.T) {
 			defer cancel()
 			var out strings.Builder
 			runner := &prepareRunner{}
-			a := Runtime{Runner: runner, Out: &out, Err: &out}
+			a := Runtime{Ownership: testOwnership{}, Runner: runner, Out: &out, Err: &out}
 			input := strings.NewReader("y\n")
 			marker := "? [Y/n]"
 			if command == "aur" {
@@ -240,7 +265,7 @@ func TestCancellationBetweenApprovalAndMutationDoesNotRunCommand(t *testing.T) {
 	defer cancel()
 	var out strings.Builder
 	runner := &prepareRunner{}
-	a := Runtime{Runner: runner, Out: cancelOnOutput{Writer: &out, cancel: cancel, marker: "Updating system..."}, Err: &out}
+	a := Runtime{Ownership: testOwnership{}, Runner: runner, Out: cancelOnOutput{Writer: &out, cancel: cancel, marker: "Updating system..."}, Err: &out}
 	code := a.preparePlan(ctx, config.Config{}, plan.Plan{FullUpgrade: true, ConfigureGit: true}, ui.UI{In: strings.NewReader("y\n"), Out: &out})
 	// Sudo authorization happened, but the cancelled upgrade must never start.
 	if code != Fatal || len(runner.calls) != 1 || runner.calls[0].Name != "sudo" || strings.Join(runner.calls[0].Args, " ") != "-v" {
@@ -266,7 +291,7 @@ func TestCancellationBetweenGitWritesPreservesCompletedName(t *testing.T) {
 	defer cancel()
 	var out strings.Builder
 	runner := cancelAfterGitName{prepareRunner: &prepareRunner{}, cancel: cancel}
-	a := Runtime{Runner: runner, Out: &out, Err: &out}
+	a := Runtime{Ownership: testOwnership{}, Runner: runner, Out: &out, Err: &out}
 	p := plan.Plan{ConfigureGit: true, CreateSSHIdentity: true}
 	code := a.preparePlan(ctx, config.Config{}, p, ui.UI{In: strings.NewReader("y\nUser\nuser@example.com\n"), Out: &out})
 	if code != Fatal || runner.gitName != "User" || runner.gitEmail != "" || !strings.Contains(out.String(), "Earlier changes may remain") || strings.Contains(out.String(), "Creating SSH key") {
@@ -278,7 +303,7 @@ func TestSignalAfterFinalReportDoesNotAppendContradictoryConclusion(t *testing.T
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var out strings.Builder
-	a := Runtime{Out: cancelOnOutput{Writer: &out, cancel: cancel, marker: "Workstation already ready."}, Err: &out}
+	a := Runtime{Ownership: testOwnership{}, Out: cancelOnOutput{Writer: &out, cancel: cancel, marker: "Workstation already ready."}, Err: &out}
 	p := plan.Plan{GitStatus: "ready", SSHStatus: "ready", GitHubStatus: "ready"}
 	if code := a.preparePlan(ctx, config.Config{}, p, ui.UI{}); code != Success || out.String() != "Workstation already ready.\n" {
 		t.Fatalf("code=%d output=%s", code, &out)

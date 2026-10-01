@@ -34,7 +34,7 @@ func (m Manager) optionalGlobalValue(ctx context.Context, key string) (string, e
 	}
 	result, err := m.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "git", Args: []string{"config", "--global", "--get", key}})
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return "", fmt.Errorf("inspect Git %s: %w", key, ctxErr)
+		return "", fmt.Errorf("inspect Git %s: %w", key, errors.Join(err, ctxErr))
 	}
 	if err == nil {
 		if result.Stderr == "" {
@@ -52,25 +52,19 @@ func (m Manager) optionalGlobalValue(ctx context.Context, key string) (string, e
 	return "", fmt.Errorf("inspect Git %s: %w", key, err)
 }
 
-// Absence requires a single exit-1 cause. run.Exited can also
-// find that exit inside a joined inspection failure, which is inconclusive.
+// Absence also requires silent diagnostics throughout the command wrappers.
 func silentMissingExit(err error) bool {
+	if !run.OnlyExit(err, 1) {
+		return false
+	}
 	for err != nil {
 		if commandErr, ok := err.(*run.Error); ok &&
 			(commandErr.Stderr != "" || commandErr.Evidence != "" || commandErr.EvidenceTruncated) {
 			return false
 		}
-		switch cause := err.(type) {
-		case interface{ Unwrap() []error }:
-			return false
-		case interface{ Unwrap() error }:
-			err = cause.Unwrap()
-		default:
-			exit, ok := err.(interface{ ExitCode() int })
-			return ok && exit.ExitCode() == 1
-		}
+		err = errors.Unwrap(err)
 	}
-	return false
+	return true
 }
 
 func ValidName(value string) bool {

@@ -1,0 +1,52 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"os/exec"
+	"syscall"
+	"time"
+
+	"github.com/luigiverona/ops/internal/run"
+)
+
+func main() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _, _ = bufio.NewReader(os.Stdin).ReadString('\n'); cancel() }()
+	var out, stderr bytes.Buffer
+	var err error
+	start := time.Now()
+	if os.Args[1] == "group" {
+		cmd := exec.CommandContext(ctx, os.Args[3], os.Args[4:]...)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+		cmd.WaitDelay = 250 * time.Millisecond
+		cmd.Stdout, cmd.Stderr = &out, &stderr
+		err = cmd.Run()
+	} else {
+		_, err = (run.Exec{Out: &out, Err: &stderr}).Run(ctx, run.Spec{Name: os.Args[3], Args: os.Args[4:], StreamOutput: os.Args[1] == "stream"})
+	}
+	var command *run.Error
+	summary := struct {
+		Error      string
+		Canceled   bool
+		Structured bool
+		Duration   string
+	}{Canceled: errors.Is(err, context.Canceled), Structured: errors.As(err, &command), Duration: time.Since(start).String()}
+	if err != nil {
+		summary.Error = err.Error()
+	}
+	f, e := os.Create(os.Args[2])
+	if e != nil {
+		panic(e)
+	}
+	defer f.Close()
+	if e := json.NewEncoder(f).Encode(summary); e != nil {
+		panic(e)
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luigiverona/ops/internal/run"
 )
@@ -202,6 +203,16 @@ func signedArtifacts(t *testing.T, version string) (Trust, map[string][]byte, te
 func newSigner(t *testing.T, fakeTime, expiration string) testSigner {
 	t.Helper()
 	home := t.TempDir()
+	// Only this test's newly created signing home; never the user's helpers.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "gpgconf", "--homedir", home, "--kill", "all")
+		cmd.WaitDelay = time.Second
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("stop disposable signing helpers: %v: %s", err, out)
+		}
+	})
 	_ = os.Chmod(home, 0o700)
 	base := []string{"--homedir", home, "--no-options", "--batch", "--no-tty", "--pinentry-mode", "loopback", "--passphrase", ""}
 	if fakeTime != "" {

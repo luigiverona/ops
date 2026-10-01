@@ -40,7 +40,10 @@ func (a Runtime) Prepare(ctx context.Context) (code int) {
 	if err != nil {
 		return a.fatal(fmt.Errorf("inspect workstation: %w", err))
 	}
-	facts := resolve.Applications(ctx, cfg, state, resolve.Resolver{Runner: a.Runner, Client: a.SourceHTTP})
+	facts, err := resolve.Applications(ctx, cfg, state, resolve.Resolver{Runner: a.Runner, Client: a.SourceHTTP})
+	if err != nil {
+		return a.fatal(fmt.Errorf("resolve applications: %w", err))
+	}
 	if ctx.Err() != nil {
 		return Fatal
 	}
@@ -58,10 +61,10 @@ func (a Runtime) Prepare(ctx context.Context) (code int) {
 	if guarded, ok := a.Runner.(cancellationRunner); ok {
 		switch runner := guarded.Runner.(type) {
 		case run.Exec:
-			a.Runner = cancellationRunner{run.Exec{In: tty, Out: a.Out, Err: a.Err}}
+			a.Runner = cancellationRunner{runner.WithIO(tty, a.Out, a.Err)}
 		case *archrepo.TrustedRunner:
-			if _, ok := runner.Runner.(run.Exec); ok {
-				a.Runner = cancellationRunner{runner.WithRunner(run.Exec{In: tty, Out: a.Out, Err: a.Err})}
+			if executor, ok := runner.Runner.(run.Exec); ok {
+				a.Runner = cancellationRunner{runner.WithRunner(executor.WithIO(tty, a.Out, a.Err))}
 			}
 		}
 	}
@@ -100,18 +103,25 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		fmt.Fprintln(a.Out, "No changes made.")
 		return execution{status: Success, skipped: true}
 	}
+	if err := a.activateOwnership(ctx); err != nil {
+		return execution{status: a.fatal(err), stopInspection: true}
+	}
 	privileged := needsPrivilege(p)
 	var keeper *sudoops.Keeper
 	if privileged {
 		keeper, err = sudoops.Acquire(ctx, a.Runner)
 		if err != nil {
-			return execution{status: a.fatal(fmt.Errorf("sudo authorization failed; no workstation changes made: %w", err))}
+			return execution{status: a.fatal(fmt.Errorf("sudo authorization failed; no workstation changes made: %w", err)), stopInspection: run.OwnershipFailed(err)}
 		}
-		defer keeper.Close()
+		defer func() {
+			if err := keeper.Close(); err != nil && run.OwnershipFailed(err) {
+				result.status, result.stopInspection = a.fatal(err), true
+			}
+		}()
 	}
 	problems := plannedProblems
 	stop := func(name, stage string, err error, impact string) execution {
-		return execution{status: Fatal, stopInspection: errors.Is(err, io.EOF), problems: append(problems, issue{State: "Failed", Name: name, Stage: stage, Cause: err.Error(), Err: err, Impact: impact, Action: "Run ops doctor before retrying."})}
+		return execution{status: Fatal, stopInspection: errors.Is(err, io.EOF) || resolve.StopsPlanning(err), problems: append(problems, issue{State: "Failed", Name: name, Stage: stage, Cause: err.Error(), Err: err, Impact: impact, Action: "Run ops doctor before retrying."})}
 	}
 	defer func() {
 		if a.interruption.mutation && !a.interruption.concluded {
@@ -122,7 +132,7 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 	archManager := arch.Manager{Runner: a.Runner}
 	if p.EnableMultilib {
 		if err := a.beginMutation(ctx); err != nil {
-			return execution{status: Fatal}
+			return stop("process ownership", "setup", err, "further changes refused")
 		}
 		a.progress("Preparing system...")
 		if err := archManager.EnableMultilib(ctx); err != nil {
@@ -131,7 +141,7 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 	}
 	if p.FullUpgrade {
 		if err := a.beginMutation(ctx); err != nil {
-			return execution{status: Fatal}
+			return stop("process ownership", "setup", err, "further changes refused")
 		}
 		a.progress("Updating system...")
 		if err := archManager.FullUpgrade(ctx, p.UpgradeTargets...); err != nil {
@@ -147,7 +157,7 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 	p.CorePackages = pending
 	if len(p.CorePackages) > 0 {
 		if err := a.beginMutation(ctx); err != nil {
-			return execution{status: Fatal}
+			return stop("process ownership", "setup", err, "further changes refused")
 		}
 		a.progress("Installing packages...")
 	}
@@ -163,7 +173,7 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 	flatpakManager := flatpak.Manager{Runner: a.Runner}
 	if p.AddFlathub {
 		if err := a.beginMutation(ctx); err != nil {
-			return execution{status: Fatal}
+			return stop("process ownership", "setup", err, "further changes refused")
 		}
 		a.progress("Preparing Flatpak applications...")
 		if err := flatpakManager.AddFlathub(ctx); err != nil {
@@ -173,7 +183,7 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 
 	if p.EnableFlathub {
 		if err := a.beginMutation(ctx); err != nil {
-			return execution{status: Fatal}
+			return stop("process ownership", "setup", err, "further changes refused")
 		}
 		a.progress("Enabling user Flathub...")
 		if err := flatpakManager.EnableFlathub(ctx); err != nil {
@@ -182,8 +192,8 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 	}
 
 	for _, application := range p.Applications {
-		if ctx.Err() != nil {
-			return execution{status: Fatal}
+		if err := a.mutationHealthy(ctx); err != nil {
+			return stop("process ownership", "setup", err, "no further mutation is safe")
 		}
 		if application.State == "ready" {
 			continue
@@ -194,6 +204,9 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		if application.State == "configure" {
 			a.progress("Configuring " + application.Declaration.Identifier + "...")
 			if err := a.configureApplication(ctx, archManager, application); err != nil {
+				if resolve.StopsPlanning(err) {
+					return stop("application inspection", "setup", err, "no further mutation is safe")
+				}
 				problems = append(problems, issue{State: "Failed", Name: application.Declaration.Identifier, Source: string(application.Declaration.Source), Cause: err.Error(), Err: err, Impact: "application configuration did not complete normally", Action: "Run ops doctor before retrying."})
 				continue
 			}
@@ -201,8 +214,8 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		}
 		aurManager.Review = func(_ string, files map[string]string) error { return a.reviewAUR(ctx, terminal, application, files) }
 		if err := a.installApplication(ctx, archManager, aurManager, flatpakManager, application); err != nil {
-			if ctx.Err() != nil {
-				return execution{status: a.fatal(fmt.Errorf("application setup interrupted: %w", err))}
+			if ctx.Err() != nil || resolve.StopsPlanning(err) {
+				return stop("application setup", "setup", err, "application setup could not safely continue")
 			}
 			if errors.Is(err, io.EOF) {
 				return stop("application input", "setup", err, "no further work was approved")
@@ -226,23 +239,23 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		}
 	}
 
-	if ctx.Err() != nil {
-		return execution{status: Fatal}
+	if err := a.mutationHealthy(ctx); err != nil {
+		return stop("process ownership", "setup", err, "no further mutation is safe")
 	}
 	gitStatus := p.GitStatus
 	if p.ConfigureGit {
 		var gitErr error
 		gitStatus, gitErr = a.configureGit(ctx, terminal)
 		if gitErr != nil {
-			if errors.Is(gitErr, io.EOF) {
+			if errors.Is(gitErr, io.EOF) || resolve.StopsPlanning(gitErr) {
 				return stop("Git input", "setup", gitErr, "no further work was approved")
 			}
 			problems = append(problems, *setupIssue("Git", gitErr))
 		}
 	}
 
-	if ctx.Err() != nil {
-		return execution{status: Fatal}
+	if err := a.mutationHealthy(ctx); err != nil {
+		return stop("process ownership", "setup", err, "no further mutation is safe")
 	}
 	sshStatus := p.SSHStatus
 	var managed *sshops.Identity
@@ -253,6 +266,13 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		var fatalErr error
 		sshStatus, managed, sshIssues, fatalErr = a.configureSSH(ctx, terminal, p)
 		problems = append(problems, sshIssues...)
+		// Identity issues retain execution causes. Classify the returned cause,
+		// since an inner operation can be interrupted while ctx is still live.
+		for _, problem := range sshIssues {
+			if resolve.StopsPlanning(problem.Err) {
+				return stop("SSH inspection", "setup", problem.Err, "SSH setup could not safely continue")
+			}
+		}
 		if fatalErr != nil {
 			return stop("SSH", "setup", fatalErr, "SSH configuration could not safely continue")
 		}
@@ -264,23 +284,34 @@ func (a Runtime) executePlan(ctx context.Context, p plan.Plan, terminal ui.UI) (
 		}
 	}
 
-	if ctx.Err() != nil {
-		return execution{status: Fatal}
+	if err := a.mutationHealthy(ctx); err != nil {
+		return stop("process ownership", "setup", err, "no further mutation is safe")
 	}
 	githubStatus := p.GitHubStatus
 	if githubWork && sshStatus != "failed" {
 		var githubIssues []issue
 		githubStatus, githubIssues = a.configureGitHub(ctx, terminal, managed, p)
 		problems = append(problems, githubIssues...)
+		for _, problem := range githubIssues {
+			if resolve.StopsPlanning(problem.Err) {
+				return stop("GitHub inspection", "setup", problem.Err, "GitHub setup could not safely continue")
+			}
+		}
 	} else if githubWork {
 		githubStatus = "skipped"
 	} else if sshWork && sshStatus == "ready" && managed != nil {
 		if err := (githubops.Manager{Runner: a.Runner}).VerifySSH(ctx); err != nil {
+			if resolve.StopsPlanning(err) {
+				return stop("GitHub SSH verification", "setup", err, "GitHub setup could not safely continue")
+			}
 			githubStatus = "failed"
 			problems = append(problems, *setupIssue("GitHub SSH verification", err))
 		}
 	}
 
+	if err := a.mutationHealthy(ctx); err != nil {
+		return stop("process ownership", "setup", err, "no further mutation is safe")
+	}
 	return execution{applied: true, git: gitStatus, ssh: sshStatus, github: githubStatus, problems: problems}
 }
 

@@ -10,6 +10,7 @@ import (
 	"github.com/luigiverona/ops/internal/aurmeta"
 	"github.com/luigiverona/ops/internal/config"
 	"github.com/luigiverona/ops/internal/plan"
+	"github.com/luigiverona/ops/internal/run"
 )
 
 // MetadataResolver performs read-only exact-source resolution.
@@ -26,17 +27,18 @@ type MetadataResolver interface {
 // Applications resolves only missing declarations, without installing prerequisites.
 // pacman/vercmp are supplied by the supported base system; AUR and Flatpak
 // metadata use HTTPS and never need Git, makepkg, or flatpak executables.
-func Applications(ctx context.Context, cfg config.Config, state plan.State, resolver MetadataResolver) plan.Facts {
+// Fatal execution causes return an error and no partial facts.
+func Applications(ctx context.Context, cfg config.Config, state plan.State, resolver MetadataResolver) (plan.Facts, error) {
 	return applications(ctx, cfg, state, resolver, true)
 }
 
 // ApplicationAvailability checks missing declarations for doctor without
 // preparing AUR builds or opening GnuPG keyrings and their helper processes.
-func ApplicationAvailability(ctx context.Context, cfg config.Config, state plan.State, resolver MetadataResolver) plan.Facts {
+func ApplicationAvailability(ctx context.Context, cfg config.Config, state plan.State, resolver MetadataResolver) (plan.Facts, error) {
 	return applications(ctx, cfg, state, resolver, false)
 }
 
-func applications(ctx context.Context, cfg config.Config, state plan.State, resolver MetadataResolver, prepareBuilds bool) plan.Facts {
+func applications(ctx context.Context, cfg config.Config, state plan.State, resolver MetadataResolver, prepareBuilds bool) (plan.Facts, error) {
 	facts := make(plan.Facts)
 	declaredPacman := make(map[string]bool)
 	declaredAUR := make(map[string]bool)
@@ -56,6 +58,9 @@ func applications(ctx context.Context, cfg config.Config, state plan.State, reso
 	}
 
 	for _, declaration := range cfg.Applications {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		app := plan.Application{Declaration: declaration}
 		if plan.IsInstalled(declaration, state) {
 			continue
@@ -84,6 +89,9 @@ func applications(ctx context.Context, cfg config.Config, state plan.State, reso
 			metadata, found, err = resolver.AUR(ctx, declaration.Identifier)
 		case "flatpak":
 			found, err = resolver.Flatpak(ctx, declaration.Identifier)
+		}
+		if StopsPlanning(err) {
+			return nil, err
 		}
 		if err != nil {
 			app.State = plan.Unavailable
@@ -127,6 +135,9 @@ func applications(ctx context.Context, cfg config.Config, state plan.State, reso
 				sources[metadata.PackageBase] = pinned
 			}
 			source, sourceFound, sourceErr := pinned.source, pinned.found, pinned.err
+			if StopsPlanning(sourceErr) {
+				return nil, sourceErr
+			}
 			if sourceErr != nil || !sourceFound || source.Commit == "" || source.Metadata.PackageBase != metadata.PackageBase {
 				app.State = plan.Unavailable
 				app.Err = sourceErr
@@ -139,6 +150,9 @@ func applications(ctx context.Context, cfg config.Config, state plan.State, reso
 				continue
 			}
 			outputs, dependencies, packages, buildErr := resolveAURBuild(ctx, resolver, source, declaration.Identifier, declaredPacman, state.Installed, state.Explicit, state.Foreign)
+			if StopsPlanning(buildErr) {
+				return nil, buildErr
+			}
 			if buildErr != nil {
 				app.State = "failed"
 				var queryErr *QueryError
@@ -152,6 +166,9 @@ func applications(ctx context.Context, cfg config.Config, state plan.State, reso
 			}
 			for _, fingerprint := range source.Metadata.ValidPGPKeys {
 				present, keyErr := resolver.UserPGPKey(ctx, fingerprint)
+				if StopsPlanning(keyErr) {
+					return nil, keyErr
+				}
 				if keyErr != nil {
 					app.State = "failed"
 					app.Err = keyErr
@@ -177,7 +194,7 @@ func applications(ctx context.Context, cfg config.Config, state plan.State, reso
 		facts[declaration] = app
 	}
 
-	return facts
+	return facts, nil
 }
 func resolveAURBuild(ctx context.Context, resolver MetadataResolver, source plan.AURSource, target string, declared, installed, explicit, foreign map[string]bool) ([]string, []plan.OfficialDependency, []plan.BuildPackage, error) {
 	compareVersions := func(left, right string) (int, error) { return resolver.CompareVersions(ctx, left, right) }
@@ -279,4 +296,11 @@ func appendUnique(values []string, value string) []string {
 		}
 	}
 	return append(values, value)
+}
+
+// StopsPlanning separates compromised execution or interrupted inspection from ordinary unresolved
+// declarations. Return the original error before recording any problem or
+// starting another query; a poisoned Owner must not be discovered by later work.
+func StopsPlanning(err error) bool {
+	return run.OwnershipFailed(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }

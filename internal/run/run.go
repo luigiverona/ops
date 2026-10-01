@@ -34,6 +34,10 @@ type Spec struct {
 	AllowTruncatedOutput bool
 	// FailureOutput opts in only at command boundaries whose output is safe to report.
 	FailureOutput FailureOutput
+	// EphemeralHelpers declares known auto-started helpers of a synchronous tool
+	// (public-key GnuPG operations and reviewed makepkg invocations). They are terminated after its committed result,
+	// never allowed to outlive Run. Undeclared background descendants are an error.
+	EphemeralHelpers bool
 }
 
 // Result contains captured output. Output is limited by callers when reported.
@@ -49,9 +53,16 @@ type Runner interface {
 
 // Exec executes commands directly and never through a shell.
 type Exec struct {
-	In  io.Reader
-	Out io.Writer
-	Err io.Writer
+	Owner *Owner
+	In    io.Reader
+	Out   io.Writer
+	Err   io.Writer
+}
+
+// WithIO preserves process ownership when binding an approved terminal.
+func (e Exec) WithIO(in io.Reader, out, errOut io.Writer) Exec {
+	e.In, e.Out, e.Err = in, out, errOut
+	return e
 }
 
 func (e Exec) Run(ctx context.Context, spec Spec) (Result, error) {
@@ -90,7 +101,19 @@ func (e Exec) Run(ctx context.Context, spec Spec) (Result, error) {
 			cmd.Stderr = io.MultiWriter(&stderr, &diagnostic)
 		}
 	}
-	err := cmd.Run()
+	var restore func() error
+	if spec.Interactive {
+		var err error
+		restore, err = terminalRecovery(cmd.Stdin)
+		if err != nil {
+			return Result{}, &Error{Name: spec.Name, Err: err}
+		}
+	}
+	err, waited := e.execute(ctx, cmd, spec.EphemeralHelpers)
+	err = e.recoverTerminal(restore, err)
+	if !waited {
+		return Result{}, &Error{Name: spec.Name, Err: err}
+	}
 	if !spec.Interactive && !spec.AllowTruncatedOutput && (stdout.truncated || stderr.truncated) {
 		err = errors.Join(err, errors.New("command output exceeded capture limit; refusing incomplete inspection"))
 	}
@@ -195,8 +218,31 @@ func (e *Error) Error() string {
 
 func (e *Error) Unwrap() error { return e.Err }
 
-// Exited reports a structured child exit code through wrapped command errors.
+// Exited finds a child exit code, even within a compound failure.
+// Use OnlyExit when accepting an expected command state and discarding the error.
 func Exited(err error, code int) bool {
 	var exit interface{ ExitCode() int }
 	return errors.As(err, &exit) && exit.ExitCode() == code
+}
+
+// OnlyExit reports whether err contains only one expected exit cause through
+// ordinary wrappers. Compound errors are inconclusive, even when every leaf
+// has the same exit code. Ownership and context failures must never be accepted
+// as product state, including when they wrap an otherwise expected exit.
+func OnlyExit(err error, code int) bool {
+	if OwnershipFailed(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	for err != nil {
+		switch cause := err.(type) {
+		case interface{ Unwrap() []error }:
+			return false
+		case interface{ Unwrap() error }:
+			err = cause.Unwrap()
+		default:
+			exit, ok := err.(interface{ ExitCode() int })
+			return ok && exit.ExitCode() == code
+		}
+	}
+	return false
 }

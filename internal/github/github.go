@@ -35,7 +35,7 @@ func (m Manager) Configured(ctx context.Context) (bool, error) {
 	if err != nil {
 		// gh exposes no structured missing-key result. Accept only its fixed
 		// local diagnostic with exit 1, never arbitrary config/parser errors.
-		if run.Exited(err, 1) && result.Stdout == "" && strings.TrimSpace(result.Stderr) == `could not find key "user"` {
+		if run.OnlyExit(err, 1) && result.Stdout == "" && strings.TrimSpace(result.Stderr) == `could not find key "user"` {
 			return false, nil
 		}
 		return false, fmt.Errorf("read local GitHub account configuration: %w", err)
@@ -43,9 +43,15 @@ func (m Manager) Configured(ctx context.Context) (bool, error) {
 	return strings.TrimSpace(result.Stdout) != "", nil
 }
 
-func (m Manager) Authenticated(ctx context.Context) bool {
+func (m Manager) Authenticated(ctx context.Context) (bool, error) {
 	_, err := m.Runner.Run(ctx, run.Spec{Name: "gh", Args: []string{"auth", "status", "--hostname", "github.com", "--active"}})
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	if run.OnlyExit(err, 1) {
+		return false, nil
+	}
+	return false, err
 }
 
 // InspectAuthentication preserves uncertainty: gh's plain exit status conflates
@@ -89,7 +95,9 @@ func (m Manager) Login(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if !m.Authenticated(ctx) {
+	if authenticated, err := m.Authenticated(ctx); err != nil {
+		return err
+	} else if !authenticated {
 		return errors.New("GitHub authentication verification failed")
 	}
 	return nil
@@ -102,7 +110,9 @@ func (m Manager) RefreshSSHKeyScope(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if !m.Authenticated(ctx) {
+	if authenticated, err := m.Authenticated(ctx); err != nil {
+		return err
+	} else if !authenticated {
 		return errors.New("GitHub authentication verification failed")
 	}
 	return nil
@@ -112,7 +122,7 @@ func (m Manager) RefreshSSHKeyScope(ctx context.Context) error {
 // response without inspecting a token or credential store.
 func IsSSHKeyScopeError(err error) bool {
 	var commandErr *run.Error
-	if !errors.As(err, &commandErr) || commandErr.Name != "gh" || !sshKeyAPI(commandErr.Args) {
+	if !run.OnlyExit(err, 1) || !errors.As(err, &commandErr) || commandErr.Name != "gh" || !sshKeyAPI(commandErr.Args) {
 		return false
 	}
 	return strings.Contains(strings.ToLower(commandErr.Stderr), `this api operation needs the "admin:public_key" scope`)
@@ -202,7 +212,7 @@ func (m Manager) VerifySSH(ctx context.Context) error {
 		Stdin:         strings.NewReader(""),
 	})
 	combined := strings.ToLower(result.Stdout + "\n" + result.Stderr)
-	if strings.Contains(combined, "successfully authenticated") {
+	if (err == nil || run.OnlyExit(err, 1)) && strings.Contains(combined, "successfully authenticated") {
 		return nil
 	}
 	if err != nil {

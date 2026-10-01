@@ -93,6 +93,9 @@ func (m Manager) Discover(ctx context.Context) ([]Identity, error) {
 		}
 		fingerprint, err := m.privateFingerprint(ctx, path)
 		if err != nil {
+			if inspectionInterrupted(err) {
+				return nil, fmt.Errorf("inspect private SSH identity: %w", err)
+			}
 			continue
 		}
 		if fingerprint != "" {
@@ -128,7 +131,12 @@ func (m Manager) Delete(ctx context.Context, identity Identity) error {
 	}
 	for _, path := range []string{identity.PrivatePath, identity.PublicPath} {
 		if path != "" {
-			if err := os.Remove(path); err != nil {
+			if err := run.Mutate(m.Runner, func() error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				return os.Remove(path)
+			}); err != nil {
 				return err
 			}
 		}
@@ -149,6 +157,9 @@ func (m Manager) verifyFingerprint(ctx context.Context, path, want string) error
 		return nil
 	}
 	got, err := m.privateFingerprint(ctx, path)
+	if inspectionInterrupted(err) {
+		return fmt.Errorf("revalidate private SSH identity: %w", err)
+	}
 	if err != nil || got != want {
 		return errors.New("identity changed since review")
 	}
@@ -201,10 +212,10 @@ func (m Manager) privateFingerprint(ctx context.Context, path string) (string, e
 
 // EnsureIdentity creates the managed Ed25519 identity through ssh-keygen's normal passphrase interaction.
 func (m Manager) EnsureIdentity(ctx context.Context) (Identity, error) {
-	if err := ctx.Err(); err != nil {
+	if err := mutationReady(ctx, m.Runner); err != nil {
 		return Identity{}, err
 	}
-	if err := secureDir(m.dir()); err != nil {
+	if err := run.Mutate(m.Runner, func() error { return secureDir(m.dir()) }); err != nil {
 		return Identity{}, err
 	}
 	path := filepath.Join(m.dir(), "ops")
@@ -219,11 +230,17 @@ func (m Manager) EnsureIdentity(ctx context.Context) (Identity, error) {
 	}
 	for _, identity := range identities {
 		if identity.PrivatePath == path && identity.PublicPath == path+".pub" {
-			if err := ctx.Err(); err != nil {
+			if err := mutationReady(ctx, m.Runner); err != nil {
 				return Identity{}, err
 			}
-			_ = os.Chmod(path, 0o600)
-			_ = os.Chmod(path+".pub", 0o644)
+			if err := run.Mutate(m.Runner, func() error {
+				if err := os.Chmod(path, 0600); err != nil {
+					return err
+				}
+				return os.Chmod(path+".pub", 0644)
+			}); err != nil {
+				return Identity{}, err
+			}
 			return identity, nil
 		}
 	}
@@ -235,18 +252,12 @@ func (m Manager) EnsureIdentity(ctx context.Context) (Identity, error) {
 func (m Manager) AgentIdentities(ctx context.Context) ([]AgentIdentity, bool, error) {
 	result, err := m.Runner.Run(ctx, run.Spec{Name: "ssh-add", Args: []string{"-L"}})
 	if err != nil {
-		// The runner can join an exit error with an output-capture failure.
-		// Such a failure must not be reduced to an ordinary agent state.
-		var compound interface{ Unwrap() []error }
-		if errors.As(err, &compound) {
-			return nil, false, err
-		}
 		// OpenSSH reserves exit 2 for failure to contact the agent. Exit 1
 		// also covers other failures, so require its exact empty-state output.
-		if run.Exited(err, 2) {
+		if run.OnlyExit(err, 2) {
 			return nil, false, nil
 		}
-		if run.Exited(err, 1) && strings.TrimSpace(result.Stdout+result.Stderr) == "The agent has no identities." {
+		if run.OnlyExit(err, 1) && strings.TrimSpace(result.Stdout+result.Stderr) == "The agent has no identities." {
 			return nil, true, nil
 		}
 		return nil, false, err
@@ -279,10 +290,10 @@ func (m Manager) Load(ctx context.Context, path string) error {
 // ConfigureGitHub isolates GitHub from additive user IdentityFile directives while
 // preserving the user's configuration for every other host.
 func (m Manager) ConfigureGitHub(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
+	if err := mutationReady(ctx, m.Runner); err != nil {
 		return err
 	}
-	if err := secureDir(m.dir()); err != nil {
+	if err := run.Mutate(m.Runner, func() error { return secureDir(m.dir()) }); err != nil {
 		return err
 	}
 	configPath := filepath.Join(m.dir(), "config")
@@ -336,31 +347,31 @@ func (m Manager) ConfigureGitHub(ctx context.Context) error {
 	if err := checkManagedTarget(knownHostsPath); err != nil {
 		return err
 	}
-	if err := ctx.Err(); err != nil {
+	if err := mutationReady(ctx, m.Runner); err != nil {
 		return err
 	}
-	if err := atomicManagedWrite(knownHostsPath, knownHosts, 0o600); err != nil {
+	if err := run.Mutate(m.Runner, func() error { return atomicManagedWrite(knownHostsPath, knownHosts, 0o600) }); err != nil {
 		return err
 	}
-	if err := ctx.Err(); err != nil {
+	if err := mutationReady(ctx, m.Runner); err != nil {
 		return err
 	}
-	if err := atomicManagedWrite(includePath, managed, 0o600, legacy); err != nil {
+	if err := run.Mutate(m.Runner, func() error { return atomicManagedWrite(includePath, managed, 0o600, legacy) }); err != nil {
 		return err
 	}
 	if !preservedExists {
-		if err := ctx.Err(); err != nil {
+		if err := mutationReady(ctx, m.Runner); err != nil {
 			return err
 		}
-		if err := atomicRegularWrite(userConfigPath, preserved, 0o600); err != nil {
+		if err := run.Mutate(m.Runner, func() error { return atomicRegularWrite(userConfigPath, preserved, 0o600) }); err != nil {
 			return err
 		}
 	}
 	if !dispatcherCurrent {
-		if err := ctx.Err(); err != nil {
+		if err := mutationReady(ctx, m.Runner); err != nil {
 			return err
 		}
-		if err := atomicRegularWrite(configPath, dispatcher, 0o600); err != nil {
+		if err := run.Mutate(m.Runner, func() error { return atomicRegularWrite(configPath, dispatcher, 0o600) }); err != nil {
 			return err
 		}
 	}
@@ -375,9 +386,8 @@ func (m Manager) ConfigureGitHub(ctx context.Context) error {
 }
 
 // GitHubConfigured verifies effective configuration without changing files.
-func (m Manager) GitHubConfigured(ctx context.Context) bool {
-	ready, _ := m.InspectLocalGitHubConfiguration(ctx)
-	return ready
+func (m Manager) GitHubConfigured(ctx context.Context) (bool, error) {
+	return m.InspectLocalGitHubConfiguration(ctx)
 }
 
 // InspectLocalGitHubConfiguration distinguishes incomplete managed files from
@@ -452,6 +462,9 @@ func (m Manager) InspectGitHubConfiguration(ctx context.Context) (GitHubConfigur
 	}
 	hostKeys, err := m.fetchGitHubHostKeys(ctx)
 	if err != nil {
+		if inspectionInterrupted(err) {
+			return GitHubConfigurationStatus{}, err
+		}
 		if metadataUnavailable(err) {
 			return GitHubConfigurationStatus{LocalReady: true, Freshness: HostKeyFreshnessUnavailable}, nil
 		}
@@ -761,4 +774,16 @@ func withoutManagedDispatcher(data []byte) ([]byte, error) {
 		return nil, errors.New("malformed ops managed SSH configuration markers")
 	}
 	return []byte(output.String()), nil
+}
+
+func mutationReady(ctx context.Context, runner run.Runner) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return run.CheckMutation(runner)
+}
+
+// Ordinary malformed keys remain discovery candidates, not lifecycle failures.
+func inspectionInterrupted(err error) bool {
+	return run.OwnershipFailed(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }

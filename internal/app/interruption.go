@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/luigiverona/ops/internal/archrepo"
@@ -49,7 +50,7 @@ func (a Runtime) withInterruption(ctx context.Context, command string) (Runtime,
 // beginMutation is also used for in-process file changes, which do not pass
 // through Runner. A phase that has started may have left changes on failure.
 func (a Runtime) beginMutation(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
+	if err := a.mutationHealthy(ctx); err != nil {
 		return err
 	}
 	if a.interruption != nil {
@@ -71,7 +72,7 @@ func (r cancellationRunner) Run(ctx context.Context, spec run.Spec) (run.Result,
 		return run.Result{}, err
 	}
 	result, err := r.Runner.Run(ctx, spec)
-	if ctx.Err() != nil {
+	if ctx.Err() != nil && err == nil {
 		return result, ctx.Err()
 	}
 	return result, err
@@ -97,7 +98,7 @@ func (r cancellationRunner) OfficialQuery(ctx context.Context, args []string) (r
 		return run.Result{}, err
 	}
 	result, err := archrepo.Query(ctx, r.Runner, args)
-	if ctx.Err() != nil {
+	if ctx.Err() != nil && err == nil {
 		return result, ctx.Err()
 	}
 	return result, err
@@ -107,7 +108,7 @@ func (r cancellationRunner) OfficialInstalled(ctx context.Context, target string
 		return false, err
 	}
 	result, err := archrepo.InstalledContent(ctx, r.Runner, target)
-	if ctx.Err() != nil {
+	if ctx.Err() != nil && err == nil {
 		return false, ctx.Err()
 	}
 	return result, err
@@ -122,7 +123,7 @@ func (r cancellationRunner) OfficialPrepare(ctx context.Context, targets []strin
 		if result != nil {
 			result.Close()
 		}
-		return nil, ctx.Err()
+		return nil, errors.Join(err, ctx.Err())
 	}
 	return result, err
 }
@@ -142,8 +143,27 @@ func (r cancellationRunner) OfficialInstalledVersion(ctx context.Context, target
 		return false, err
 	}
 	match, err := archrepo.InstalledVersionContent(ctx, r.Runner, target, version, info["Version"])
-	if ctx.Err() != nil {
+	if ctx.Err() != nil && err == nil {
 		return false, ctx.Err()
 	}
 	return match, err
 }
+
+func (a Runtime) activateOwnership(ctx context.Context) error {
+	if a.Ownership == nil {
+		return &run.OwnershipError{Err: errors.New("mutation ownership controller is missing")}
+	}
+	return a.Ownership.Activate(ctx)
+}
+func (a Runtime) mutationHealthy(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if a.Ownership == nil {
+		return &run.OwnershipError{Err: errors.New("mutation ownership controller is missing")}
+	}
+	return a.Ownership.Check()
+}
+
+func (r cancellationRunner) CheckMutation() error        { return run.CheckMutation(r.Runner) }
+func (r cancellationRunner) Mutate(f func() error) error { return run.Mutate(r.Runner, f) }

@@ -1,0 +1,40 @@
+{
+  "date": "2026-09-18",
+  "baseline": "50adbe8518aee4108ee7bd7b6532e6a9ad9daf7f",
+  "branch": "fix/process-tree-cancellation",
+  "origin_main_after_fetch": "50adbe8518aee4108ee7bd7b6532e6a9ad9daf7f",
+  "uid": 1000,
+  "uname": "Linux arch 7.2.6-arch2-1 #1 SMP PREEMPT_DYNAMIC Mon, 14 Sep 2026 22:41:30 +0000 x86_64 GNU/Linux",
+  "systemd": "systemd 261 (261.3-1-arch)",
+  "user_manager": "Version=261.3-1-arch\nControlGroup=/user.slice/user-1000.slice/user@1000.service",
+  "cgroup_statfs": "cgroup2fs",
+  "cgroup_mounts": [
+    "cgroup2 /sys/fs/cgroup cgroup2 rw,nosuid,nodev,noexec,relatime,nsdelegate,memory_recursiveprot,memory_hugetlb_accounting 0 0",
+    "net_cls /sys/fs/cgroup/net_cls cgroup rw,relatime,net_cls 0 0"
+  ],
+  "caller_cgroup": "1:net_cls:/\n0::/user.slice/user-1000.slice/session-3.scope\n",
+  "go": "go version go1.26.7 linux/amd64",
+  "GOENV": "off",
+  "GOTOOLCHAIN": "local",
+  "go_source_sha256": "566314c12ef25bf80312c654b58648ce6f94cb427b8097b4b2f10993058d4366",
+  "sudo_noninteractive": {
+    "exit_code": 1,
+    "stderr": "sudo: a password is required",
+    "root_probes": "NOT RUN"
+  },
+  "sudo_pam_observation": "session optional pam_systemd.so class=none",
+  "units": [
+    "ops-wave-e-architecture-stress-1789747082-166344.scope",
+    "ops-wave-e-architecture-supplement-1789746983-166025.scope",
+    "ops-wave-e-architecture-proof-1789746857-164525.scope",
+    "ops-wave-e-architecture-permissions-1789746732-164359.scope",
+    "ops-wave-e-architecture-service-166029.service",
+    "ops-wave-e-architecture-bootstrap-166029.scope"
+  ],
+  "original_evidence_sha256": {
+    "docs/wave-e-process-ownership-blocker.md": "bb61a4e6c4cc13e4ec2f39bb891e2cdce493a54ae4bce4b0f78c0e4b883d3efb",
+    "docs/wave-e-evidence/probe.go.txt": "de5a7e74da9597d60d4fb4d847562b8573c2649b324131fbfa0cc2a3483f2744",
+    "docs/wave-e-evidence/reproduce.py": "829c70e27d3f81aec9d97cd6bc83068d6b442d9a12e948dfa160b26767b977c1",
+    "docs/wave-e-evidence/results.json": "9a1881f552b8789c1ecb484cef0ba84fcd05a66145828c9ecc70b5b1e9237269"
+  }
+}

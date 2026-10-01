@@ -1,0 +1,29 @@
+{
+  "all_assertions_passed": true,
+  "recorded_process_count_checked": 367,
+  "recorded_processes_remaining": [],
+  "probe_commands_remaining": [],
+  "units": {
+    "ops-wave-e-architecture-stress-1789747082-166344.scope": "LoadState=not-found",
+    "ops-wave-e-architecture-supplement-1789746983-166025.scope": "LoadState=not-found",
+    "ops-wave-e-architecture-proof-1789746857-164525.scope": "LoadState=not-found",
+    "ops-wave-e-architecture-permissions-1789746732-164359.scope": "LoadState=not-found",
+    "ops-wave-e-architecture-service-166029.service": "LoadState=not-found",
+    "ops-wave-e-architecture-bootstrap-166029.scope": "LoadState=not-found"
+  },
+  "probe_cgroups_remaining": [],
+  "root_owned_probe_files_before_removal": [],
+  "tmp_directory_removed": "/tmp/ops-wave-e-architecture.UNgYxAUK",
+  "original_evidence_sha256_final": {
+    "docs/wave-e-process-ownership-blocker.md": "bb61a4e6c4cc13e4ec2f39bb891e2cdce493a54ae4bce4b0f78c0e4b883d3efb",
+    "docs/wave-e-evidence/probe.go.txt": "de5a7e74da9597d60d4fb4d847562b8573c2649b324131fbfa0cc2a3483f2744",
+    "docs/wave-e-evidence/reproduce.py": "829c70e27d3f81aec9d97cd6bc83068d6b442d9a12e948dfa160b26767b977c1",
+    "docs/wave-e-evidence/results.json": "9a1881f552b8789c1ecb484cef0ba84fcd05a66145828c9ecc70b5b1e9237269"
+  },
+  "head": "50adbe8518aee4108ee7bd7b6532e6a9ad9daf7f",
+  "branch": "fix/process-tree-cancellation",
+  "tracked_and_index_diff": "empty",
+  "git_diff_check": "PASS",
+  "system_configuration_changes": "none",
+  "git_status_short": "?? docs/wave-e-evidence/\n?? docs/wave-e-process-ownership-architecture.md\n?? docs/wave-e-process-ownership-blocker.md\n"
+}

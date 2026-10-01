@@ -1,0 +1,85 @@
+=== RUN   TestPrivilegedOwnership
+=== RUN   TestPrivilegedOwnership/tree
+=== RUN   TestPrivilegedOwnership/natural
+=== RUN   TestPrivilegedOwnership/stdout
+=== RUN   TestPrivilegedOwnership/stderr
+=== RUN   TestPrivilegedOwnership/fork
+=== RUN   TestPrivilegedOwnership/fork#01
+=== RUN   TestPrivilegedOwnership/fork#02
+--- PASS: TestPrivilegedOwnership (8.92s)
+    --- PASS: TestPrivilegedOwnership/tree (2.08s)
+    --- PASS: TestPrivilegedOwnership/natural (0.11s)
+    --- PASS: TestPrivilegedOwnership/stdout (0.11s)
+    --- PASS: TestPrivilegedOwnership/stderr (0.11s)
+    --- PASS: TestPrivilegedOwnership/fork (2.06s)
+    --- PASS: TestPrivilegedOwnership/fork#01 (2.05s)
+    --- PASS: TestPrivilegedOwnership/fork#02 (2.06s)
+=== RUN   TestOwnershipPTY
+    ownership_native_test.go:352: === RUN   TestOwnershipPTYHelper
+        NATIVE INPUT READY
+        native-input
+        native-input
+
+        OWNED PID 13489 sudo
+        OWNED PID 13491 sudo
+        OWNED PID 13492 python3
+        OWNED PID 13493 python3
+        OWNED PID 13494 python3
+        OWNED PID 13495 python3
+        NATIVE TREE READY
+        ^CNATIVE CLEAN PASS
+        NATIVE SECOND INPUT
+        terminal-usable
+        --- PASS: TestOwnershipPTYHelper (2.12s)
+        PASS
+
+--- PASS: TestOwnershipPTY (2.66s)
+PASS
+ok  	github.com/luigiverona/ops/internal/run	11.588s
+=== RUN   TestPrivilegedOwnershipKeeper
+--- PASS: TestPrivilegedOwnershipKeeper (0.47s)
+PASS
+ok  	github.com/luigiverona/ops/internal/sudo	0.473s
+=== RUN   TestPrivilegedOwnership
+=== RUN   TestPrivilegedOwnership/tree
+=== RUN   TestPrivilegedOwnership/natural
+=== RUN   TestPrivilegedOwnership/stdout
+=== RUN   TestPrivilegedOwnership/stderr
+=== RUN   TestPrivilegedOwnership/fork
+=== RUN   TestPrivilegedOwnership/fork#01
+=== RUN   TestPrivilegedOwnership/fork#02
+--- PASS: TestPrivilegedOwnership (8.61s)
+    --- PASS: TestPrivilegedOwnership/tree (2.07s)
+    --- PASS: TestPrivilegedOwnership/natural (0.11s)
+    --- PASS: TestPrivilegedOwnership/stdout (0.11s)
+    --- PASS: TestPrivilegedOwnership/stderr (0.11s)
+    --- PASS: TestPrivilegedOwnership/fork (2.06s)
+    --- PASS: TestPrivilegedOwnership/fork#01 (2.06s)
+    --- PASS: TestPrivilegedOwnership/fork#02 (2.06s)
+=== RUN   TestOwnershipPTY
+    ownership_native_test.go:352: === RUN   TestOwnershipPTYHelper
+        NATIVE INPUT READY
+        native-input
+        native-input
+
+        OWNED PID 13745 sudo
+        OWNED PID 13747 sudo
+        OWNED PID 13748 python3
+        OWNED PID 13749 python3
+        OWNED PID 13750 python3
+        OWNED PID 13751 python3
+        NATIVE TREE READY
+        ^CNATIVE CLEAN PASS
+        NATIVE SECOND INPUT
+        terminal-usable
+        --- PASS: TestOwnershipPTYHelper (2.08s)
+        PASS
+
+--- PASS: TestOwnershipPTY (3.18s)
+PASS
+ok  	github.com/luigiverona/ops/internal/run	12.803s
+=== RUN   TestPrivilegedOwnershipKeeper
+--- PASS: TestPrivilegedOwnershipKeeper (0.15s)
+PASS
+ok  	github.com/luigiverona/ops/internal/sudo	1.163s
+Sudo revoked before normal validation: PASS

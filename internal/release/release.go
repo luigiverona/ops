@@ -112,7 +112,7 @@ func (c Client) DownloadVerified(ctx context.Context, version string) (*Verified
 	if err := os.Mkdir(gpgHome, 0o700); err != nil {
 		return nil, err
 	}
-	baseArgs := []string{"--homedir", gpgHome, "--no-options", "--batch", "--no-tty"}
+	baseArgs := []string{"--homedir", gpgHome, "--no-options", "--batch", "--no-tty", "--no-autostart"}
 	showArgs := append(append([]string{}, baseArgs...), "--with-colons", "--show-keys", keyPath)
 	show, err := c.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "gpg", Args: showArgs})
 	if err != nil {
@@ -142,12 +142,15 @@ func (c Client) DownloadVerified(ctx context.Context, version string) (*Verified
 	if actual != expected {
 		return nil, errors.New("release binary checksum verification failed")
 	}
-	if err := os.Chmod(binary, 0o755); err != nil {
+	if err := run.CheckMutation(c.Runner); err != nil {
+		return nil, err
+	}
+	if err := run.Mutate(c.Runner, func() error { return os.Chmod(binary, 0o755) }); err != nil {
 		return nil, err
 	}
 	result, err := c.Runner.Run(ctx, run.Spec{Name: binary, Args: []string{"--version"}})
 	if err != nil || strings.TrimSpace(result.Stdout) != "ops "+version {
-		return nil, errors.New("verified release binary reports an unexpected version")
+		return nil, &verificationError{message: "verified release binary reports an unexpected version", cause: err}
 	}
 	ok = true
 	return &Verified{Version: version, Binary: binary, Dir: dir}, nil
@@ -312,7 +315,7 @@ func validateSignatureStatus(output, want string, processErr error) error {
 		}
 	}
 	if invalidState != "" {
-		return errors.New(invalidState)
+		return &verificationError{message: invalidState, cause: processErr}
 	}
 	if processErr != nil {
 		return processErr
@@ -322,3 +325,13 @@ func validateSignatureStatus(output, want string, processErr error) error {
 	}
 	return nil
 }
+
+// verificationError keeps the release diagnosis bounded while retaining the
+// execution cause for ownership, interruption, and structured diagnostics.
+type verificationError struct {
+	message string
+	cause   error
+}
+
+func (e *verificationError) Error() string { return e.message }
+func (e *verificationError) Unwrap() error { return e.cause }

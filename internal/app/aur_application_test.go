@@ -173,7 +173,7 @@ func TestAURApplicationBuildIsPinnedNoninteractiveAndInstallsOnlySelectedOutput(
 	}
 	runner := &applicationAURRunner{}
 	var output bytes.Buffer
-	runtime := Runtime{Runner: runner, Out: &output, Err: &output}
+	runtime := Runtime{Ownership: testOwnership{}, Runner: runner, Out: &output, Err: &output}
 	manager := aur.Manager{Runner: runner, Review: func(name string, files map[string]string) error {
 		if name != "browser-bin" || files[".SRCINFO"] != applicationAURSRCINFO {
 			t.Fatalf("review did not receive exact pinned source: name=%q files=%#v", name, files)
@@ -233,7 +233,7 @@ func TestAURDeclaredOfficialDependencyIsInstalledExplicitly(t *testing.T) {
 	runner := &applicationAURRunner{}
 	manager := aur.Manager{Runner: runner, Review: func(string, map[string]string) error { return nil }}
 	var output bytes.Buffer
-	if err := (Runtime{Runner: runner, Out: &output}).installAURApplication(context.Background(), arch.Manager{Runner: runner}, manager, app); err != nil {
+	if err := (Runtime{Ownership: testOwnership{}, Runner: runner, Out: &output}).installAURApplication(context.Background(), arch.Manager{Runner: runner}, manager, app); err != nil {
 		t.Fatal(err)
 	}
 	var markedExplicit, installedAsDependency bool
@@ -257,7 +257,7 @@ func TestAURApplicationFailureContinuesWithUnrelatedApplications(t *testing.T) {
 	}, GitStatus: "ready", SSHStatus: "ready", GitHubStatus: "ready"}
 	var output bytes.Buffer
 	runner := &prepareRunner{}
-	code := (Runtime{Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
+	code := (Runtime{Ownership: testOwnership{}, Runner: runner, Out: &output, Err: &output}).executeForTest(context.Background(), p, ui.UI{In: strings.NewReader("y\n"), Out: &output})
 	if code != Issues || !strings.Contains(output.String(), "broken-bin") || !strings.Contains(output.String(), "Installing org.example.Working...") {
 		t.Fatalf("code=%d\n%s", code, output.String())
 	}

@@ -59,7 +59,7 @@ func (s *Source) Query(ctx context.Context, runner run.Runner, args []string) (r
 	if err != nil {
 		// Only an exact -Si miss confirmed by the independent snapshot may
 		// consult supplemental API metadata. Native failures are inconclusive.
-		if len(args) == 3 && args[0] == "-Si" && args[1] == "--" {
+		if run.OnlyExit(err, 1) && len(args) == 3 && args[0] == "-Si" && args[1] == "--" {
 			_, found, lookupErr := s.Lookup(ctx, args[2])
 			if lookupErr == nil && !found {
 				return result, err
@@ -90,7 +90,7 @@ func (s *Source) CachedInstalledVersion(ctx context.Context, runner run.Runner, 
 	if err != nil && ctx.Err() == nil {
 		current, _, lookupErr := s.Lookup(ctx, target)
 		if lookupErr == nil && current.version != version {
-			return false, fmt.Errorf("%w: %v", ErrExactVersionUnavailable, err)
+			return false, fmt.Errorf("%w: %w", ErrExactVersionUnavailable, err)
 		}
 	}
 	return match, err

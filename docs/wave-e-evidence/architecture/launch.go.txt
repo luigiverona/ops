@@ -1,0 +1,24 @@
+// Disposable architecture probe. No ops imports or dependencies.
+package main
+import("bytes";"encoding/json";"fmt";"os";"os/exec";"runtime";"syscall";"time")
+func emit(v any){ b,_:=json.Marshal(v);fmt.Println(string(b)) }
+func main(){
+ cg, mode:=os.Args[1],os.Args[2]
+ cmd:=exec.Command(os.Args[3],os.Args[4:]...)
+ fd:=-1
+ if cg!="baseline" {
+  var err error
+  fd,err=syscall.Open(cg,0x200000|syscall.O_DIRECTORY|syscall.O_CLOEXEC,0)
+  if err!=nil {panic(err)}; defer syscall.Close(fd)
+  if mode=="badfd" {syscall.Close(fd)}
+  cmd.SysProcAttr=&syscall.SysProcAttr{UseCgroupFD:true,CgroupFD:fd}
+ }
+ var out,errout bytes.Buffer
+ if mode=="tty" { cmd.Stdin=os.Stdin;cmd.Stdout=os.Stdout;cmd.Stderr=os.Stderr } else {cmd.Stdout=&out;cmd.Stderr=&errout}
+ start:=time.Now()
+ if err:=cmd.Start();err!=nil {emit(map[string]any{"start_error":err.Error(),"go":runtime.Version()});os.Exit(2)}
+ selfCG,_:=os.ReadFile("/proc/self/cgroup")
+ emit(map[string]any{"started":cmd.Process.Pid,"go":runtime.Version(),"fd":fd,"parent":os.Getpid(),"parent_pgid":syscall.Getpgrp(),"parent_cgroup":string(selfCG)})
+ err:=cmd.Wait();msg:="";if err!=nil{msg=err.Error()}
+ emit(map[string]any{"waited":true,"error":msg,"elapsed_ms":time.Since(start).Milliseconds(),"stdout":out.String(),"stderr":errout.String()})
+}

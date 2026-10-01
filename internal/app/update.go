@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/luigiverona/ops/internal/archrepo"
 	"github.com/luigiverona/ops/internal/release"
 	"github.com/luigiverona/ops/internal/run"
 	sudoops "github.com/luigiverona/ops/internal/sudo"
@@ -49,8 +50,13 @@ func (a Runtime) Update(ctx context.Context) (code int) {
 	}
 	defer tty.Close()
 	if guarded, ok := a.Runner.(cancellationRunner); ok {
-		if _, ok := guarded.Runner.(run.Exec); ok {
-			a.Runner = cancellationRunner{run.Exec{In: tty, Out: a.Out, Err: a.Err}}
+		switch runner := guarded.Runner.(type) {
+		case run.Exec:
+			a.Runner = cancellationRunner{runner.WithIO(tty, a.Out, a.Err)}
+		case *archrepo.TrustedRunner:
+			if executor, ok := runner.Runner.(run.Exec); ok {
+				a.Runner = cancellationRunner{runner.WithRunner(executor.WithIO(tty, a.Out, a.Err))}
+			}
 		}
 	}
 	terminal := ui.UI{In: tty, Out: tty}
@@ -76,6 +82,12 @@ func (a Runtime) installUpdate(ctx context.Context, client release.Client, lates
 		fmt.Fprintln(a.Out, "No changes made.")
 		return Success
 	}
+	if err := a.activateOwnership(ctx); err != nil {
+		return a.updateFatal(err)
+	}
+	// Download/verification begins only after ownership; all verification commands
+	// use the same controller and the rebound terminal as installation.
+	client.Runner = a.Runner
 	a.progress("Downloading and verifying update...")
 	verified, err := client.DownloadVerified(ctx, latest)
 	if err != nil {
@@ -88,9 +100,18 @@ func (a Runtime) installUpdate(ctx context.Context, client release.Client, lates
 	if err != nil {
 		return a.updateFatal(fmt.Errorf("sudo authorization failed: %w", err))
 	}
-	defer keeper.Close()
+	keeperClosed := false
+	defer func() {
+		if keeperClosed {
+			return
+		}
+		if err := keeper.Close(); err != nil && run.OwnershipFailed(err) {
+			a.renderFatal("ops update", "", err, "subprocess cleanup did not complete; check ops --version before retrying")
+			code = Fatal
+		}
+	}()
 	if err := a.beginMutation(ctx); err != nil {
-		return Fatal
+		return a.updateFatal(err)
 	}
 	if err := release.Replace(ctx, a.Runner, verified.Binary, "/usr/local/bin/ops", latest); err != nil {
 		if a.interrupted() {
@@ -99,7 +120,13 @@ func (a Runtime) installUpdate(ctx context.Context, client release.Client, lates
 		a.renderFatal("ops update", "", err, "replacement did not complete; check ops --version and any reported recovery failure before retrying")
 		return Fatal
 	}
-	if ctx.Err() != nil {
+	keeperClosed = true
+	if err := keeper.Close(); run.OwnershipFailed(err) {
+		a.renderFatal("ops update", "", err, "subprocess cleanup did not complete; check ops --version before retrying")
+		return Fatal
+	}
+	if err := a.mutationHealthy(ctx); err != nil {
+		a.renderFatal("ops update", "", err, "check ops --version before retrying")
 		return Fatal
 	}
 	if !a.claimConclusion() {

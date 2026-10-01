@@ -132,7 +132,11 @@ func (a Runtime) configureGitHub(ctx context.Context, _ ui.UI, managed *sshops.I
 	m := githubops.Manager{Runner: a.Runner}
 	lateAuthenticated := false
 	if p.AuthenticateGitHub {
-		lateAuthenticated = m.Authenticated(ctx)
+		var err error
+		lateAuthenticated, err = m.Authenticated(ctx)
+		if err != nil {
+			return "failed", []issue{*setupIssue("GitHub authentication", err)}
+		}
 		if !lateAuthenticated {
 			if err := a.beginMutation(ctx); err != nil {
 				return "failed", nil

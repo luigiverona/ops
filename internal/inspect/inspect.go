@@ -48,7 +48,7 @@ func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 	}
 	if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Qqm"}}); err == nil {
 		addLines(state.Foreign, result.Stdout)
-	} else if !run.Exited(err, 1) || strings.TrimSpace(result.Stdout+result.Stderr) != "" {
+	} else if !run.OnlyExit(err, 1) || strings.TrimSpace(result.Stdout+result.Stderr) != "" {
 		return state, fmt.Errorf("inspect foreign packages: %w", err)
 	}
 	if result, err := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "pacman", Args: []string{"-Qeq"}}); err == nil {
@@ -165,13 +165,13 @@ func (w Workstation) Local(ctx context.Context) (plan.State, error) {
 			continue
 		}
 		enabled, e1 := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "systemctl", Args: []string{"is-enabled", service}})
-		knownDisabled := run.Exited(e1, 1) && serviceState(enabled.Stdout, "disabled", "masked", "masked-runtime", "linked", "linked-runtime")
-		knownMissing := run.Exited(e1, 4) && serviceState(enabled.Stdout, "not-found")
+		knownDisabled := run.OnlyExit(e1, 1) && serviceState(enabled.Stdout, "disabled", "masked", "masked-runtime", "linked", "linked-runtime")
+		knownMissing := run.OnlyExit(e1, 4) && serviceState(enabled.Stdout, "not-found")
 		if e1 != nil && !(enabled.Stderr == "" && (knownDisabled || knownMissing)) {
 			return state, fmt.Errorf("inspect whether %s is enabled: %w", service, e1)
 		}
 		active, e2 := w.Runner.Run(ctx, run.Spec{FailureOutput: run.FailureStderr, Name: "systemctl", Args: []string{"is-active", service}})
-		if e2 != nil && !((run.Exited(e2, 3) || run.Exited(e2, 4)) && active.Stderr == "" && serviceState(active.Stdout, "inactive", "failed", "activating", "deactivating", "maintenance", "unknown")) {
+		if e2 != nil && !((run.OnlyExit(e2, 3) || run.OnlyExit(e2, 4)) && active.Stderr == "" && serviceState(active.Stdout, "inactive", "failed", "activating", "deactivating", "maintenance", "unknown")) {
 			return state, fmt.Errorf("inspect whether %s is active: %w", service, e2)
 		}
 		state.Services[service] = e1 == nil && e2 == nil && strings.TrimSpace(enabled.Stdout) == "enabled" && strings.TrimSpace(active.Stdout) == "active"

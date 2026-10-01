@@ -1,0 +1,11 @@
+{
+  "fresh_disposable_vm": true,
+  "preserved_vm_touched": false,
+  "kvm_verified": true,
+  "sudo_revoked_before_ordinary_tests": true,
+  "sudo_noninteractive_failure_verified": true,
+  "qmp_quit_completed": true,
+  "vm_directory_removed": true,
+  "ephemeral_guest_ssh_credentials_removed": true,
+  "cloud_image_sha256": "d7cc7c86a21b32d6678c001464714f71f4ef7e0d7bbbfca65e99123ac5afc25b"
+}

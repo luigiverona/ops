@@ -2,7 +2,6 @@ package archrepo
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -90,7 +89,8 @@ func InspectInstalled(ctx context.Context, runner run.Runner, target string) (In
 		}
 	}
 	match, err := InstalledVersionContent(ctx, runner, target, state.InstalledVersion, state.CurrentVersion)
-	if errors.Is(err, archtrust.ErrExactVersionUnavailable) {
+	// Only the exact sentinel proves unavailable evidence without another failure.
+	if err == archtrust.ErrExactVersionUnavailable {
 		return state, nil
 	}
 	if err != nil {

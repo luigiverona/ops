@@ -592,5 +592,9 @@ const (
 )
 
 func resolveAndPlan(ctx context.Context, cfg config.Config, state State, resolver MetadataResolver) Plan {
-	return plan.Build(cfg, state, Applications(ctx, cfg, state, resolver))
+	facts, err := Applications(ctx, cfg, state, resolver)
+	if err != nil {
+		panic(err)
+	}
+	return plan.Build(cfg, state, facts)
 }

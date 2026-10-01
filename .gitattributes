@@ -1,0 +1,3 @@
+# A preserved unified patch contains a single-space blank context line.
+# Keep the original evidence bytes; production source retains default checks.
+docs/wave-e-evidence/architecture/privileged-ci-proof.patch whitespace=-blank-at-eol

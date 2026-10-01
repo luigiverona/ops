@@ -228,7 +228,7 @@ func TestConfigureGitHubPreservesConfigAndIsIdempotent(t *testing.T) {
 	if data, _ := os.ReadFile(unrelatedKnownHosts); string(data) != "example.com ssh-ed25519 unrelated\n" {
 		t.Fatal("ordinary known_hosts was modified")
 	}
-	if !m.GitHubConfigured(context.Background()) {
+	if ready, err := m.GitHubConfigured(context.Background()); err != nil || !ready {
 		t.Fatal("fresh GitHub SSH configuration was not recognized")
 	}
 	status, err := m.InspectGitHubConfiguration(context.Background())
@@ -251,7 +251,7 @@ func TestInspectGitHubConfigurationReportsStaleOfficialHostKeys(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "ops_known_hosts"), stale, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if !m.GitHubConfigured(context.Background()) {
+	if ready, err := m.GitHubConfigured(context.Background()); err != nil || !ready {
 		t.Fatal("structurally valid stale host keys were not suitable for the freshness test")
 	}
 	status, err := m.InspectGitHubConfiguration(context.Background())
@@ -299,14 +299,14 @@ func TestInspectGitHubConfigurationSeparatesUnavailableMetadata(t *testing.T) {
 		}
 	})
 
-	t.Run("timeout", func(t *testing.T) {
+	t.Run("timeout stops inspection", func(t *testing.T) {
 		check := m
 		check.HTTP = &http.Client{Transport: metadataTransport(func(*http.Request) (*http.Response, error) {
 			return nil, context.DeadlineExceeded
 		})}
 		check.MetadataURL = "https://metadata.invalid/test"
 		status, err := check.InspectGitHubConfiguration(context.Background())
-		if err != nil || !status.LocalReady || status.Freshness != HostKeyFreshnessUnavailable {
+		if !errors.Is(err, context.DeadlineExceeded) || status != (GitHubConfigurationStatus{}) {
 			t.Fatalf("timeout status=%#v err=%v", status, err)
 		}
 	})
@@ -431,7 +431,7 @@ func TestConfigureGitHubAndConfiguredRejectExtraIdentity(t *testing.T) {
 	if err := m.ConfigureGitHub(context.Background()); err == nil {
 		t.Fatal("ConfigureGitHub accepted an extra effective identity")
 	}
-	if m.GitHubConfigured(context.Background()) {
+	if ready, err := m.GitHubConfigured(context.Background()); err != nil || ready {
 		t.Fatal("GitHubConfigured accepted an extra effective identity")
 	}
 }
@@ -462,7 +462,7 @@ func TestConfigureGitHubRealOpenSSHIsolation(t *testing.T) {
 	if err := m.ConfigureGitHub(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !m.GitHubConfigured(context.Background()) {
+	if ready, err := m.GitHubConfigured(context.Background()); err != nil || !ready {
 		t.Fatal("GitHubConfigured disagrees with successful ConfigureGitHub")
 	}
 	assertRealEffectiveIdentity(t, sshPath, filepath.Join(dir, "config"), "github.com", filepath.Join(dir, "ops"))
@@ -780,13 +780,13 @@ func TestInvalidManagedKnownHostsIsDetectedAndRepaired(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(dir, "ops_config"), []byte(managedMarker+"\nHost github.com\n"), 0o600)
 	_ = os.WriteFile(filepath.Join(dir, "ops_known_hosts"), []byte(managedMarker+"\ngithub.com ssh-ed25519 invalid\n"), 0o600)
 	m := managerWithMetadata(t, home)
-	if m.GitHubConfigured(context.Background()) {
+	if ready, err := m.GitHubConfigured(context.Background()); err != nil || ready {
 		t.Fatal("invalid managed host-key file was accepted")
 	}
 	if err := m.ConfigureGitHub(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !m.GitHubConfigured(context.Background()) {
+	if ready, err := m.GitHubConfigured(context.Background()); err != nil || !ready {
 		t.Fatal("managed host-key file was not repaired")
 	}
 }

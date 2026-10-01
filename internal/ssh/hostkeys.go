@@ -59,10 +59,7 @@ func (m Manager) fetchGitHubHostKeys(ctx context.Context) ([]string, error) {
 	req.Header.Set("User-Agent", "ops/1")
 	resp, err := client.Do(req)
 	if err != nil {
-		if errors.Is(ctx.Err(), context.Canceled) {
-			return nil, ctx.Err()
-		}
-		return nil, metadataUnavailableError{err: err}
+		return nil, metadataFetchError(ctx, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -76,10 +73,7 @@ func (m Manager) fetchGitHubHostKeys(ctx context.Context) ([]string, error) {
 	reader := io.LimitReader(resp.Body, metadataLimit+1)
 	data, err := io.ReadAll(reader)
 	if err != nil {
-		if errors.Is(ctx.Err(), context.Canceled) {
-			return nil, ctx.Err()
-		}
-		return nil, metadataUnavailableError{err: err}
+		return nil, metadataFetchError(ctx, err)
 	}
 	if len(data) > metadataLimit {
 		return nil, errors.New("GitHub metadata exceeds size limit")
@@ -93,6 +87,18 @@ func (m Manager) fetchGitHubHostKeys(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	return validateHostKeys(metadata.SSHKeys)
+}
+
+// Source outages are unavailable checks; aborted operations must stop inspection.
+// http.Client timeouts preserve context.DeadlineExceeded even with a live caller.
+func metadataFetchError(ctx context.Context, err error) error {
+	if cause := ctx.Err(); cause != nil {
+		err = errors.Join(err, cause)
+	}
+	if inspectionInterrupted(err) {
+		return err
+	}
+	return metadataUnavailableError{err: err}
 }
 
 func ensureJSONEnd(decoder *json.Decoder) error {

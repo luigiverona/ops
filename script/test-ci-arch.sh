@@ -19,14 +19,29 @@ printf '::group::Bootstrap disposable Arch VM\n'
 sudo pacman -Syu --noconfirm
 sudo pacman -S --needed --noconfirm \
     archlinux-keyring pacman gnupg libarchive bubblewrap flatpak \
-    git gcc openssh python util-linux diffutils
+    git gcc fakeroot openssh python util-linux diffutils
 sudo install -d -m 0700 -o ops-ci -g ops-ci /run/user/1000
+# Exercise production ownership with real sudo/PTYs in this disposable guest.
+# Preserve failure status but ALWAYS revoke the existing bootstrap grant below.
+export PATH=/opt/go1.26.7/bin:/usr/bin GOENV=off GOTOOLCHAIN=local
+export GOROOT=/opt/go1.26.7 GOPATH=/home/ops-ci/go
+export GOCACHE=/home/ops-ci/.cache/go-build GOMODCACHE=/home/ops-ci/go/pkg/mod
+export XDG_RUNTIME_DIR=/run/user/1000
+ownership_status=0
+OPS_OWNERSHIP_PRIVILEGED=1 go test -v -count=1 -timeout=3m -tags ownership_integration ./internal/run ./internal/sudo \
+    -run '^(TestPrivilegedOwnership|TestPrivilegedOwnershipKeeper|TestOwnershipPTY|TestOwnershipPTYFailureCleanup)$' >"$HOME/ci-logs/ownership.log" 2>&1 || ownership_status=$?
+cat "$HOME/ci-logs/ownership.log"
+OPS_OWNERSHIP_PRIVILEGED=1 go test -race -v -count=1 -timeout=3m -tags ownership_integration ./internal/run ./internal/sudo \
+    -run '^(TestPrivilegedOwnership|TestPrivilegedOwnershipKeeper|TestOwnershipPTY|TestOwnershipPTYFailureCleanup)$' >"$HOME/ci-logs/ownership-race.log" 2>&1 || ownership_status=$?
+cat "$HOME/ci-logs/ownership-race.log"
 # Bootstrap is over: remove the cloud-init sudo grant before running tests.
 sudo rm /etc/sudoers.d/90-cloud-init-users
 if sudo -n true 2>/dev/null; then
     echo 'Unexpected sudo access after bootstrap' >&2
     exit 1
 fi
+echo 'Sudo revoked before normal validation: PASS'
+test "$ownership_status" = 0
 export PATH=/opt/go1.26.7/bin:/usr/bin GOENV=off GOTOOLCHAIN=local
 export GOROOT=/opt/go1.26.7 GOPATH=/home/ops-ci/go
 export GOCACHE=/home/ops-ci/.cache/go-build GOMODCACHE=/home/ops-ci/go/pkg/mod
@@ -140,6 +155,10 @@ printf '::group::Native Arch regressions\n'
 audit_test native-arch.log go test -v -count=1 ./internal/resolve -run '^TestReal(PacmanProviderPrintFormatInIsolatedDatabase|VerCmpArchVersionSemantics)$'
 grep -E '^--- PASS: TestRealPacmanProviderPrintFormatInIsolatedDatabase ' "$HOME/ci-logs/native-arch.log"
 grep -E '^--- PASS: TestRealVerCmpArchVersionSemantics ' "$HOME/ci-logs/native-arch.log"
+printf '::endgroup::\n'
+
+printf '::group::Unprivileged process ownership\n'
+audit_test ownership-native.log go test -v -count=1 -timeout=3m -tags ownership_integration ./internal/run ./internal/pgp ./internal/release -run '^(TestNativeOwnership|TestNativeCrashScopeLifetime|TestNativeGPGHelpers|TestNativeGPGOwnerDeath|TestNativeUpdaterOwnership|TestOwnershipPTY|TestOwnershipPTYFailureCleanup|TestNativeMakepkgHelpers|TestNativeCleanupCancellation)$'
 printf '::endgroup::\n'
 
 printf '::group::Native Flatpak tests\n'

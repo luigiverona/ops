@@ -34,15 +34,17 @@ temporarily unavailable facts, invalid facts, and executable actions.
 Domain data flows into the planner; only orchestration and operation packages
 depend on `run.Runner`. `arch`, `aur`, `flatpak`, `git`, `ssh`, `github`, `pgp`,
 `sudo`, and `release` localize their security-sensitive operations. `aurmeta`
-parses declarative build metadata without executing PKGBUILD. TOML decoding is
-the single external Go module.
+parses declarative build metadata without executing PKGBUILD. The external Go
+modules provide TOML decoding and the systemd user-manager D-Bus connection;
+see the [ownership dependency decision](wave-e-process-ownership-architecture.md#production-implementation--2026-09-19).
 
 ## Canonical application order
 
 1. Validate official Arch x86_64 and normal-user execution; validate configuration.
 2. Inspect local state, obtain required external facts, and construct/present a plan.
-3. Present one top-level setup approval. Acquire and refresh sudo only if
-   privileged work is required.
+3. Present one top-level setup approval. After approval, establish and verify
+   delegated cgroup ownership before sudo or mutation. Acquire and refresh sudo
+   only if privileged work is required. Doctor, no-op and decline do not activate.
 4. Prepare required repositories; perform one full interactive `pacman -Syu`
    over all configured repositories before package installations, including
    available custom rebuilds. Subsequent managed official installations exclude
@@ -59,7 +61,8 @@ the single external Go module.
    normal user and install only validated, selected artifacts.
 8. Verify each application and configure/verify its required service. Services
    are deliberately adjacent to their owner; later unrelated apps may continue
-   if one application fails.
+   if one application fails. Process ownership failure is always fatal and stops
+   all subsequent mutation and final reinspection.
 9. Configure Git, then SSH, then authenticate/reconcile GitHub keys when needed.
 10. After mutations, reinspect actual local and remote state and rebuild the
     plan, including after a core failure. Remaining work is reported as
@@ -134,7 +137,8 @@ unsigned binaries into a pinned official base image; checkout and Go stay on
 the build runner. The runtime installs only baseline sudo, asserts managed
 dependencies remain absent, runs native pacman/vercmp checks, runs doctor with
 and without configuration, and declines a real interactive first-run plan.
-It checks package/configuration state did not change. This is not full systemd,
+It also confirms a plan without a user manager, verifies ownership refusal
+before a sudo sentinel runs, and checks package/configuration state did not change. This is not full systemd,
 device-authentication, or real AUR build acceptance; the VM gate remains required.
 
 | Situation | Behavior |
@@ -147,6 +151,7 @@ device-authentication, or real AUR build acceptance; the VM gate remains require
 | Top-level decline | Exit 0; no changes |
 | AUR local skip, build/install decline, or failed application | Exit 1; retain successful unrelated work and report final observed state |
 | Cancellation or lost interactive input | Exit 2; no further work or final reinspection; earlier changes may remain |
+| Unavailable or compromised process ownership after approval | Exit 2; refuse sudo and further commands/file mutations; report incomplete cleanup |
 | Unsafe state, invalid config/platform, failed core prerequisite | Exit 2; stop dependent work |
 
 No-op with unavailable host-key freshness exits 1 and does not prompt or mutate.
@@ -177,3 +182,12 @@ does not announce a system upgrade. The AUR source view is separate from normal
 progress; its sanitized display is never used for metadata or equality checks.
 `ops update` has one approval for download, verification, and installation;
 signature/checksum verification still completes before sudo or replacement.
+
+Approved setup/update requires a reachable systemd user manager and actual delegated
+cgroup-v2/CLONE_INTO_CGROUP/cgroup.kill capability. Commands have independent child
+cgroups, including sudo refreshes. Cancellation preserves context identity, gives
+the direct child bounded grace, then kills the complete inherited subtree and
+verifies population zero. Natural exit cannot leave background descendants.
+Manager-created services are a separate lifecycle; malicious cgroup manipulation
+and hard-crash cleanup are outside this ownership guarantee. See the
+[implementation and limitations](wave-e-process-ownership-architecture.md#production-implementation--2026-09-19).

@@ -1,0 +1,68 @@
+=== RUN   TestRealPacmanProviderPrintFormatInIsolatedDatabase
+--- PASS: TestRealPacmanProviderPrintFormatInIsolatedDatabase (0.15s)
+=== RUN   TestRealVerCmpArchVersionSemantics
+--- PASS: TestRealVerCmpArchVersionSemantics (0.00s)
+PASS
+apps.toml "/home/ops-test/.config/ops/apps.toml" is missing; create a file using format 2 (version = 2); see https://github.com/luigiverona/ops/blob/main/docs/configuration.md: inspect configuration directory: lstat /home/ops-test/.config/ops: no such file or directory. No files changed.
+  git: missing
+  ssh: missing
+  github: missing
+  Git: configuration required
+  SSH: configuration required
+  GitHub: configuration required
+
+Issues detected.
+Run ops to prepare the workstation.
+  git: missing
+  ssh: missing
+  github: missing
+  Git: configuration required
+  SSH: configuration required
+  GitHub: configuration required
+
+Issues detected.
+Run ops to prepare the workstation.
+n
+Workstation setup
+
+Configure
+  Git identity
+  SSH for GitHub
+  GitHub authentication
+  Register this workstation's SSH key with GitHub if needed
+
+Manage GitHub SSH settings separately; preserve other host configuration.
+
+The system will be updated.
+  Upgrade using all configured repositories, including custom repositories.
+  Install managed official targets from core, extra, or multilib; exclude custom repositories from those installations.
+
+Required dependencies will be installed.
+
+Continue? [Y/n] No changes made.
+y
+Workstation setup
+
+Configure
+  Git identity
+  SSH for GitHub
+  GitHub authentication
+  Register this workstation's SSH key with GitHub if needed
+
+Manage GitHub SSH settings separately; preserve other host configuration.
+
+The system will be updated.
+  Upgrade using all configured repositories, including custom repositories.
+  Install managed official targets from core, extra, or multilib; exclude custom repositories from those installations.
+
+Required dependencies will be installed.
+
+Continue? [Y/n] Issues
+
+Failed
+
+ops
+  cause   safe subprocess ownership unavailable or compromised: connect to systemd user manager: dial unix /run/user/1000/bus: connect: no such file or directory
+  impact  workstation preparation could not safely continue
+  action  resolve the error and run ops again
+Workstation preparation stopped.
