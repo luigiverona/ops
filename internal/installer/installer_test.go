@@ -34,9 +34,37 @@ func releaseScriptPath(t *testing.T) string {
 }
 
 func TestPOSIXSyntax(t *testing.T) {
-	cmd := exec.Command("sh", "-n", scriptPath(t), releaseScriptPath(t))
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("sh -n: %v: %s", err, output)
+	if err := checkPOSIXSyntax(scriptPath(t), releaseScriptPath(t)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func checkPOSIXSyntax(paths ...string) error {
+	for _, path := range paths {
+		if output, err := exec.Command("sh", "-n", path).CombinedOutput(); err != nil {
+			return fmt.Errorf("sh -n %s: %w: %s", path, err, output)
+		}
+	}
+	return nil
+}
+
+func TestPOSIXSyntaxRejectsMalformedLaterScript(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.sh")
+	second := filepath.Join(dir, "second.sh")
+	for _, path := range []string{first, second} {
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n: valid\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := checkPOSIXSyntax(first, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("#!/bin/sh\nif then\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkPOSIXSyntax(first, second); err == nil || !strings.Contains(err.Error(), second) {
+		t.Fatalf("malformed second script must fail validation: %v", err)
 	}
 }
 

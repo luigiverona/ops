@@ -182,8 +182,10 @@ unset GOFLAGS
 
 printf '::group::Build and shell validation\n'
 go build ./...
-# Preserve the existing Wave D shell-validation behavior (O-01 belongs to Wave F).
-sh -n script/install.sh script/prepare-release.sh script/render-install.sh script/publish-release.sh script/test-minimal-arch.sh
+# Each shell invocation parses only its first script operand.
+for script in script/install.sh script/prepare-release.sh script/render-install.sh script/publish-release.sh script/test-minimal-arch.sh; do
+    sh -n "$script" || exit
+done
 bash -n script/test-ci-arch.sh
 printf '::endgroup::\n'
 echo 'Build and shell validation: PASS'
