@@ -179,6 +179,9 @@ review the newly resolved source. Never bypass signature or SSH host-key checks.
 
 ## Development
 
+For remaining finalization work, read the [canonical finalization roadmap and
+handoff](docs/finalization-context.md) before acting.
+
 Use exactly Go 1.26.7 with `GOENV=off GOTOOLCHAIN=local`:
 
 ```sh
