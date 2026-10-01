@@ -194,7 +194,8 @@ go test -count=1 ./...
 go test -race -count=1 ./...
 go build ./...
 git diff --check
-sh -c 'for script in script/*.sh; do sh -n "$script" || exit; done'
+sh -c 'for script in script/install.sh script/prepare-release.sh script/render-install.sh script/publish-release.sh script/test-minimal-arch.sh; do sh -n "$script" || exit; done'
+bash -n script/test-ci-arch.sh
 ```
 
 Tests use temporary homes, fake command boundaries, local HTTP servers, and
