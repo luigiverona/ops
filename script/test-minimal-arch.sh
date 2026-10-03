@@ -1,6 +1,9 @@
 #!/bin/sh
 # Destructive only inside a fresh disposable CI container; never run on a workstation.
 set -eu
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 test -f /.dockerenv
 test "$(id -u)" = 0
@@ -32,6 +35,9 @@ install -m 0755 /candidate/resolve.test /usr/local/bin/ops-resolve-test
 
 runuser -u ops-test -- sh <<'TEST'
 set -eu
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 cd /home/ops-test
 test ! -e .config/ops/apps.toml
 test ! -e .ssh

@@ -133,6 +133,10 @@ func (f *prepareReleaseFixture) commitAndTag(t *testing.T) {
 }
 
 func (f *prepareReleaseFixture) run(overrides map[string]string) ([]byte, error) {
+	return f.command(overrides).CombinedOutput()
+}
+
+func (f *prepareReleaseFixture) command(overrides map[string]string) *exec.Cmd {
 	cmd := exec.Command("sh", f.script, "1.0.0")
 	cmd.Dir = f.dir
 	env := filteredPrepareReleaseEnv()
@@ -149,7 +153,7 @@ func (f *prepareReleaseFixture) run(overrides map[string]string) ([]byte, error)
 		env = append(env, key+"="+value)
 	}
 	cmd.Env = env
-	return cmd.CombinedOutput()
+	return cmd
 }
 
 func filteredPrepareReleaseEnv() []string {

@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 
+# Trap before preflight commands: bash may otherwise resume after parent-only INT.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 required_go=go1.26.7
 
 fail() {
@@ -62,11 +67,14 @@ go test -mod=readonly -count=1 ./... || fail 'tests failed'
 output=dist/release-$tag
 [ ! -e "$output" ] && [ ! -L "$output" ] || fail "$output already exists"
 mkdir -p dist
-stage=$(mktemp -d "dist/.ops-release.XXXXXXXX") || fail 'could not create release staging directory'
+stage=
 cleanup() {
-    rm -rf -- "$stage"
+    if [ -n "$stage" ]; then
+        rm -rf -- "$stage"
+    fi
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+stage=$(mktemp -d "dist/.ops-release.XXXXXXXX") || fail 'could not create release staging directory'
 
 binary=$stage/ops-linux-x86_64
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=readonly -trimpath -buildvcs=true \

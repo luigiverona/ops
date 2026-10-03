@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 
+# Keep the existing terminating contract active during preflight as well.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 bucket=ops-releases
 profile=${OPS_R2_PROFILE:-ops-r2}
 public_origin=https://ops.luigiverona.dev
@@ -108,15 +113,15 @@ for path in internal/release/signing-fingerprint internal/release/signing-key.as
         fail "$path is not a safe regular file"
 done
 
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/ops-publish.XXXXXXXX") ||
-    fail 'could not create publication staging directory'
+tmp=
 cleanup() {
-    rm -rf -- "$tmp"
+    if [ -n "$tmp" ]; then
+        rm -rf -- "$tmp"
+    fi
 }
 trap cleanup 0
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/ops-publish.XXXXXXXX") ||
+    fail 'could not create publication staging directory'
 
 fingerprint=$(cat internal/release/signing-fingerprint)
 case "$fingerprint" in

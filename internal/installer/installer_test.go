@@ -464,10 +464,10 @@ func TestInstallerConfigurationFailuresAndRaces(t *testing.T) {
 		{"write failure", "        if ! cat > ./apps.toml", `cat() { printf 'partial'; return 1; }`, "could not write", false},
 		{"simulated close failure", "        if ! cat > ./apps.toml", `cat() { command cat; return 1; }`, "could not write", false},
 		{"failed writer with concurrent config", "        if ! cat > ./apps.toml", `cat() { printf 'replacement config' > /proc/$$/cwd/apps.toml; printf 'partial'; return 1; }`, "could not write", false},
-		{"raced regular file", "        ln -T -- ./apps.toml", `printf 'raced config' > "$config"`, "Preserved existing ~/.config/ops/apps.toml.", true},
-		{"raced symlink", "        ln -T -- ./apps.toml", `printf 'keep' > "$HOME/outside"; ln -s "$HOME/outside" "$config"`, "apps.toml is a symlink", false},
-		{"raced dangling symlink", "        ln -T -- ./apps.toml", `ln -s "$HOME/outside" "$config"`, "apps.toml is a symlink", false},
-		{"raced config directory", "        ln -T -- ./apps.toml", `mkdir "$config"`, "apps.toml is not a regular file", false},
+		{"raced regular file", "        ln -T -- /proc/$$/fd/8/apps.toml", `printf 'raced config' > "$config"`, "Preserved existing ~/.config/ops/apps.toml.", true},
+		{"raced symlink", "        ln -T -- /proc/$$/fd/8/apps.toml", `printf 'keep' > "$HOME/outside"; ln -s "$HOME/outside" "$config"`, "apps.toml is a symlink", false},
+		{"raced dangling symlink", "        ln -T -- /proc/$$/fd/8/apps.toml", `ln -s "$HOME/outside" "$config"`, "apps.toml is a symlink", false},
+		{"raced config directory", "        ln -T -- /proc/$$/fd/8/apps.toml", `mkdir "$config"`, "apps.toml is not a regular file", false},
 		{"ops directory changed after preflight", "binary_installed=yes", `mkdir -p "$config_parent"; ln -s "$HOME" "$config_dir"`, "configuration directory ~/.config/ops is a symlink", false},
 	}
 	for _, test := range tests {
@@ -520,7 +520,7 @@ func TestInstallerConfigurationFailuresAndRaces(t *testing.T) {
 }
 
 func TestInstallerConfigWriteCannotFollowReplacedDirectory(t *testing.T) {
-	for _, boundary := range []string{"config_physical=$(", "    config_stage=$(", "        ln -T -- ./apps.toml"} {
+	for _, boundary := range []string{"config_physical=$(", "    config_stage=$(", "        ln -T -- /proc/$$/fd/8/apps.toml"} {
 		for _, replacement := range []string{`ln -s "$HOME/outside" "$config_dir"`, `mkdir "$config_dir"`} {
 			t.Run(boundary+replacement, func(t *testing.T) {
 				fingerprint := strings.Repeat("A", 40)
@@ -608,7 +608,7 @@ func TestInstallerConfigPublicationRejectsRacedNonregularTargets(t *testing.T) {
 		t.Run(hook, func(t *testing.T) {
 			fingerprint := strings.Repeat("A", 40)
 			cmd, _, home := installerCommand(t, fingerprint, "[GNUPG:] VALIDSIG "+fingerprint+" 0 0 0 0 0 0 0 0 0\n", "0")
-			installerHook(t, cmd, "        ln -T -- ./apps.toml", hook)
+			installerHook(t, cmd, "        ln -T -- /proc/$$/fd/8/apps.toml", hook)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			bounded := exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)

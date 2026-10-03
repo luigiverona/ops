@@ -141,7 +141,22 @@ Wave F is retained below as completed history; Wave G is next.
 
 ### Wave G — Signal/interruption & recovery safety
 
-**NEXT — NOT STARTED** during this documentation transition.
+**CURRENT — local implementation prepared; I-04 remains OPEN.**
+
+Wave G began on 2026-10-03 from verified main/origin/main
+`acc3b28912a3d4a99340e91fe2981c70faaa8fbf` (the Wave F closure-documentation
+commit). At preflight: main only remotely, zero open PRs/stashes, clean
+worktree/index, and strict required `ci`, `build`, `minimal-runtime` checks
+successful on that exact SHA (runs 37157785747 and 37157785721).
+
+The local branch is `fix/signal-interruption-recovery`. Its
+[implementation evidence](wave-g-interruption-recovery.md) records the full trap
+inventory, pre-fix real-signal reproductions, backup state machine, configuration
+publication boundary, 102 real-signal cases, validation, and self-review.
+This is an unpushed implementation handoff, not formal finding closure or a
+merged transition. Independent review, protected branch CI, squash merge,
+reviewed/merged-tree equality, and canonical closure remain required.
+Wave H has not started and must wait for Wave G closure.
 
 Closes **I-04**: shell signal/interruption recovery safety.
 

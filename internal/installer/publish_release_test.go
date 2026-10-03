@@ -576,6 +576,10 @@ func (f *publicationFixture) releasePath(name string) string {
 }
 
 func (f *publicationFixture) run(version string, overrides map[string]string) ([]byte, error) {
+	return f.command(version, overrides).CombinedOutput()
+}
+
+func (f *publicationFixture) command(version string, overrides map[string]string) *exec.Cmd {
 	cmd := exec.Command("sh", f.script, version)
 	cmd.Dir = f.dir
 	env := filteredPublicationEnv()
@@ -595,7 +599,7 @@ func (f *publicationFixture) run(version string, overrides map[string]string) ([
 		env = append(env, key+"="+value)
 	}
 	cmd.Env = env
-	return cmd.CombinedOutput()
+	return cmd
 }
 
 func filteredPublicationEnv() []string {
