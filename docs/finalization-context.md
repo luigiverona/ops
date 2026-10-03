@@ -10,49 +10,60 @@ release acceptance bar. Do not reconstruct or simplify the roadmap from older
 session reports. Technical architecture, evidence, and operating procedures
 remain in their linked documents; they do not replace this handoff.
 
-## Verified repository state after Wave E
+## Verified repository state after Wave F
 
-Snapshot verified on 2026-10-01, before creating the documentation transition
+Snapshot verified on 2026-10-03, before creating the documentation transition
 branch. These are recorded observations, not permanently current state.
 
 | Item | Verified state |
 | --- | --- |
 | Repository | `luigiverona/ops` |
 | Starting branch | `main` |
-| Current main / origin/main at transition | `d8de658c2fd047a6aee79c1d7ba842111748f1f1` |
-| Wave E reviewed feature head | `40c8138ed88105c038a6461879c7a3493779ac81` |
-| Wave E reviewed tree | `8195a180d63d83409614f1a17affee09650597c9` |
-| Main tree | Same as the Wave E reviewed tree |
-| Wave E PR | [#22](https://github.com/luigiverona/ops/pull/22), merged |
-| Wave E result | **I-02 CLOSED; Critical 0; Important 0** within Wave E review scope |
-| Transition status | **Wave E merged and verified** |
+| Current main / origin/main at transition | `9cd605296162a7ebb4f3a563b3516da6fa404c34` |
+| Wave F reviewed feature head | `ed8704624dc7ebee06f2a793fad2b099b7e80823` |
+| Wave F reviewed tree | `4743785a0f6b2170d85ec354968a0e4bb1285e68` |
+| Wave F squash merge commit | `9cd605296162a7ebb4f3a563b3516da6fa404c34` |
+| Squash merge sole parent | `dda0bdf6ea363a290ee8c18837f35b0e94e9a1d5` |
+| Merged main tree | `4743785a0f6b2170d85ec354968a0e4bb1285e68`; **EXACT** reviewed-tree equivalence |
+| Wave F PR | [#24 — fix: validate shell scripts individually](https://github.com/luigiverona/ops/pull/24), merged |
+| Wave F result | **O-01 CLOSED; Critical 0; Important 0; Optional 0** within Wave F review scope |
+| Transition status | **Wave F merged and verified** |
+| Remote Wave F branch | `fix/shell-validation-correctness` deleted |
 | Remote long-lived branches | `main` only |
 | Open PRs at preflight | 0 |
 | Worktree / index / stashes at preflight | Clean / clean / 0 |
 | Required protected checks | `ci`, `build`, `minimal-runtime`; all successful on the reviewed head and merged main |
 
-Merged-main evidence: [CI](https://github.com/luigiverona/ops/actions/runs/36873175413)
-and [Arch integration](https://github.com/luigiverona/ops/actions/runs/36873175491).
+Reviewed-head evidence: [CI run 36928579597](https://github.com/luigiverona/ops/actions/runs/36928579597)
+and [Arch integration run 36928579423](https://github.com/luigiverona/ops/actions/runs/36928579423).
+Push-triggered merged-main evidence on the exact transition commit:
+[CI run 36933489473](https://github.com/luigiverona/ops/actions/runs/36933489473)
+(`ci`: SUCCESS) and
+[Arch integration run 36933489465](https://github.com/luigiverona/ops/actions/runs/36933489465)
+(`build`, `minimal-runtime`: SUCCESS). Successful CI was verified, not rerun.
 Branch protection also verified these three required checks with strict mode.
+These runs are historical Wave F evidence, not future RC acceptance evidence.
 Creating this handoff branch/PR temporarily changes the branch and PR counts;
 the table describes the preflight, not the eventual documentation PR state.
 
-The next implementation wave is **Wave F**, which has **not started** in this
-documentation-only transition. Waves F–S below are future work, not completed
+The next implementation wave is **Wave G — Signal/interruption & recovery safety**,
+covering **I-04**, which has **NOT started** during this documentation-only
+transition. Wave F is complete; Waves G–S below are future work, not completed
 acceptance claims. Zero known Critical findings remain at this transition;
-three known Important findings remain outside the completed Wave E scope.
+three known Important findings remain outside the completed Wave F scope.
 
 ## Completed waves and finding accounting
 
-The established Important finding ledger is:
+The completed finding ledger is:
 
-| Completed wave | Closed Important findings |
+| Completed wave | Closed findings |
 | --- | --- |
 | A | I-01, I-10 |
 | B | I-03, I-05 |
 | C | I-06, I-09 |
 | D | I-07, I-08 |
 | E | I-02 |
+| F | O-01 (Optional) |
 
 Remaining known Important findings:
 
@@ -67,7 +78,6 @@ rejection, or deferral; no disposition or residual risk is invented here.
 
 | Finding | Unresolved subject | Assigned wave |
 | --- | --- | --- |
-| O-01 | Shell `sh -n` multi-file validation bug | F |
 | O-02 | Stress-test split | J |
 | O-03 | Updater verified bytes mutable path | M |
 | O-04 | AUR untracked helper | P |
@@ -99,7 +109,16 @@ rejection, or deferral; no disposition or residual risk is invented here.
   [correction evidence](wave-e-evidence/implementation/) describe their respective
   checkpoints. Statements such as “not pushed,” “independent review required,”
   or “complete race suite not run locally” must be read in that historical scope.
-  The verified merged transition above establishes the current Wave E status.
+  Wave E merged in [PR #22](https://github.com/luigiverona/ops/pull/22);
+  its historical merged-main evidence is
+  [CI](https://github.com/luigiverona/ops/actions/runs/36873175413) and
+  [Arch integration](https://github.com/luigiverona/ops/actions/runs/36873175491).
+- [Wave F shell validation](wave-f-shell-validation.md) is completed historical
+  implementation/review evidence. Its pre-merge statements that O-01 is “not
+  closed” and review/CI/merge remain required describe that earlier checkpoint.
+  The verified transition above owns current status: **O-01 CLOSED; Wave F
+  merged and verified**. Neither that document nor Wave F protected CI replaces
+  future RC acceptance evidence.
 
 Wave E owns inherited-process lifetime, not the final terminal presentation
 contract. Existing hard-crash/SIGKILL, uninterruptible-task, deliberate cgroup
@@ -113,12 +132,16 @@ This ordering is authoritative. Do not skip, silently reorder, or replace it
 with a simplified “productization / release” roadmap. “Closes” below identifies
 the target finding; closure requires evidence and an explicit ledger update.
 Correctness/security findings may reopen earlier work at any time.
+Wave F is retained below as completed history; Wave G is next.
 
 ### Wave F — Shell validation correctness
 
-Closes **O-01**: shell `sh -n` multi-file validation bug.
+**COMPLETE — O-01 CLOSED.** Shell `sh -n` multi-file validation bug;
+[PR #24](https://github.com/luigiverona/ops/pull/24) merged and verified.
 
 ### Wave G — Signal/interruption & recovery safety
+
+**NEXT — NOT STARTED** during this documentation transition.
 
 Closes **I-04**: shell signal/interruption recovery safety.
 
@@ -339,7 +362,7 @@ At the start of every major ChatGPT/Codex session:
 3. Do not trust SHA/status text in this file without live verification. Explain
    discrepancies and reconcile the evidence before acting.
 4. Identify the exact current Wave. At this transition the next implementation
-   wave is F; this documentation PR does not start it.
+   wave is G (I-04); this documentation PR does not start it.
 5. Do not skip Waves.
 6. Do not silently simplify or reorder the roadmap.
 7. Update this file after each major merged transition: verified main/reviewed
@@ -351,5 +374,5 @@ At the start of every major ChatGPT/Codex session:
 
 Keep this as the single canonical roadmap. `AGENTS.md` and README link here;
 they must not acquire competing copies of the roadmap. This transition is
-documentation only: no Wave F implementation, automatic merge, production
+documentation only: no Wave G implementation, automatic merge, production
 change, release, or publication is part of it.
