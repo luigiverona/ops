@@ -1,10 +1,16 @@
 # Wave G — cooperative interruption and recovery evidence
 
-Implementation evidence for I-04. Formal closure remains pending independent
-re-review, final verification, protected CI, squash merge, merged-tree equality,
-and canonical closure. The first independent review found one **Important**
-EXIT-cleanup/status defect. The local correction checkpoint below records its
-implementation and validation; Wave G remains local/unmerged and I-04 OPEN.
+Implementation evidence for I-04. Independent re-review PASSED with **Critical 0 /
+Important 0 / Optional 0** and verdict **READY FOR FINAL VERIFICATION**. Final local
+executable verification also PASSED on
+`acf04b02ef4285c382768809b4d8034e99219591`; its only blocker was stale documentation
+status, corrected at the checkpoint below. No executable defect was found.
+The first independent review found exactly one **Important** EXIT-cleanup/status
+defect, corrected locally in that commit. At this documentation-correction
+checkpoint Wave G remains local, unpushed/unmerged and **I-04 OPEN**; no PR has yet
+been opened and protected CI on the feature head has NOT run. Publication,
+exact-head protected CI, squash merge, merged-tree equality, postmerge CI, and
+formal canonical closure remain pending. No later roadmap phase has started.
 
 Sections through the initial self-review retain the first implementation's
 historical evidence (commit `e8bba7730fa655db1e2fd59fa80828d0ba747bea`). The
@@ -444,9 +450,10 @@ No compiler/dependency upgrade. All following final validation passed:
 | `bash -n` separately on each extracted workflow `run` block | PASS, all 12 blocks across arch.yml, ci.yml, release.yml |
 | `git diff --check` | PASS |
 
-Self-review of the complete correction diff found **Critical 0 / Important 0 /
-Optional 0** remaining within this correction scope, pending independent
-re-review. Checked saved statuses, explicit exits, trap resets, manual invocation,
+At the correction checkpoint, self-review of the complete correction diff found
+**Critical 0 / Important 0 / Optional 0** remaining within this correction scope;
+independent re-review was still pending at that historical checkpoint. Checked
+saved statuses, explicit exits, trap resets, manual invocation,
 duplicate cleanup, warning bounds, continued installer reporting, ownership and
 safe-path checks, nested phase contracts, and publication order. This is a local
 self-review conclusion, not independent approval or I-04 closure.
@@ -456,7 +463,49 @@ attention; warnings do not guarantee successful cleanup. In-flight utilities may
 finish before a pending shell trap runs. Tests do not establish bounded teardown
 of arbitrary utilities, repeated-signal behavior during cleanup, SIGKILL/hard-crash
 convergence, or new process-ownership guarantees. The preserved acceptance VM
-was not booted; production artifacts were not signed/published. Protected CI and
-full native acceptance were not run for this local correction. Wave G remains
-local/unmerged, **I-04 OPEN**; independent re-review, final verification, protected
-CI, merge/tree equality, and formal closure remain required. No later wave started.
+was not booted; production artifacts were not signed/published. There is no
+power-loss durability guarantee. Workflow prologue tests prove bounded shell
+startup semantics, not whole GitHub Actions job cancellation. Protected CI and
+full native acceptance were not run for this local correction.
+
+## Independent re-review and final verification — documentation-correction checkpoint
+
+The cleanup-status correction was committed locally as
+`acf04b02ef4285c382768809b4d8034e99219591`, following initial implementation commit
+`e8bba7730fa655db1e2fd59fa80828d0ba747bea`. It addresses the first independent
+review's exactly one Important issue: EXIT cleanup failures could override the
+primary interruption status and suppress retained-backup recovery guidance.
+
+Independent re-review of the corrected implementation **PASSED: Critical 0 /
+Important 0 / Optional 0**. Its verdict was **READY FOR FINAL VERIFICATION**.
+This is independent review evidence, separate from the earlier implementation
+and correction self-reviews.
+
+Final local executable verification subsequently **PASSED** on
+`acf04b02ef4285c382768809b4d8034e99219591`, before this docs-only correction:
+
+| Final local verification | Result |
+| --- | --- |
+| Corrected `Signals$` suite | PASS twice; each run 129 total, 43 HUP, 43 INT, 43 TERM, including 27 cleanup-failure cases |
+| Focused Wave G regression groups | PASS |
+| `go mod verify` | PASS |
+| Installer/app tests | PASS |
+| Installer race tests | PASS |
+| Full suite | PASS |
+| `go vet` and `go build` | PASS |
+| All shell syntax checks | PASS |
+| `bash -n` on each extracted workflow shell block | PASS, all 12 blocks |
+| `git diff --check` | PASS |
+
+No executable defect was found during final verification. The final verification
+gate was blocked solely because this document and the canonical handoff still
+said independent re-review was pending. This documentation-only correction
+records the completed re-review and executable verification and resolves that
+status blocker; it adds no new executable acceptance claim.
+
+At this checkpoint implementation remains local, unpushed/unmerged, **I-04 OPEN**.
+No PR has yet been opened. Protected CI on the feature head has NOT run;
+historical base checks and local tests do not replace it. Publication, exact-head
+protected CI, squash merge, reviewed/merged-tree equality, postmerge CI, and
+formal I-04/canonical closure remain pending. No later roadmap phase has started.
+All limitations above remain in force.

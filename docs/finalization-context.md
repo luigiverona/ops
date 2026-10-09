@@ -141,7 +141,8 @@ Wave F is retained below as completed history; Wave G is next.
 
 ### Wave G — Signal/interruption & recovery safety
 
-**CURRENT — local cleanup-status correction prepared; I-04 remains OPEN.**
+**CURRENT — independent re-review and local executable verification passed;
+publication gates pending; I-04 remains OPEN.**
 
 Wave G began on 2026-10-03 from verified main/origin/main
 `acc3b28912a3d4a99340e91fe2981c70faaa8fbf` (the Wave F closure-documentation
@@ -155,17 +156,30 @@ inventory, pre-fix real-signal reproductions, backup state machine, configuratio
 publication boundary, initial 102 real-signal cases, validation, and self-review.
 The first independent review found one Important issue: failing EXIT cleanup
 could replace interruption status and suppress installer recovery guidance.
-The 2026-10-09 scoped local correction preserves the primary status explicitly,
+The 2026-10-09 scoped local correction, commit
+`acf04b02ef4285c382768809b4d8034e99219591`, preserves the primary status explicitly,
 continues independent cleanup/reporting, and adds 27 real-signal cleanup-failure
 cases (129 total; 43 each HUP/INT/TERM), passing three times plus full local validation.
 Verified correction start: `e8bba7730fa655db1e2fd59fa80828d0ba747bea`, sole parent
 and fetched origin/main `acc3b28912a3d4a99340e91fe2981c70faaa8fbf`; clean initial
 worktree/index, no stashes/open PRs, strict protected base checks still successful.
-This is a local/unmerged, unpushed correction checkpoint, not formal finding
-closure or a merged transition. Independent re-review, final verification,
-protected branch CI, squash merge, reviewed/merged-tree equality, and formal
-I-04/canonical closure remain required.
-Wave H has not started and must wait for Wave G closure.
+Independent re-review then PASSED: **Critical 0 / Important 0 / Optional 0**,
+with verdict **READY FOR FINAL VERIFICATION**. Final local executable verification
+PASSED on `acf04b02ef4285c382768809b4d8034e99219591` before this documentation-only
+status correction: the corrected Signals$ suite passed twice (129 cases each;
+43 HUP, 43 INT, 43 TERM; 27 cleanup-failure cases), focused Wave G regressions,
+module verification, installer/app tests, installer race tests, full suite,
+vet/build, all shell syntax checks, all 12 extracted workflow shell blocks, and
+`git diff --check` passed. No executable defect was found. The final verification
+gate was blocked solely by stale documentation saying re-review was pending;
+this status correction resolves that documentation blocker.
+
+At this documentation-correction checkpoint, implementation remains local,
+unpushed/unmerged; no PR has yet been opened and protected CI on the feature head
+has NOT run. Publication and exact-head protected CI, squash merge,
+reviewed/merged-tree equality, postmerge CI, and formal I-04/canonical closure
+remain pending. This is not formal finding closure or a merged transition.
+No later roadmap phase has started; Wave H must wait for Wave G closure.
 
 Closes **I-04**: shell signal/interruption recovery safety.
 
