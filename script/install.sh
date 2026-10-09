@@ -21,11 +21,14 @@ fail() {
 cleanup() {
     if [ -n "${tmp:-}" ]; then
         case "$tmp" in
-            "${tmp_parent:-/tmp}"/ops-install.*) rm -rf -- "$tmp" ;;
+            "${tmp_parent:-/tmp}"/ops-install.*)
+                rm -rf -- "$tmp" || printf '%s\n' 'ops installer: warning: temporary download cleanup failed' >&2
+                ;;
         esac
     fi
     if [ -n "${staged:-}" ]; then
-        sudo -n rm -f -- "$staged" >/dev/null 2>&1 || true
+        sudo -n rm -f -- "$staged" >/dev/null 2>&1 ||
+            printf '%s\n' 'ops installer: warning: staged binary cleanup failed' >&2
     fi
     if [ -n "${backup:-}" ]; then
         if [ "${backup_required:-no}" = yes ]; then
@@ -33,20 +36,32 @@ cleanup() {
                 printf 'ops installer: replacement not settled; backup retained at %s; inspect the target before recovery or retry\n' "$backup" >&2
             fi
         else
-            sudo -n rm -f -- "$backup" >/dev/null 2>&1 || true
+            sudo -n rm -f -- "$backup" >/dev/null 2>&1 ||
+                printf '%s\n' 'ops installer: warning: obsolete backup cleanup failed' >&2
         fi
     fi
     if [ -n "${config_stage:-}" ]; then
         # Descriptor 8 pins only this run's private stage, even if its name is
         # replaced. Never unlink apps.toml in the destination during cleanup.
         if [ "${config_stage_open:-no}" = yes ]; then
-            rm -f -- /proc/$$/fd/8/apps.toml
+            rm -f -- /proc/$$/fd/8/apps.toml ||
+                printf '%s\n' 'ops installer: warning: staged configuration cleanup failed' >&2
         fi
-        rmdir -- "$config_stage" >/dev/null 2>&1 || true
+        rmdir -- "$config_stage" >/dev/null 2>&1 ||
+            printf '%s\n' 'ops installer: warning: configuration staging directory cleanup failed' >&2
     fi
 }
 
-trap cleanup EXIT
+on_exit() {
+    primary_status=$?
+    trap - EXIT
+    # Cleanup is secondary; neither errexit nor a failed diagnostic owns status.
+    set +e
+    cleanup
+    exit "$primary_status"
+}
+
+trap on_exit EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -243,7 +258,15 @@ if [ ! -e "$config" ]; then
         [ "$(pwd -P)" = "$config_physical/ops/${config_stage#./}" ] || config_fail 'configuration staging directory changed during installation'
         # Cleanup is confined to the private staging directory, never apps.toml
         # in the managed directory, which another process may have replaced.
-        trap 'rm -f -- ./apps.toml' EXIT
+        config_on_exit() {
+            primary_status=$?
+            trap - 0
+            set +e
+            rm -f -- ./apps.toml ||
+                printf '%s\n' 'ops installer: warning: private configuration cleanup failed' >&2
+            exit "$primary_status"
+        }
+        trap config_on_exit EXIT
         trap 'exit 2' HUP INT TERM
         umask 077
         if ! cat > ./apps.toml <<'OPS_CONFIG'

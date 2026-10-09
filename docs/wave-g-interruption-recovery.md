@@ -1,7 +1,14 @@
 # Wave G — cooperative interruption and recovery evidence
 
 Implementation evidence for I-04. Formal closure remains pending independent
-review, protected CI, squash merge, merged-tree equality, and canonical closure.
+re-review, final verification, protected CI, squash merge, merged-tree equality,
+and canonical closure. The first independent review found one **Important**
+EXIT-cleanup/status defect. The local correction checkpoint below records its
+implementation and validation; Wave G remains local/unmerged and I-04 OPEN.
+
+Sections through the initial self-review retain the first implementation's
+historical evidence (commit `e8bba7730fa655db1e2fd59fa80828d0ba747bea`). The
+correction section supersedes its cleanup model and initial zero-finding claim.
 
 ## Preflight
 
@@ -254,7 +261,7 @@ its pending trap; the invariant is that no later normal mutation/publication
 step starts after that boundary. These shell tests do not claim a new process
 ownership architecture or bounded cancellation of arbitrary external utilities.
 
-## Validation and self-review
+## Initial implementation validation and self-review
 
 Local environment: Arch Linux x86_64, Bash 5.3.20 invoked as `sh`, exact
 `go1.26.7 linux/amd64`; PATH prefixed with `~/.local/opt/go1.26.7/bin`, GOENV=off,
@@ -302,3 +309,154 @@ Wave H work, or Wave L/hard-crash guarantees. Test subprocess groups were absent
 at normal fixture completion; disposable paths are owned by test cleanup. The
 final local commit and clean/unpushed Git state are reported in the session
 handoff rather than embedded as a self-referential commit SHA here.
+
+## Independent review correction — 2026-10-09 local checkpoint
+
+### Finding and verified start
+
+The first independent Wave G review found **one Important issue**: unguarded
+EXIT cleanup under `set -e` could replace an already-selected HUP/INT/TERM
+status (129/130/143) with cleanup failure status 1. In the installer, failure of
+the initial disposable-directory removal could abort cleanup before retained
+backup guidance. Review reproduced render and installer failures and probed
+prepare/publish cleanup functions. The backup survived byte-for-byte; no data
+loss was demonstrated. The earlier self-review's zero-finding claim did not
+survive independent review and is retained above only as historical evidence.
+
+After `git fetch origin --prune`, branch was exactly
+`fix/signal-interruption-recovery`, HEAD was
+`e8bba7730fa655db1e2fd59fa80828d0ba747bea`, and both HEAD^ and origin/main were
+`acc3b28912a3d4a99340e91fe2981c70faaa8fbf`. Worktree/index were clean, stashes
+zero, and open PRs zero. Live protection still required strict `ci`, `build`,
+`minimal-runtime`; all three were successful on that exact base SHA (the same
+runs 37157785747 and 37157785721). These remain base evidence, not correction CI.
+
+### Complete EXIT-path inspection and corrected model
+
+All four affected scripts were read completely, including their nested traps
+and normal-path removals. The correction stays within these shell scripts:
+
+| Site | Cleanup order / ownership | Correction |
+| --- | --- | --- |
+| Installer outer EXIT | Owned download directory; privileged staged binary; either report required backup or remove obsolete backup; descriptor-pinned private config file; private config directory | Explicit `on_exit`; warn separately on each failed disposal; continue later independent actions and retained-backup reporting |
+| Installer configuration writer EXIT | Only `./apps.toml` inside the validated private stage | Explicit `config_on_exit`; warn on failed disposal; preserve writer status (signal-only writer still exits 2); parent can finish disposal |
+| Prepare EXIT | Owned release stage | Explicit `on_exit`; report failed stage removal |
+| Publish EXIT | Owned publication stage; kernel releases descriptor-9 flock on exit | Explicit `on_exit`; report failed stage removal; lock lifetime unchanged |
+| Render command-substitution EXIT | Isolated verification GPG home | Explicit `gpg_on_exit`; report failed home removal; preserve phase status before existing caller failure mapping |
+| Render outer EXIT | Temporary output file | Explicit `on_exit`; report failed removal; previous output/publication boundary unchanged |
+
+Each EXIT entry captures `$?` as its first command, unregisters its own EXIT
+trap, disables errexit for cleanup (`set +e`), attempts cleanup with explicit
+operation-specific failure diagnostics, and calls `exit "$primary_status"`.
+Thus neither an unsuccessful removal nor an unsuccessful diagnostic replaces
+the selected primary outcome. There is no implicit trap-return-status dependency,
+recursive EXIT execution, automatic rollback, or new shared shell framework.
+Warnings are fixed, bounded lines to stderr without added artifact contents or
+paths. The existing retained-backup path remains deliberately explicit for recovery.
+
+Only installer outer cleanup has multiple independent shell disposals. None of
+its failure branches returns early; the backup-required state still prevents
+removal of recovery evidence. Single-action prepare/publish/render cleanup
+functions return failure after warning; their EXIT wrappers still preserve the
+incoming status. All HUP/INT/TERM registrations and successful trap resets remain
+at their existing workflow boundaries. Prepare and render retire their EXIT
+traps after successful final renames. The installer writer still transfers cleanup
+to the parent on success; it does not publish configuration itself.
+
+Ordinary outcomes were considered explicitly. EXIT cleanup preserves primary
+success 0 and ordinary failure unchanged, with diagnostics for cleanup failure.
+Prepare/render successful rename behavior is unchanged. Publish uniquely calls
+cleanup manually before its `Published` summary: that removal remains a required
+normal workflow step, with failure exit 1 and no `Published`. On this manual
+failure, the EXIT trap is disabled before exiting, preventing a duplicate
+cleanup attempt. Immutable object verification and latest-last ordering are
+unchanged. No production Go or other production files changed.
+
+### New deterministic regression coverage
+
+`internal/installer/cleanup_failure_test.go` extends the existing fixture helpers,
+checked temporary-script hooks, and actual-kernel-signal supervisor. A narrowly
+matched shell `rm` fixture returns 73 for the selected disposal and logs an
+injection marker; all other removals use the real utility. This works independently
+of UID and filesystem permissions. Each case asserts exactly one injected
+failure and one production warning, as well as the expected status and absence
+of later normal work/success output. Production has no injection mechanism.
+
+Every row below runs HUP, INT, and TERM separately:
+
+| New cleanup-failure boundary | Delivery / assertions |
+| --- | --- |
+| Installer replacement complete, before verification | Parent: 129/130/143; exact old backup bytes (including NUL/newline), retained path reported, new target remains, failed download disposal remains, later staged binary disposal succeeds, no config work |
+| Installer configuration writer in flight | Parent: 129/130/143; download cleanup fails, later pinned config file/directory cleanup succeeds, unrelated config preserved, no publication |
+| Installer writer before cleanup ownership transfer | Phase: original exit 2 survives failed private-file removal; parent removes remaining private file/directory; unrelated config preserved |
+| Render output complete, before rename | Parent: 129/130/143; failed temporary-output removal leaves the private file, previous output stays exact, no publication |
+| Render GPG home | Parent, group, and phase: failed home disposal is diagnosed; previous output and unrelated artifact stay exact; no output staging/publication; directly signalled phase retains 129/130/143 before caller maps failure to 1 |
+| Prepare stage exists, before build | Parent: 129/130/143; failed stage disposal diagnosed; unrelated file preserved; no build/signing/final release directory/Prepared |
+| Publish first immutable object verified | Parent: 129/130/143; failed local-stage disposal diagnosed; prior artifact and first uploaded object retained; no later upload/Published; kernel lock released |
+
+That adds **27 cleanup-failure signal cases: HUP 9, INT 9, TERM 9** to the
+original 102. Three corrected focused-suite runs passed **129 cases each:
+HUP 43, INT 43, TERM 43**. Existing workflow startup regressions (36 cases across
+12 inline blocks) and CI-script startup regressions remain in that suite.
+The same acknowledged pipe gate sends signals before releasing the foreground
+helper; waits remain bounded at 10 seconds, with 5-second emergency reap and
+exact fixture-group teardown. No root, real sudo, production signing, remote
+publication, or VM is used. Failed disposals intentionally leave fixture-owned
+paths for test teardown; they do not imply successful filesystem cleanup.
+
+Eight additional ordinary EXIT probes execute the exact production cleanup and
+wrapper functions with primary 0 and 7, forcing failure and checking unchanged
+status. A full fake-publication regression proves manual cleanup failure exits 1,
+warns once, does not retry EXIT cleanup or print Published, and leaves the five
+completed fake uploads with latest last. New fixture setup/unique-hook mistakes
+were corrected during development before the final validation below.
+
+### Correction validation and limitations
+
+Exact toolchain setup used in fish for every Go validation invocation:
+
+```fish
+set -gx PATH ~/.local/opt/go1.26.7/bin $PATH
+set -gx GOENV off
+set -gx GOTOOLCHAIN local
+```
+
+`go version`: **go version go1.26.7 linux/amd64**.
+`go env GOENV GOTOOLCHAIN`: empty disabled GOENV filename, then `local`.
+No compiler/dependency upgrade. All following final validation passed:
+
+| Command | Result |
+| --- | --- |
+| `go test -v -count=1 -timeout=3m ./internal/installer -run 'Signals$'` | PASS three times; 129 cases per run, 43 per signal; includes 27 cleanup-failure cases, 9 per signal |
+| `go mod verify` | PASS, all modules verified |
+| `go test -count=1 -timeout=5m ./internal/installer ./internal/app` | PASS |
+| `go test -race -count=1 -timeout=5m ./internal/installer` | PASS |
+| `go test -count=1 -timeout=10m ./...` | PASS |
+| `go vet ./...` | PASS |
+| `go build ./...` | PASS |
+| `sh -n script/install.sh` | PASS |
+| `sh -n script/prepare-release.sh` | PASS |
+| `sh -n script/publish-release.sh` | PASS |
+| `sh -n script/render-install.sh` | PASS |
+| `sh -n script/test-ci-arch.sh` | PASS |
+| `sh -n script/test-minimal-arch.sh` | PASS |
+| `bash -n script/test-ci-arch.sh` | PASS |
+| `bash -n` separately on each extracted workflow `run` block | PASS, all 12 blocks across arch.yml, ci.yml, release.yml |
+| `git diff --check` | PASS |
+
+Self-review of the complete correction diff found **Critical 0 / Important 0 /
+Optional 0** remaining within this correction scope, pending independent
+re-review. Checked saved statuses, explicit exits, trap resets, manual invocation,
+duplicate cleanup, warning bounds, continued installer reporting, ownership and
+safe-path checks, nested phase contracts, and publication order. This is a local
+self-review conclusion, not independent approval or I-04 closure.
+
+Limits remain: failed disposals can leave private artifacts and need operator
+attention; warnings do not guarantee successful cleanup. In-flight utilities may
+finish before a pending shell trap runs. Tests do not establish bounded teardown
+of arbitrary utilities, repeated-signal behavior during cleanup, SIGKILL/hard-crash
+convergence, or new process-ownership guarantees. The preserved acceptance VM
+was not booted; production artifacts were not signed/published. Protected CI and
+full native acceptance were not run for this local correction. Wave G remains
+local/unmerged, **I-04 OPEN**; independent re-review, final verification, protected
+CI, merge/tree equality, and formal closure remain required. No later wave started.

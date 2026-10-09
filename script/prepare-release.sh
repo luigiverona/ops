@@ -70,10 +70,22 @@ mkdir -p dist
 stage=
 cleanup() {
     if [ -n "$stage" ]; then
-        rm -rf -- "$stage"
+        rm -rf -- "$stage" || {
+            printf '%s\n' 'prepare-release: warning: release staging cleanup failed' >&2
+            return 1
+        }
     fi
 }
-trap cleanup EXIT
+on_exit() {
+    primary_status=$?
+    trap - EXIT
+    # Cleanup is secondary; neither errexit nor a failed diagnostic owns status.
+    set +e
+    cleanup
+    exit "$primary_status"
+}
+
+trap on_exit EXIT
 stage=$(mktemp -d "dist/.ops-release.XXXXXXXX") || fail 'could not create release staging directory'
 
 binary=$stage/ops-linux-x86_64

@@ -35,7 +35,17 @@ esac
 
 shown=$(
 gpg_home=
-trap 'if [ -n "$gpg_home" ]; then rm -rf -- "$gpg_home"; fi' 0
+gpg_on_exit() {
+    primary_status=$?
+    trap - 0
+    set +e
+    if [ -n "$gpg_home" ]; then
+        rm -rf -- "$gpg_home" ||
+            printf '%s\n' 'render-install: warning: verification keyring cleanup failed' >&2
+    fi
+    exit "$primary_status"
+}
+trap gpg_on_exit 0
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -55,10 +65,22 @@ mkdir -p "$output_dir"
 tmp=
 cleanup() {
     if [ -n "$tmp" ]; then
-        rm -f -- "$tmp"
+        rm -f -- "$tmp" || {
+            printf '%s\n' 'render-install: warning: temporary output cleanup failed' >&2
+            return 1
+        }
     fi
 }
-trap cleanup EXIT
+on_exit() {
+    primary_status=$?
+    trap - EXIT
+    # Cleanup is secondary; neither errexit nor a failed diagnostic owns status.
+    set +e
+    cleanup
+    exit "$primary_status"
+}
+
+trap on_exit EXIT
 tmp=$(mktemp "$output.tmp.XXXXXXXX") || fail 'could not create temporary output'
 
 fingerprint_marker="fingerprint='@OPS_SIGNING_FINGERPRINT@'"

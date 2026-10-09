@@ -141,7 +141,7 @@ Wave F is retained below as completed history; Wave G is next.
 
 ### Wave G — Signal/interruption & recovery safety
 
-**CURRENT — local implementation prepared; I-04 remains OPEN.**
+**CURRENT — local cleanup-status correction prepared; I-04 remains OPEN.**
 
 Wave G began on 2026-10-03 from verified main/origin/main
 `acc3b28912a3d4a99340e91fe2981c70faaa8fbf` (the Wave F closure-documentation
@@ -152,10 +152,19 @@ successful on that exact SHA (runs 37157785747 and 37157785721).
 The local branch is `fix/signal-interruption-recovery`. Its
 [implementation evidence](wave-g-interruption-recovery.md) records the full trap
 inventory, pre-fix real-signal reproductions, backup state machine, configuration
-publication boundary, 102 real-signal cases, validation, and self-review.
-This is an unpushed implementation handoff, not formal finding closure or a
-merged transition. Independent review, protected branch CI, squash merge,
-reviewed/merged-tree equality, and canonical closure remain required.
+publication boundary, initial 102 real-signal cases, validation, and self-review.
+The first independent review found one Important issue: failing EXIT cleanup
+could replace interruption status and suppress installer recovery guidance.
+The 2026-10-09 scoped local correction preserves the primary status explicitly,
+continues independent cleanup/reporting, and adds 27 real-signal cleanup-failure
+cases (129 total; 43 each HUP/INT/TERM), passing three times plus full local validation.
+Verified correction start: `e8bba7730fa655db1e2fd59fa80828d0ba747bea`, sole parent
+and fetched origin/main `acc3b28912a3d4a99340e91fe2981c70faaa8fbf`; clean initial
+worktree/index, no stashes/open PRs, strict protected base checks still successful.
+This is a local/unmerged, unpushed correction checkpoint, not formal finding
+closure or a merged transition. Independent re-review, final verification,
+protected branch CI, squash merge, reviewed/merged-tree equality, and formal
+I-04/canonical closure remain required.
 Wave H has not started and must wait for Wave G closure.
 
 Closes **I-04**: shell signal/interruption recovery safety.
