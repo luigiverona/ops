@@ -34,6 +34,9 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           version=${INPUT_VERSION:-${GITHUB_REF_NAME#v}}
           [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/v$version^{commit}")"
@@ -41,6 +44,9 @@ jobs:
           printf 'value=%s\n' "$version" >> "$GITHUB_OUTPUT"
       - name: Validate source
         run: |
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           test "$(go env GOVERSION)" = go1.26.7
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
           go mod verify
@@ -51,6 +57,9 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.value }}
         run: |
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           install -d dist
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=readonly -trimpath -buildvcs=true \
             -ldflags "-s -w -X github.com/luigiverona/ops/internal/version.Value=$VERSION" \

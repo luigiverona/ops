@@ -5,6 +5,14 @@ release_base=${OPS_RELEASE_BASE:-https://ops.luigiverona.dev/releases}
 target=/usr/local/bin/ops
 fingerprint='@OPS_SIGNING_FINGERPRINT@'
 
+# Cleanup ownership is established by this run, never inherited from its caller.
+tmp=
+staged=
+backup=
+backup_required=no
+config_stage=
+config_stage_open=no
+
 fail() {
     printf 'ops installer: %s\n' "$*" >&2
     exit 2
@@ -13,18 +21,50 @@ fail() {
 cleanup() {
     if [ -n "${tmp:-}" ]; then
         case "$tmp" in
-            "${tmp_parent:-/tmp}"/ops-install.*) rm -rf -- "$tmp" ;;
+            "${tmp_parent:-/tmp}"/ops-install.*)
+                rm -rf -- "$tmp" || printf '%s\n' 'ops installer: warning: temporary download cleanup failed' >&2
+                ;;
         esac
     fi
     if [ -n "${staged:-}" ]; then
-        sudo -n rm -f -- "$staged" >/dev/null 2>&1 || true
+        sudo -n rm -f -- "$staged" >/dev/null 2>&1 ||
+            printf '%s\n' 'ops installer: warning: staged binary cleanup failed' >&2
     fi
-    if [ -n "${backup:-}" ] && [ "${keep_backup:-no}" != yes ]; then
-        sudo -n rm -f -- "$backup" >/dev/null 2>&1 || true
+    if [ -n "${backup:-}" ]; then
+        if [ "${backup_required:-no}" = yes ]; then
+            if [ -e "$backup" ]; then
+                printf 'ops installer: replacement not settled; backup retained at %s; inspect the target before recovery or retry\n' "$backup" >&2
+            fi
+        else
+            sudo -n rm -f -- "$backup" >/dev/null 2>&1 ||
+                printf '%s\n' 'ops installer: warning: obsolete backup cleanup failed' >&2
+        fi
+    fi
+    if [ -n "${config_stage:-}" ]; then
+        # Descriptor 8 pins only this run's private stage, even if its name is
+        # replaced. Never unlink apps.toml in the destination during cleanup.
+        if [ "${config_stage_open:-no}" = yes ]; then
+            rm -f -- /proc/$$/fd/8/apps.toml ||
+                printf '%s\n' 'ops installer: warning: staged configuration cleanup failed' >&2
+        fi
+        rmdir -- "$config_stage" >/dev/null 2>&1 ||
+            printf '%s\n' 'ops installer: warning: configuration staging directory cleanup failed' >&2
     fi
 }
 
-trap cleanup EXIT HUP INT TERM
+on_exit() {
+    primary_status=$?
+    trap - EXIT
+    # Cleanup is secondary; neither errexit nor a failed diagnostic owns status.
+    set +e
+    cleanup
+    exit "$primary_status"
+}
+
+trap on_exit EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 [ "$(id -u)" -ne 0 ] || fail 'run as a normal user; root would create incorrectly owned user configuration and cannot safely build AUR packages'
 [ "$(uname -s)" = Linux ] || fail 'only official Arch Linux is supported'
@@ -148,10 +188,14 @@ check_config_path
 
 sudo -v || fail 'sudo authorization failed'
 suffix=$$
+# A prior interrupted run may have retained a backup with this PID. Do not
+# claim or remove either path until both have been checked.
+for path in "$target.ops-new-$suffix" "$target.ops-backup-$suffix"; do
+    [ ! -e "$path" ] && [ ! -L "$path" ] || fail "installation staging path already exists; inspect before retrying: $path"
+done
 staged=$target.ops-new-$suffix
 backup=$target.ops-backup-$suffix
-keep_backup=no
-sudo -n rm -f -- "$staged" "$backup"
+backup_required=no
 sudo -n install -m 0755 -o root -g root -- "$tmp/ops-linux-x86_64" "$staged" || fail 'could not stage binary'
 [ "$("$staged" --version 2>/dev/null)" = "ops $version" ] || fail 'staged binary verification failed'
 had_target=no
@@ -164,19 +208,23 @@ fi
 if [ -e "$target" ] || [ -L "$target" ]; then
     had_target=yes
     sudo -n cp --preserve=mode,ownership,timestamps -- "$target" "$backup" || fail 'could not preserve existing binary'
+    # Set this BEFORE replacement: mv may complete even if interrupted or
+    # reported as failed. Only verified installation or restoration settles it.
+    backup_required=yes
 fi
 sudo -n mv -- "$staged" "$target" || fail 'could not atomically install binary'
 if [ "$("$target" --version 2>/dev/null || true)" != "ops $version" ]; then
     if [ "$had_target" = yes ]; then
         if ! sudo -n mv -- "$backup" "$target"; then
-            keep_backup=yes
             fail "installation failed and the previous binary could not be restored; backup retained at $backup"
         fi
+        backup_required=no
     else
         sudo -n rm -f -- "$target"
     fi
     fail 'installed binary verification failed; previous binary was restored when available'
 fi
+backup_required=no
 sudo -n rm -f -- "$backup"
 
 binary_installed=yes
@@ -201,13 +249,24 @@ if [ ! -e "$config" ]; then
     # Stage privately on the same filesystem, then link without replacement.
     # Never expose a partial apps.toml or open a raced-in device/FIFO for writing.
     config_stage=$(umask 077; mktemp -d ./.ops-config.XXXXXXXX) || config_fail "could not create configuration staging directory; fix permissions and rerun the installer"
+    exec 8< "$config_stage" || config_fail 'could not pin configuration staging directory'
+    [ "$(CDPATH= cd -P /proc/$$/fd/8 && pwd -P)" = "$config_physical/ops/${config_stage#./}" ] || config_fail 'configuration staging directory changed during installation'
+    config_stage_open=yes
     result=0
     (
-        CDPATH= cd -P "$config_stage" || config_fail 'could not enter configuration staging directory'
+        CDPATH= cd -P /proc/$$/fd/8 || config_fail 'could not enter configuration staging directory'
         [ "$(pwd -P)" = "$config_physical/ops/${config_stage#./}" ] || config_fail 'configuration staging directory changed during installation'
         # Cleanup is confined to the private staging directory, never apps.toml
         # in the managed directory, which another process may have replaced.
-        trap 'rm -f -- ./apps.toml' EXIT
+        config_on_exit() {
+            primary_status=$?
+            trap - 0
+            set +e
+            rm -f -- ./apps.toml ||
+                printf '%s\n' 'ops installer: warning: private configuration cleanup failed' >&2
+            exit "$primary_status"
+        }
+        trap config_on_exit EXIT
         trap 'exit 2' HUP INT TERM
         umask 077
         if ! cat > ./apps.toml <<'OPS_CONFIG'
@@ -235,11 +294,18 @@ OPS_CONFIG
         then
             config_fail "could not write configuration; installer did not create apps.toml; fix storage or permissions and rerun the installer"
         fi
-        # The parent shell stays in the pinned destination while this subshell
-        # writes in staging. Linux procfs lets ln use that directory directly.
-        ln -T -- ./apps.toml /proc/$$/cwd/apps.toml || exit 4
+        # Transfer cleanup to the waiting parent. Publication must happen there:
+        # a signal to only the parent must stop publication after this writer.
+        trap - EXIT
     ) || result=$?
+    if [ "$result" -eq 0 ]; then
+        ln -T -- /proc/$$/fd/8/apps.toml ./apps.toml || result=4
+    fi
+    rm -f -- /proc/$$/fd/8/apps.toml
+    exec 8<&-
+    config_stage_open=no
     rmdir -- "$config_stage" || config_fail 'could not remove configuration staging directory; inspect the path before retrying'
+    config_stage=
     case "$result" in
         0) created=yes ;;
         4)

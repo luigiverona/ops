@@ -2,6 +2,9 @@
 # Bootstrap and validate ONLY the disposable Arch QEMU guest created by ci.yml.
 # Never run on a workstation. All tests remain the ordinary UID 1000 user.
 set -euo pipefail
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 trap 'echo "Guest command failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 test "$(systemd-detect-virt --vm)" = kvm

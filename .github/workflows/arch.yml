@@ -24,6 +24,9 @@ jobs:
           cache: true
       - name: Build unsigned runtime candidate
         run: |
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           test "$(go env GOVERSION)" = go1.26.7
           go mod verify
           mkdir -p candidate
@@ -49,6 +52,9 @@ jobs:
           path: candidate
       - name: Exercise pristine official Arch runtime
         run: |
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           docker run --rm --platform linux/amd64 \
             --mount "type=bind,src=$GITHUB_WORKSPACE/candidate,dst=/candidate,readonly" \
             archlinux:base@sha256:818793c894d94534c22f2149154a39ebaee57e4e67321023b0866a1d5722036c \

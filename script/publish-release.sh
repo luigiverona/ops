@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 
+# Keep the existing terminating contract active during preflight as well.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 bucket=ops-releases
 profile=${OPS_R2_PROFILE:-ops-r2}
 public_origin=https://ops.luigiverona.dev
@@ -108,15 +113,27 @@ for path in internal/release/signing-fingerprint internal/release/signing-key.as
         fail "$path is not a safe regular file"
 done
 
+tmp=
+cleanup() {
+    if [ -n "$tmp" ]; then
+        rm -rf -- "$tmp" || {
+            printf '%s\n' 'publish-release: warning: publication staging cleanup failed' >&2
+            return 1
+        }
+    fi
+}
+on_exit() {
+    primary_status=$?
+    trap - EXIT
+    # Cleanup is secondary; neither errexit nor a failed diagnostic owns status.
+    set +e
+    cleanup
+    exit "$primary_status"
+}
+
+trap on_exit 0
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/ops-publish.XXXXXXXX") ||
     fail 'could not create publication staging directory'
-cleanup() {
-    rm -rf -- "$tmp"
-}
-trap cleanup 0
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
 
 fingerprint=$(cat internal/release/signing-fingerprint)
 case "$fingerprint" in
@@ -449,7 +466,8 @@ fi
 verify_s3 releases/latest "$latest" 'text/plain; charset=utf-8' "$mutable_cache"
 verify_public releases/latest "$latest"
 
-cleanup
+# Manual cleanup remains part of successful publication completion.
+cleanup || { trap - 0; exit 1; }
 trap - 0 HUP INT TERM
 
 printf 'Published\n'

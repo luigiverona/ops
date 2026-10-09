@@ -26,6 +26,9 @@ jobs:
           persist-credentials: false
       - name: Prepare host and prove KVM
         run: |
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           cat /etc/os-release
           . /etc/os-release
           test "$ID" = ubuntu
@@ -88,6 +91,9 @@ jobs:
           cache: false
       - name: Prepare verified Arch image and ephemeral access
         run: |
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           test "$(go version)" = 'go version go1.26.7 linux/amd64'
           echo "CI_GOROOT=$(realpath "$(go env GOROOT)")" >> "$GITHUB_ENV"
           cd "$CI_VM"
@@ -141,6 +147,9 @@ jobs:
       - name: Boot Arch VM
         timeout-minutes: 8
         run: |
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           cd "$CI_VM"
           source resources
           # Port zero lets QEMU bind an available ephemeral port atomically.
@@ -191,6 +200,9 @@ jobs:
       - name: Transfer exact checkout and Go, then run guest validation
         timeout-minutes: 70
         run: |
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           trap 'echo "Failed host/SSH command at line $LINENO: $BASH_COMMAND" >&2' ERR
           ssh -F "$CI_VM/ssh-config" arch-ci 'mkdir -p /home/ops-ci/source /home/ops-ci/go-transfer'
           # Read tracked files from this checkout, including modes and symlinks.
@@ -222,6 +234,9 @@ jobs:
       - name: Capture bounded console diagnostics
         if: always() && env.CI_VM != ''
         run: |
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           if test -S "$CI_VM/qmp.sock" && test -s "$CI_VM/qemu.pid"; then
             python3 "$CI_VM/qmp.py" "$CI_VM/qmp.sock" ringbuf-read \
               '{"device":"console","size":1048576}' > "$CI_VM/serial.log"
@@ -229,6 +244,9 @@ jobs:
       - name: Surface failure evidence
         if: failure() && env.CI_VM != ''
         run: |
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           for log in serial.log ssh-boot.log guest-test.log; do
             if test -f "$CI_VM/$log"; then
               echo "Last 100 lines: $log"
@@ -249,6 +267,9 @@ jobs:
       - name: Clean up disposable Arch VM
         if: always() && env.CI_VM != ''
         run: |
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           if test -s "$CI_VM/qemu.pid"; then
             pid=$(cat "$CI_VM/qemu.pid")
             # Match this VM's unique command line before signaling a recorded PID.

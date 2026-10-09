@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 
+# Install handlers before the GPG phase as well as output staging.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 fail() {
     printf 'render-install: %s\n' "$*" >&2
     exit 1
@@ -29,8 +34,22 @@ esac
 [ "${#fingerprint}" -eq 40 ] || fail 'invalid signing fingerprint'
 
 shown=$(
+gpg_home=
+gpg_on_exit() {
+    primary_status=$?
+    trap - 0
+    set +e
+    if [ -n "$gpg_home" ]; then
+        rm -rf -- "$gpg_home" ||
+            printf '%s\n' 'render-install: warning: verification keyring cleanup failed' >&2
+    fi
+    exit "$primary_status"
+}
+trap gpg_on_exit 0
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 gpg_home=$(mktemp -d "${TMPDIR:-/tmp}/ops-render-gpg.XXXXXXXX") || exit 1
-trap 'rm -rf -- "$gpg_home"' 0 HUP INT TERM
 chmod 0700 "$gpg_home" || exit 1
 gpg --homedir "$gpg_home" --no-options --batch --no-tty --with-colons --show-keys "$key_file" 2>/dev/null
 ) || fail 'invalid signing public key'
@@ -43,11 +62,26 @@ printf '%s\n' "$shown" | awk -F: -v fingerprint="$fingerprint" '
 
 output_dir=$(dirname "$output")
 mkdir -p "$output_dir"
-tmp=$(mktemp "$output.tmp.XXXXXXXX") || fail 'could not create temporary output'
+tmp=
 cleanup() {
-    rm -f -- "$tmp"
+    if [ -n "$tmp" ]; then
+        rm -f -- "$tmp" || {
+            printf '%s\n' 'render-install: warning: temporary output cleanup failed' >&2
+            return 1
+        }
+    fi
 }
-trap cleanup EXIT HUP INT TERM
+on_exit() {
+    primary_status=$?
+    trap - EXIT
+    # Cleanup is secondary; neither errexit nor a failed diagnostic owns status.
+    set +e
+    cleanup
+    exit "$primary_status"
+}
+
+trap on_exit EXIT
+tmp=$(mktemp "$output.tmp.XXXXXXXX") || fail 'could not create temporary output'
 
 fingerprint_marker="fingerprint='@OPS_SIGNING_FINGERPRINT@'"
 key_marker='@OPS_SIGNING_PUBLIC_KEY@'
